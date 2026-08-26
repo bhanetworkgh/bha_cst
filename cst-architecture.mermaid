@@ -1,0 +1,54 @@
+flowchart LR
+    C["📱 Customer<br/>SMS / MMS"]
+
+    T["Twilio<br/>transport rail"]
+
+    subgraph CST["bha-cst - CUSTOMER SERVICE TWIN (separate, multi-tenant: tenant = system, vFarm = system #1)"]
+        direction TB
+        TM["Engine · transport module - Ahad + Syed<br/>webhook verify + dedup<br/>outbound send + retries"]
+        IR["Engine · identity resolve<br/>number → owning system → customer_ref"]
+        RTR["Engine · intent router<br/>status / knowledge / images / escalate"]
+        DB[("Conversations + messages DB<br/>systems registry + routing rules<br/>only place transcripts live<br/>NO incidents stored here")]
+        AP["Admin panel (like bharag /ui)<br/>threads · takeover · system config<br/>deep-links to incidents UI"]
+    end
+
+    subgraph VF["vFARM - system #1 (system of record)"]
+        direction TB
+        VS["vFarm Server<br/>devices · zones · monitoring · alerts · parts<br/>+ CUSTOMER REGISTRY (phone ↔ unit)"]
+        VU["vFarm UI - staff console<br/>deep-link: Support threads → CST admin"]
+        VK["vFarm Kiosk<br/>advertises support number<br/>shows ticket status"]
+    end
+
+    subgraph BH["BHARAG - common, multi-tenant<br/>NO vFarm logins, NO phone numbers"]
+        direction TB
+        RAG["RAG ask<br/>vFarm docs corpus"]
+        INC["INCIDENT SYSTEM (incidents.v0)<br/>single source of truth for incidents<br/>subsystem=CUSTOMER_TWIN, engine=VFARM"]
+    end
+
+    MS["Media Server<br/>S3 vision captures<br/>signed URLs"]
+
+    C <-->|text in / reply out| T
+    T -->|inbound webhook| TM
+    TM --> IR
+    IR -->|"resolve?phone=E164<br/>scoped service key"| VS
+    IR --> RTR
+    RTR -->|"unit status + open alerts<br/>read-scope key"| VS
+    RTR -->|"ask - CST workspace key"| RAG
+    RTR -->|"file incident (opaque customer_ref)<br/>+ read back status for the customer"| INC
+    RTR -->|"latest capture - signed URL"| MS
+    RTR -->|log| DB
+    RTR -->|reply| TM
+    TM -->|outbound send| T
+    AP --> DB
+    AP -.->|deep-link| INC
+    VU -.->|deep-link| AP
+    VK <-->|WS| VS
+
+    classDef cst fill:#eef4ff,stroke:#3b5bdb,color:#1a2b6d
+    classDef vfarm fill:#eafbee,stroke:#2f9e44,color:#14532d
+    classDef common fill:#fff7e6,stroke:#e8930c,color:#7c4a03
+    classDef edge fill:#f3f0ff,stroke:#7048e8,color:#3b2a86
+    class TM,IR,RTR,DB,AP cst
+    class VS,VU,VK vfarm
+    class RAG,INC common
+    class T,MS,C edge
