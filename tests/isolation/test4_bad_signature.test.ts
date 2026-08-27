@@ -18,7 +18,7 @@ describe('Isolation Test 4: Bad X-Twilio-Signature', () => {
       .send({
         MessageSid: 'SM_TEST_4_BAD_SIG',
         From: '+15551234567',
-        To: '+15550001111', // Valid receiving number
+        To: '+19715885823', // Valid receiving number
         Body: 'Attacker payload',
       });
 

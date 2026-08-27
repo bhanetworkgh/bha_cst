@@ -5,12 +5,15 @@ import { DbClient } from '../../engine/src/db/client.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 import { TwilioClientWrapper, SendSmsParams } from '../../engine/src/transport/twilio/client.js';
 
+import { seedTestCustomers } from '../helpers/seed_customers.js';
+
 describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
   const app = createApp();
 
   beforeEach(() => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
+    seedTestCustomers();
   });
 
   it('completes full SMS roundtrip: webhook in -> verify -> resolve -> canned handle() -> outbound queue -> Twilio send', async () => {
@@ -21,7 +24,7 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     });
 
     const knownSender = '+15551234567'; // Known vFarm customer
-    const validReceivingNumber = '+15550001111'; // vFarm system #1 number
+    const validReceivingNumber = '+19715885823'; // vFarm system #1 number
     const messageId = 'SM_E2E_ROUNDTRIP_001';
 
     // 1. Send simulated Twilio webhook request
@@ -48,10 +51,12 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     // 4. Verify message transcript stored
     expect(DbClient.getTranscriptCount()).toBeGreaterThanOrEqual(1);
 
-    // 5. Verify canned handle() reply was dispatched via outbound worker
+    // 5. Verify IntentRouter reply was dispatched via outbound worker.
+    // Connectors are currently DISABLED — reply echoes the user's query.
     expect(outboundCall).not.toBeNull();
     const sent = outboundCall as SendSmsParams | null;
     expect(sent?.to).toBe(knownSender);
-    expect(sent?.body).toBe('Echo: How is Bay 4 doing today?');
+    // "How is Bay 4 doing today?" triggers 'status' intent → echoes user query back
+    expect(sent?.body).toBe('How is Bay 4 doing today?');
   });
 });

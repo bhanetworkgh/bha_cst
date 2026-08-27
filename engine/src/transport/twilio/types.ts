@@ -17,7 +17,8 @@ export interface OutboundMessage {
   body: string;
   media_url?: string;
   correlation_id: string;
-  status?: 'pending' | 'sent' | 'failed' | 'refused';
+  provider_sid?: string;
+  status?: 'pending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered';
   created_at?: string;
 }
 
@@ -35,7 +36,7 @@ export interface IdentityContext {
  */
 export interface RoutingRule {
   intent: string;            // e.g. 'status' | 'knowledge' | 'images' | 'escalate' | 'default'
-  action: 'auto_reply' | 'escalate' | 'knowledge' | 'images' | 'queue';
+  action: 'status' | 'auto_reply' | 'escalate' | 'knowledge' | 'images' | 'queue' | 'default';
   canned_reply?: string;     // Static reply text if action is 'auto_reply'
   quiet_hours?: {
     start: string;           // HH:MM in system local time

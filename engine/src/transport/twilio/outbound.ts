@@ -104,8 +104,11 @@ export async function processOutboundQueue(): Promise<void> {
           mediaUrl: msg.media_url ? [msg.media_url] : undefined,
         });
 
-        // Record which system number actually sent the message (GAP-5 fix)
+        // Record sending system number and provider_sid on outbound record
         await DbClient.updateOutboundFromE164(msg.id!, fromNumber || '');
+        if (res.sid) {
+          await DbClient.updateOutboundProviderSid(msg.id!, res.sid);
+        }
         await DbClient.updateOutboundStatus(msg.id!, 'sent');
         success = true;
 
@@ -121,14 +124,25 @@ export async function processOutboundQueue(): Promise<void> {
           correlation_id: msg.correlation_id,
         });
       } catch (err: any) {
-        lastError = err.message || 'Unknown Twilio error';
+        lastError = err.message || 'Unknown Twilio API error';
+        const isNonRetriable = err.isNonRetriable || TwilioClientWrapper.isNonRetriableError(err);
+
         Logger.warn(`Outbound send attempt ${attempt}/${maxRetries} failed: ${lastError}`, {
           correlation_id: msg.correlation_id,
           tenant_id: msg.tenant_id,
+          attempt,
+          maxRetries,
+          isNonRetriable,
         });
 
+        // Stop retrying immediately if the error is permanent (e.g. invalid phone number, geo permission denied)
+        if (isNonRetriable) {
+          Logger.error(`Permanent non-retriable Twilio error encountered for destination ${msg.to_e164}: ${lastError}`);
+          break;
+        }
+
         if (attempt < maxRetries) {
-          const backoffMs = Math.pow(2, attempt) * 50; // Exponential backoff (50ms, 100ms, 200ms for test fastness)
+          const backoffMs = Math.pow(2, attempt) * 50; // Exponential backoff (50ms, 100ms, 200ms)
           await new Promise((r) => setTimeout(r, backoffMs));
         }
       }
@@ -151,14 +165,49 @@ export async function processOutboundQueue(): Promise<void> {
   }
 }
 
-// Delivery status callback handler (GAP-6 fix)
-// Requires Twilio signature verification and resolves tenant_id from the stored outbound record.
-outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, (req: Request, res: Response) => {
+// Delivery status callback handler
+// Requires Twilio signature verification, validates payload, resolves tenant_id, and updates database records.
+outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req: Request, res: Response) => {
   const { MessageSid, MessageStatus, To, ErrorCode } = req.body as Record<string, string>;
 
-  // Resolve tenant_id from the outbound record matched by correlation (To number → system)
+  if (!MessageSid || !MessageStatus) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: null,
+      actor: 'twilio_delivery_status',
+      role: 'transport_worker',
+      entry_point: 'webhook',
+      tool_or_route: '/webhooks/twilio/delivery-status',
+      outcome: 'refused',
+      reason: 'Missing MessageSid or MessageStatus parameter in delivery status callback',
+    });
+    res.status(400).json({ error: 'BAD_REQUEST', message: 'Missing MessageSid or MessageStatus' });
+    return;
+  }
+
+  // Resolve tenant_id from the system number (To parameter in delivery status webhook)
   const system = To ? SystemsRegistry.resolveSystemByPhoneNumber(To) : null;
-  const tenantId = system?.tenant_id ?? null;
+  const resolvedTenantIdFromPhone = system?.tenant_id;
+
+  // Map Twilio status to allowed internal status
+  const normalizedStatus = MessageStatus.toLowerCase();
+  let mappedStatus: 'sent' | 'delivered' | 'failed' | 'undelivered' = 'delivered';
+
+  if (normalizedStatus === 'failed') mappedStatus = 'failed';
+  else if (normalizedStatus === 'undelivered') mappedStatus = 'undelivered';
+  else if (normalizedStatus === 'sent') mappedStatus = 'sent';
+
+  const errorDetails = ErrorCode ? `Twilio ErrorCode: ${ErrorCode}` : undefined;
+
+  // Update DB records across outbound queue and message transcripts
+  const updateResult = await DbClient.updateDeliveryStatusByProviderSid(
+    MessageSid,
+    mappedStatus,
+    errorDetails
+  );
+
+  const tenantId = resolvedTenantIdFromPhone || updateResult.tenant_id || null;
+  const isFailure = mappedStatus === 'failed' || mappedStatus === 'undelivered';
 
   Logger.audit({
     timestamp: new Date().toISOString(),
@@ -167,11 +216,12 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, (req: Requ
     role: 'transport_worker',
     entry_point: 'webhook',
     tool_or_route: '/webhooks/twilio/delivery-status',
-    outcome: MessageStatus === 'failed' || MessageStatus === 'undelivered' ? 'error' : 'ok',
-    reason: `Twilio delivery status: ${MessageStatus}${ErrorCode ? ` (ErrorCode: ${ErrorCode})` : ''}`,
+    outcome: isFailure ? 'error' : 'ok',
+    reason: `Twilio delivery status update: ${mappedStatus}${ErrorCode ? ` (${errorDetails})` : ''}`,
     correlation_id: MessageSid,
   });
 
   res.status(204).send();
 });
+
 

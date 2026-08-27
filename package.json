@@ -5,11 +5,13 @@
   "main": "engine/src/server.ts",
   "scripts": {
     "build": "tsc -b engine/tsconfig.json",
+    "start": "node dist/server.js",
+    "start:dev": "tsx watch engine/src/server.ts",
+    "dev": "tsx watch engine/src/server.ts",
     "typecheck": "tsc --noEmit -p engine/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "ts-node engine/src/server.ts",
-    "dev": "tsx watch engine/src/server.ts"
+    "test:ci": "vitest run --reporter=verbose"
   },
   "keywords": [],
   "author": "",

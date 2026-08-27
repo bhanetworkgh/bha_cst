@@ -8,11 +8,25 @@ import {
 } from '../../engine/src/transport/twilio/outbound.js';
 import { TwilioClientWrapper } from '../../engine/src/transport/twilio/client.js';
 
+import { seedTestCustomers } from '../helpers/seed_customers.js';
+
 describe('Isolation Test 8: Outbound Cross-Tenant Prevention', () => {
   beforeEach(() => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
     clearCrossTenantRules();
+    seedTestCustomers();
+
+    // Register a minimal Tenant B fixture for cross-tenant isolation tests.
+    // This replaces the old hardcoded Tenant B entry that was removed from the default registry.
+    SystemsRegistry.registerSystem({
+      system_id: 'system-tenant-b-02',
+      tenant_id: 'tenant-b-02',
+      name: 'Tenant B (Test Fixture)',
+      status: 'active',
+      phone_numbers: ['+15559992222'],
+      onboarding_reply: 'Welcome to Tenant B Support!',
+    });
   });
 
   it('refuses outbound send to a number registered to another tenant', async () => {

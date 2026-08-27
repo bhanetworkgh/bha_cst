@@ -12,19 +12,63 @@ describe('Outbound Transport Unit Tests', () => {
     DbClient.clearAll();
   });
 
-  it('handles delivery status callbacks cleanly with HTTP 204', async () => {
+  it('handles delivery status callbacks cleanly and updates DbClient status for delivered and failed status', async () => {
+    // Seed an outbound message record
+    await DbClient.saveOutboundMessage({
+      id: 'out_deliv_001',
+      tenant_id: 'tenant-vfarm-01',
+      to_e164: '+15551234567',
+      from_e164: '+19715885823',
+      body: 'Status delivery test',
+      correlation_id: 'corr_deliv_test',
+      provider_sid: 'SM_DELIVERY_TEST_001',
+      status: 'sent',
+    });
+
     const res = await request(app)
       .post('/webhooks/twilio/delivery-status')
-      .set('x-test-bypass-signature', 'true') // Dev bypass — same as all inbound tests
+      .set('x-test-bypass-signature', 'true')
       .type('form')
       .send({
         MessageSid: 'SM_DELIVERY_TEST_001',
         MessageStatus: 'delivered',
-        To: '+15551234567',
-        From: '+15550001111',
+        To: '+19715885823',
+        From: '+15551234567',
       });
 
     expect(res.status).toBe(204);
+
+    // Verify database record was updated to 'delivered'
+    const outboundRecord = DbClient.getAllMessagesOut().find((m) => m.id === 'out_deliv_001');
+    expect(outboundRecord?.status).toBe('delivered');
+
+    // Test failure status update
+    const resFailed = await request(app)
+      .post('/webhooks/twilio/delivery-status')
+      .set('x-test-bypass-signature', 'true')
+      .type('form')
+      .send({
+        MessageSid: 'SM_DELIVERY_TEST_001',
+        MessageStatus: 'failed',
+        ErrorCode: '30008',
+        To: '+19715885823',
+        From: '+15551234567',
+      });
+
+    expect(resFailed.status).toBe(204);
+    expect(outboundRecord?.status).toBe('failed');
+    expect((outboundRecord as any)?.error_message).toContain('30008');
+  });
+
+  it('returns HTTP 400 Bad Request when delivery status payload is missing required fields', async () => {
+    const res = await request(app)
+      .post('/webhooks/twilio/delivery-status')
+      .set('x-test-bypass-signature', 'true')
+      .type('form')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('BAD_REQUEST');
   });
 
 

@@ -5,7 +5,7 @@ import { enforceTenancyGate } from '../../middleware/tenancy.js';
 import { normalizeTwilioInbound } from './normalize.js';
 import { DbClient } from '../../db/client.js';
 import { IdentityResolver } from '../../identity/resolver.js';
-import { handle } from '../../handler/stub.js';
+import { IntentRouter } from '../../router/index.js';
 import { Logger } from '../../config/logger.js';
 import { processOutboundQueue } from './outbound.js';
 
@@ -84,7 +84,7 @@ inboundRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           system
         );
 
-        await handle(normalizedMsg, identity);
+        await IntentRouter.routeAndHandle(normalizedMsg, identity);
 
         // Process outbound worker after handler enqueues message
         await processOutboundQueue();

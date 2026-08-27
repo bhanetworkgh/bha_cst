@@ -4,18 +4,21 @@ import { createApp } from '../../engine/src/app.js';
 import { DbClient } from '../../engine/src/db/client.js';
 import { normalizeTwilioInbound } from '../../engine/src/transport/twilio/normalize.js';
 
+import { seedTestCustomers } from '../helpers/seed_customers.js';
+
 describe('Inbound Transport Unit Tests', () => {
   const app = createApp();
 
   beforeEach(() => {
     DbClient.clearAll();
+    seedTestCustomers();
   });
 
   it('correctly normalizes raw Twilio webhook payload including media', () => {
     const payload = {
       MessageSid: 'SM100200300',
       From: '+15551234567',
-      To: '+15550001111',
+      To: '+19715885823',
       Body: 'Check out this sensor photo',
       NumMedia: '2',
       MediaUrl0: 'https://media.twilio.com/photo1.jpg',
@@ -27,7 +30,7 @@ describe('Inbound Transport Unit Tests', () => {
     expect(normalized.message_id).toBe('SM100200300');
     expect(normalized.tenant_id).toBe('tenant-vfarm-01');
     expect(normalized.from_e164).toBe('+15551234567');
-    expect(normalized.to_e164).toBe('+15550001111');
+    expect(normalized.to_e164).toBe('+19715885823');
     expect(normalized.body).toBe('Check out this sensor photo');
     expect(normalized.media).toEqual([
       'https://media.twilio.com/photo1.jpg',
@@ -39,7 +42,7 @@ describe('Inbound Transport Unit Tests', () => {
     const duplicatePayload = {
       MessageSid: 'SM_DEDUP_001',
       From: '+15551234567',
-      To: '+15550001111',
+      To: '+19715885823',
       Body: 'First transmission',
     };
 

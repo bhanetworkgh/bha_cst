@@ -1,43 +1,59 @@
 import { SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
+import { getEnv } from '../config/env.js';
 
-// Initial seed systems - vFarm is System #1
-const defaultSystems: SystemConfig[] = [
-  {
-    system_id: 'system-vfarm-01',
-    tenant_id: 'tenant-vfarm-01',
-    name: 'vFarm System #1',
-    status: 'active',
-    phone_numbers: ['+15550001111', '+18005558327'], // Seeded valid E.164 numbers
-    messaging_service_sid: 'MG_VFARM_01_REF',       // Twilio Messaging Service SID ref (spec §2)
-    onboarding_reply: 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
-    resolve_endpoint_url: 'http://localhost:4000/api/v1/customers/resolve',
-    bharag_workspace_key: 'workspace_vfarm_cst_key',
-    media_base_url: 'https://media.bhavfarm.com',   // Media server base URL for signed URL fetches
-    escalation_rules: [
-      // When a fault or escalation intent is detected, file an incident in BHARAG incidents.v0
-      // subsystem=CUSTOMER_TWIN and engine=VFARM are frozen by spec §3
-      { trigger: 'escalate', subsystem: 'CUSTOMER_TWIN', engine: 'VFARM', priority: 'high' },
-      { trigger: 'fault',    subsystem: 'CUSTOMER_TWIN', engine: 'VFARM', priority: 'critical' },
-    ],
-    routing_rules: [
-      // Auto-answer status inquiries; escalate faults; all else queues for handler
-      { intent: 'status',    action: 'auto_reply', canned_reply: 'We are checking your unit status. Please hold.' },
-      { intent: 'knowledge', action: 'knowledge' },
-      { intent: 'images',    action: 'images' },
-      { intent: 'escalate',  action: 'escalate' },
-      { intent: 'default',   action: 'queue' },
-    ],
-  },
-  {
-    system_id: 'system-tenant-b-02',
-    tenant_id: 'tenant-b-02',
-    name: 'Tenant B System',
-    status: 'active',
-    phone_numbers: ['+15559992222'],
-    onboarding_reply: 'Welcome to Tenant B Support!',
-  },
-];
+/**
+ * Build system list purely from validated env vars.
+ * getEnv() throws a descriptive error if ANY required field is missing —
+ * no hardcoded fallbacks, no silent defaults for secrets.
+ *
+ * To add a second system: add SYSTEM2_* vars to .env, call getEnv() for those
+ * vars, and append another entry to the returned array.
+ */
+function buildDefaultSystems(): SystemConfig[] {
+  const env = getEnv(); // Throws if any required env var is absent
+
+  const vfarmPhones = env.VFARM_PHONE_NUMBERS
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return [
+    {
+      system_id:             env.VFARM_SYSTEM_ID,
+      tenant_id:             env.VFARM_TENANT_ID,
+      name:                  env.VFARM_SYSTEM_NAME,
+      status:                'active',
+      phone_numbers:         vfarmPhones,
+      messaging_service_sid: env.TWILIO_MESSAGING_SERVICE_SID,
+
+      // All customer-facing text comes from .env — zero strings in code
+      onboarding_reply:      env.VFARM_ONBOARDING_REPLY,
+
+      // External API seams — all URLs and keys from .env
+      resolve_endpoint_url:  env.VFARM_RESOLVE_ENDPOINT,
+      bharag_workspace_key:  env.BHARAG_WORKSPACE_KEY,
+      media_base_url:        env.MEDIA_SERVER_URL,
+
+      // Escalation rules: trigger keywords -> BHARAG incidents.v0
+      escalation_rules: [
+        { trigger: 'escalate', subsystem: 'CUSTOMER_TWIN', engine: 'VFARM', priority: 'high' },
+        { trigger: 'fault',    subsystem: 'CUSTOMER_TWIN', engine: 'VFARM', priority: 'critical' },
+      ],
+
+      // Routing rules: intent -> connector action for IntentRouter
+      routing_rules: [
+        { intent: 'status',    action: 'status'    },
+        { intent: 'knowledge', action: 'knowledge' },
+        { intent: 'images',    action: 'images'    },
+        { intent: 'escalate',  action: 'escalate'  },
+        { intent: 'default',   action: 'default'   },
+      ],
+    },
+    // ── To register a new system: add SYSTEM2_* vars to .env and add an entry here ──
+  ];
+}
+
 
 
 export class SystemsRegistry {
@@ -45,8 +61,7 @@ export class SystemsRegistry {
   private static numberToSystemMap: Map<string, SystemConfig> = new Map();
 
   static {
-    // Seed initial systems
-    for (const sys of defaultSystems) {
+    for (const sys of buildDefaultSystems()) {
       this.registerSystem(sys);
     }
   }
@@ -54,15 +69,13 @@ export class SystemsRegistry {
   static registerSystem(config: SystemConfig): void {
     this.systems.set(config.system_id, config);
     for (const phone of config.phone_numbers) {
-      const normalizedPhone = this.normalizePhone(phone);
-      this.numberToSystemMap.set(normalizedPhone, config);
+      this.numberToSystemMap.set(phone.trim(), config);
     }
   }
 
   static resolveSystemByPhoneNumber(phoneE164: string): SystemConfig | null {
     if (!phoneE164) return null;
-    const normalized = this.normalizePhone(phoneE164);
-    const system = this.numberToSystemMap.get(normalized);
+    const system = this.numberToSystemMap.get(phoneE164.trim());
     if (!system) {
       Logger.audit({
         timestamp: new Date().toISOString(),
@@ -97,12 +110,8 @@ export class SystemsRegistry {
 
   static resetToDefault(): void {
     this.clear();
-    for (const sys of defaultSystems) {
+    for (const sys of buildDefaultSystems()) {
       this.registerSystem(sys);
     }
-  }
-
-  private static normalizePhone(phone: string): string {
-    return phone.trim();
   }
 }

@@ -5,12 +5,15 @@ import { DbClient } from '../../engine/src/db/client.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 import { TwilioClientWrapper, SendSmsParams } from '../../engine/src/transport/twilio/client.js';
 
+import { seedTestCustomers } from '../helpers/seed_customers.js';
+
 describe('Isolation Test 5: Unknown Sender Path', () => {
   const app = createApp();
 
   beforeEach(() => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
+    seedTestCustomers();
   });
 
   it('triggers tenant onboarding reply for unknown sender without guessing identity', async () => {
@@ -21,7 +24,7 @@ describe('Isolation Test 5: Unknown Sender Path', () => {
     });
 
     const unknownSenderPhone = '+15550009999'; // Sender not in known customer map
-    const validReceivingNumber = '+15550001111'; // vFarm system #1 number
+    const validReceivingNumber = '+19715885823'; // vFarm system #1 number
 
     const res = await request(app)
       .post('/webhooks/twilio/sms')

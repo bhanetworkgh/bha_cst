@@ -1,39 +1,64 @@
-import express, { Express } from 'express';
+import express, { Express, Request, Response, NextFunction } from 'express';
 import { inboundRouter } from './transport/twilio/inbound.js';
 import { outboundRouter } from './transport/twilio/outbound.js';
 import { DbClient } from './db/client.js';
+import { Logger } from './config/logger.js';
 
 export function createApp(): Express {
   const app = express();
 
-  // Twilio sends application/x-www-form-urlencoded webhooks
-  app.use(express.urlencoded({ extended: true }));
-  app.use(express.json());
+  // ── Body Parsing ────────────────────────────────────────────────────────────
+  // Twilio sends application/x-www-form-urlencoded webhooks.
+  // Limit body size to 100kb to prevent payload floods.
+  app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+  app.use(express.json({ limit: '100kb' }));
 
-  // Register routes
+  // ── Security Headers ────────────────────────────────────────────────────────
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.removeHeader('X-Powered-By');
+    next();
+  });
+
+  // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', inboundRouter);
   app.use('/webhooks', outboundRouter);
 
-  // Health check endpoint
-  app.get('/health', (_req, res) => {
+  // ── Health Check ────────────────────────────────────────────────────────────
+  // Render / AWS ALB hit this endpoint to determine if the instance is live.
+  app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', service: 'bha-cst-engine' });
   });
 
-  // Debug state endpoint — development and test environments ONLY (GAP-7 fix)
-  // Returns in-memory state snapshot. Must never be live in production.
-  app.get('/debug/state', (req, res) => {
+  // ── Debug State ─────────────────────────────────────────────────────────────
+  // In-memory state snapshot — NEVER exposed in production.
+  app.get('/debug/state', (_req: Request, res: Response) => {
     if (process.env.NODE_ENV === 'production') {
       res.status(404).json({ error: 'NOT_FOUND' });
       return;
     }
     res.status(200).json({
       conversations: DbClient.getAllConversations(),
-      transcripts: DbClient.getAllTranscripts(),
-      messages_in: DbClient.getAllMessagesIn(),
-      messages_out: DbClient.getAllMessagesOut(),
+      transcripts:   DbClient.getAllTranscripts(),
+      messages_in:   DbClient.getAllMessagesIn(),
+      messages_out:  DbClient.getAllMessagesOut(),
     });
   });
 
+  // ── 404 Catch-All ───────────────────────────────────────────────────────────
+  app.use((_req: Request, res: Response) => {
+    res.status(404).json({ error: 'NOT_FOUND' });
+  });
+
+  // ── Global Error Handler ────────────────────────────────────────────────────
+  // Must have 4 parameters for Express to treat it as an error handler.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    Logger.error(`Unhandled Express error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR' });
+  });
 
   return app;
 }

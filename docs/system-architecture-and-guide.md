@@ -249,7 +249,7 @@ interface RoutingRule {
   |---|---|---|
   | `MessageSid` | `string` | Twilio unique message ID used for deduplication. |
   | `From` | `string` (E.164) | Sender customer phone number (e.g. `+15551234567`). |
-  | `To` | `string` (E.164) | Receiving system phone number (e.g. `+15550001111`) — **Sole Inbound Tenancy Decision**. |
+  | `To` | `string` (E.164) | Receiving system phone number (e.g. `+19715885823`) — **Sole Inbound Tenancy Decision**. |
   | `Body` | `string` | Text content of inbound SMS message. |
   | `NumMedia` | `string` | Count of attached media files (e.g. `"0"`, `"1"`). |
   | `MediaUrl0`, `MediaUrl1`... | `string` (URL) | (Optional) Signed URLs for attached MMS images. |
@@ -559,7 +559,7 @@ curl -i http://localhost:3000/health
 ---
 
 ### Scenario 2: Valid Inbound SMS (Known Customer John Doe)
-Simulates an inbound SMS from a registered vFarm customer (`+15551234567`) to vFarm System #1 (`+15550001111`).
+Simulates an inbound SMS from a registered vFarm customer (`+15551234567`) to vFarm System #1 (`+19715885823`).
 ```bash
 curl -i -X POST http://localhost:3000/webhooks/twilio/sms \
   -H "Content-Type: application/x-www-form-urlencoded" \
@@ -575,7 +575,7 @@ curl -i -X POST http://localhost:3000/webhooks/twilio/sms \
 ---
 
 ### Scenario 3: Unknown Sender Path (Mandatory Security Isolation Test 5)
-Simulates an inbound SMS from an unmapped sender (`+15559998888`) to valid vFarm System #1 (`+15550001111`).
+Simulates an inbound SMS from an unmapped sender (`+15559998888`) to valid vFarm System #1 (`+19715885823`).
 ```bash
 curl -i -X POST http://localhost:3000/webhooks/twilio/sms \
   -H "Content-Type: application/x-www-form-urlencoded" \
@@ -643,7 +643,7 @@ curl -i -X POST http://localhost:3000/webhooks/twilio/delivery-status \
 ```
 **Expected Response**: `HTTP/1.1 204 No Content`
 
-> ⚠️ **`To` must be the system Twilio number** (`+15550001111`), not the customer number. This is used to resolve `tenant_id` for the audit ledger.
+> ⚠️ **`To` must be the system Twilio number** (`+19715885823`), not the customer number. This is used to resolve `tenant_id` for the audit ledger.
 
 ---
 
@@ -702,7 +702,7 @@ New `from_e164` field now appears on `messages_out` entries:
     {
       "id": "out_801e...",
       "tenant_id": "tenant-vfarm-01",
-      "from_e164": "+15550001111",
+      "from_e164": "+19715885823",
       "to_e164": "+15551234567",
       "body": "Echo: Hello vFarm Support, Bay 4 temperature check",
       "status": "sent"
