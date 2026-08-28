@@ -42,8 +42,8 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     // 2. Webhook returns HTTP 204 fast
     expect(res.status).toBe(204);
 
-    // Wait for async execution
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait for async execution (BHARAG cluster call adds latency)
+    await new Promise((r) => setTimeout(r, 3000));
 
     // 3. Verify conversation row exists in DB
     expect(DbClient.getConversationCount()).toBeGreaterThanOrEqual(1);
@@ -52,11 +52,11 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     expect(DbClient.getTranscriptCount()).toBeGreaterThanOrEqual(1);
 
     // 5. Verify IntentRouter reply was dispatched via outbound worker.
-    // Connectors are currently DISABLED — reply echoes the user's query.
+// Only BHARAG RAG connector is active — reply includes knowledge response.
     expect(outboundCall).not.toBeNull();
     const sent = outboundCall as SendSmsParams | null;
     expect(sent?.to).toBe(knownSender);
-    // "How is Bay 4 doing today?" triggers 'status' intent → echoes user query back
-    expect(sent?.body).toBe('How is Bay 4 doing today?');
+    // "How is Bay 4 doing today?" triggers 'status' intent → returns BHARAG knowledge
+    expect(sent?.body).toContain('BHARAG Knowledge');
   });
 });

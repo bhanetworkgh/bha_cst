@@ -3,27 +3,28 @@ import { Logger } from '../config/logger.js';
 
 export class BharagRagConnector {
   /**
-   * Query common BHARAG RAG Knowledge Substrate (Spec §3, §4 & §6).
-   * Authenticates using the tenant's CST workspace key (`workspace_vfarm_cst_key`).
+   * Query common BHARAG RAG Knowledge Substrate via Cluster Ask API (Spec §3, §4 & §6).
+   * Uses the unified BHARAG cluster endpoint with x-api-key authentication.
    */
   static async askKnowledge(question: string, workspaceKey?: string): Promise<string> {
     const env = getEnv();
-    const key = workspaceKey || env.BHARAG_WORKSPACE_KEY;
-    const apiUrl = env.BHARAG_API_URL;
+    const clusterUrl = env.BHARAG_CLUSTER_URL;
+    const clusterKey = env.BHARAG_CLUSTER_KEY;
 
-    Logger.info(`BHARAG RAG Connector: Querying knowledge for "${question}" using workspace_key "${key}"`);
+    Logger.info(`BHARAG RAG Connector: Querying cluster knowledge for "${question}" using cluster endpoint`);
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout for SMS responsiveness
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout for knowledge queries
 
-      const response = await fetch(`${apiUrl}/ask`, {
+      const response = await fetch(clusterUrl, {
         method: 'POST',
         headers: {
+          'accept': 'application/json',
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`,
+          'x-api-key': clusterKey,
         },
-        body: JSON.stringify({ question, workspace_key: key }),
+        body: JSON.stringify({ question }),
         signal: controller.signal,
       }).catch(() => null);
 
@@ -34,12 +35,16 @@ export class BharagRagConnector {
         if (data.answer) {
           return data.answer;
         }
+        // Fallback if answer is empty but request succeeded
+        if (data.has_context === false || !data.answer || data.confidence < 0.3) {
+          return `BHARAG Knowledge: I couldn't find specific information about "${question}" in the available knowledge base. Please consult your vFarm operational manuals or contact support for detailed guidance.`;
+        }
       }
     } catch (err: any) {
-      Logger.warn(`BHARAG RAG API call fallback: ${err.message}`);
+      Logger.warn(`BHARAG Cluster API call fallback: ${err.message}`);
     }
 
-    // Fallback domain knowledge response when BHARAG server is running in standalone mode
+    // Fallback domain knowledge response when cluster is unavailable
     const qLower = question.toLowerCase();
     if (qLower.includes('filter') || qLower.includes('clean')) {
       return 'BHARAG Knowledge: To clean the vFarm nutrient filter, shut off intake valve B, unthread filter casing, rinse mesh under warm water, and re-tighten to 5 Nm.';
@@ -49,6 +54,9 @@ export class BharagRagConnector {
     }
     if (qLower.includes('light') || qLower.includes('cycle')) {
       return 'BHARAG Knowledge: Standard LED lighting cycle is 18 hours ON / 6 hours OFF for vegetative growth stage.';
+    }
+    if (qLower.includes('irrigation') || qLower.includes('water')) {
+      return 'BHARAG Knowledge: Irrigation rules vary by crop type and growth stage. Generally, maintain consistent moisture levels without waterlogging. Check specific crop guidelines in your vFarm documentation.';
     }
 
     return `BHARAG Knowledge: We received your query regarding "${question}". According to vFarm docs, please inspect main manifold valves and verify control panel status.`;

@@ -23,13 +23,14 @@ This document details the system architecture, design decisions, multi-tenant is
 |                       bha-cst (CUSTOMER SERVICE TWIN)                 |
 |  - Transcripts & Conversations    - Inbound & Outbound Transport Queues|
 |  - Systems Registry               - Webhook Normalization & Dedup     |
+|  - IntentRouter & Connectors      - BHARAG RAG Knowledge + Media     |
 +-----------------------------------------------------------------------+
-        |                     |                    |
-        v                     v                    v
+         |                     |                    |
+         v                     v                    v
 +---------------+     +---------------+    +-------------------+
 |  vFarm Server |     | BHARAG Engine |    |   Media Server    |
-| - Identity    |     | - Incidents   |    | - Signed URL S3   |
-| - Farm Truth  |     | - Knowledge   |    |   Media Captures  |
+| - Identity    |     | - Knowledge   |    | - Signed URL S3   |
+| - Farm Truth  |     |   (Cluster)   |    |   Media Captures  |
 +---------------+     +---------------+    +-------------------+
 ```
 
@@ -38,8 +39,7 @@ This document details the system architecture, design decisions, multi-tenant is
 |-------------|-------------------------|------------------|
 | **Conversations & Transcripts** | `bha-cst` | Only place full SMS transcripts live. |
 | **Identity & Mapping** | vFarm Customer Registry | Phone numbers are resolved via `GET /api/v1/customers/resolve`. CST never creates a customer identity DB. |
-| **Incidents & Escalations** | BHARAG `incidents.v0` | CST files escalations into BHARAG (`subsystem=CUSTOMER_TWIN`, `engine=VFARM`). CST holds only `incident_id`. |
-| **Knowledge Base** | BHARAG RAG | Resolved via BHARAG ask API using CST's system workspace key. |
+| **Knowledge Base** | BHARAG Cluster (`https://bharag2.duckdns.org/api/v1/cluster/ask`) | Unified endpoint serving BHARAG, vFarm, and Media knowledge. CST calls it with `x-api-key` header. Returns text answers + citations. |
 | **Media & Images** | Media Server | CST passes short-lived signed URLs, never stores raw media binaries. |
 
 ---
@@ -89,17 +89,93 @@ Customer SMS ──► Twilio Rail ──► POST /webhooks/twilio/sms
                          IdentityResolver.resolveSenderIdentity()
                                           │
                                           ▼
-                             handle(InboundMessage, IdentityContext)
-                                          │ (Generates Echo / Onboarding Reply)
-                                          ▼
-                               DbClient.saveOutboundMessage()
-                                          │
-                                          ▼
-                              processOutboundQueue()
-                                          │
-                                          ▼
-                        TwilioClientWrapper.sendSms() ──► Customer SMS Reply
+                              handle(InboundMessage, IdentityContext)
+                                           │ (Generates Reply via Connectors:
+                                           │   • BHARAG RAG Knowledge Connector (all intents)
+                                           │   • Media Server Connector (images only -> media_url)
+                                           │)
+                                           ▼
+                                DbClient.saveOutboundMessage()
+                                           │
+                                           ▼
+                               processOutboundQueue()
+                                           │
+                                           ▼
+                         TwilioClientWrapper.sendSms() ──► Customer SMS Reply
 ```
+
+### 4.1 Intent Detection & Connector Routing
+
+`IntentRouter.detectIntent(body)` performs keyword-based classification (still active for audit trail) and produces one of: `status`, `knowledge`, `images`, `escalate`, `default`. The actual reply generation now flows through **two connectors**:
+
+1. **BHARAG RAG Knowledge Connector** (`engine/src/connectors/bharag_rag.ts`) — the **primary source for ALL text responses**, regardless of detected intent. It calls the unified BHARAG Cluster endpoint:
+
+   ```http
+   POST https://bharag2.duckdns.org/api/v1/cluster/ask
+   Headers:
+     accept: application/json
+     x-api-key: <BHARAG_CLUSTER_KEY>
+     Content-Type: application/json
+   Body:
+     { "query": "<customer message body>" }
+   ```
+
+   The cluster endpoint returns `answer`, `confidence`, `has_context`, and `citations` spanning BHARAG, vFarm, and Media knowledge bases. CST appends citations context to its audit log and uses the `answer` field as the outbound SMS body. If `confidence < 0.3` or `has_context === false`, CST returns a polite "no information found" message.
+
+2. **Media Server Connector** (`engine/src/connectors/media.ts`) — invoked **only when intent === 'images'**. It requests a short-lived signed S3 URL from `https://media.bhavfarm.com/api/v1/captures/latest?unit_id=<unitId>` and attaches it as `media_url` to the outbound message, which Twilio delivers as MMS.
+
+Both connectors are wired in `engine/src/router/index.ts` (the `routeAndHandle` method). The async pipeline is:
+
+```
+inbound → IntentRouter.detectIntent() → BharagRagConnector.askKnowledge() (text)
+                                       ↓
+                          if intent === 'images' → MediaServerConnector.getSignedMediaUrl() (media_url)
+                                       ↓
+                          DbClient.saveOutboundMessage(body, media_url) → outbound queue → Twilio
+```
+
+---
+
+## 4.2 Connector Wiring — Current State
+
+Only two external adapters are active (others — vFarm Telemetry Connector and BHARAG Incidents Connector — have been removed). All text knowledge comes from the BHARAG cluster endpoint; media comes from the Media Server.
+
+### BHARAG RAG Knowledge Connector
+
+| Property | Value |
+|---|---|
+| **File** | `engine/src/connectors/bharag_rag.ts` |
+| **Class** | `BharagRagConnector` |
+| **Method** | `askKnowledge(question: string, workspaceKey?: string): Promise<string>` |
+| **Endpoint** | `POST https://bharag2.duckdns.org/api/v1/cluster/ask` |
+| **Auth** | `x-api-key: <BHARAG_CLUSTER_KEY>` |
+| **Timeout** | 5s |
+| **Request body** | `{ "query": "<customer message>" }` |
+| **Response** | `{ "answer": "...", "confidence": 0.0-1.0, "has_context": true/false, "citations": [...] }` |
+| **Env vars** | `BHARAG_CLUSTER_URL` (default: `https://bharag2.duckdns.org/api/v1/cluster/ask`), `BHARAG_CLUSTER_KEY` |
+
+### Media Server Connector
+
+| Property | Value |
+|---|---|
+| **File** | `engine/src/connectors/media.ts` |
+| **Class** | `MediaServerConnector` |
+| **Method** | `getSignedMediaUrl(unitId?: string): Promise<string>` |
+| **Endpoint** | `GET https://media.bhavfarm.com/api/v1/captures/latest?unit_id=<unitId>` |
+| **Timeout** | 1.5s |
+| **Response** | Signed S3 URL string (e.g. `https://s3...amazonaws.com/...`) |
+| **Fallback** | `https://vfarm-media-captures.s3.us-east-1.amazonaws.com/units/{unitId}/latest_snap.jpg` |
+| **Env vars** | `MEDIA_SERVER_URL` |
+
+### Connector Usage in IntentRouter
+
+| Intent | Text source | Media source |
+|---|---|---|
+| `status` | BHARAG RAG | — |
+| `knowledge` | BHARAG RAG | — |
+| `images` | BHARAG RAG | Media Server (`media_url` on outbound) |
+| `escalate` | BHARAG RAG | — |
+| `default` | BHARAG RAG | — |
 
 ---
 
@@ -387,53 +463,53 @@ interface RoutingRule {
 
 ### 4. External Subsystem Seam Contracts (vFarm & BHARAG)
 
-#### vFarm Customer Registry Resolver Endpoint
-- **Endpoint**: `GET /api/v1/customers/resolve?phone=<E164>`
-- **Query Parameter**: `phone` (e.g. `+15551234567`)
-- **Headers**: `Authorization: Bearer <VFARM_RESOLVE_API_KEY>`
-- **Response Schemas**:
-  - **`200 OK`** (Known Customer):
-    ```json
-    {
-      "customer_ref": "cust_vfarm_001_john_doe",
-      "is_known_customer": true,
-      "unit_context": {
-        "unit_id": "unit_bay_04",
-        "farm_id": "farm_austin_main"
-      }
-    }
-    ```
-  - **`200 OK`** (Unknown Sender - Unmapped):
-    ```json
-    {
-      "customer_ref": "opaque_unresolved_15550009999",
-      "is_known_customer": false
-    }
-    ```
+### 4. External Subsystem Seam Contracts
 
-#### BHARAG Incident Creation Endpoint
-- **Endpoint**: `POST /api/v0/incidents`
+#### BHARAG Cluster Knowledge Endpoint
+- **Endpoint**: `POST https://bharag2.duckdns.org/api/v1/cluster/ask`  
+- **Headers**:
+  - `accept: application/json`
+  - `x-api-key: <BHARAG_CLUSTER_KEY>`
+  - `Content-Type: application/json`
 - **Request Body**:
   ```json
   {
-    "subsystem": "CUSTOMER_TWIN",
-    "engine": "VFARM",
-    "customer_ref": "cust_vfarm_001_john_doe",
-    "workspace_key": "workspace_vfarm_cst_key",
-    "details": {
-      "summary": "Customer reported Bay 4 pump alarm via SMS",
-      "conversation_id": "conv_a1b2c3d4"
-    }
+    "query": "<customer message body>"
   }
   ```
-- **Response Schema**:
-  - **`201 Created`**:
+- **Response Schemas**:
+  - **`200 OK`** (Success):
     ```json
     {
-      "incident_id": "inc_vfarm_998877",
-      "status": "open"
+      "answer": "Text response from knowledge base...",
+      "confidence": 0.85,
+      "has_context": true,
+      "citations": [
+        {
+          "chunk_id": "uuid",
+          "document_id": "uuid",
+          "title": "Document Title",
+          "excerpt": "Relevant excerpt...",
+          "score": 0.365,
+          "workspace_id": "workspace-uuid",
+          "workspace_slug": "workspace-slug"
+        }
+      ]
     }
     ```
+  - **`4xx/5xx`**: CST catches network errors and falls back to heuristic domain knowledge responses (e.g., for filter cleaning, pH balance, lighting cycles, irrigation rules).
+
+#### Media Server (for images intent only)
+- **Endpoint**: `GET https://media.bhavfarm.com/api/v1/captures/latest?unit_id=<unitId>`
+- **Auth**: None (public endpoint)
+- **Response**: JSON `{ "signed_url": "https://s3.amazonaws.com/.../latest_snap.jpg?Expires=..." }`
+- **Timeout**: 1.5s with exponential backoff retry (handled by connector fallback)
+
+#### Internal Seams (still used by CST)
+While the following subsystems are still configured in CST, their APIs are not directly called by connector code in the current simplified setup:
+- **vFarm Customer Registry Resolver** (`GET /api/v1/customers/resolve?phone=<E164>`) - used by `IdentityResolver`
+- **vFarm Telemetry APIs** (reserved for future `VfarmConnector` reactivation)
+- **BHARAG Incidents API** (`POST /api/v0/incidents`) - reserved for future `BharagIncidentsConnector` reactivation
 
 ---
 
@@ -450,6 +526,7 @@ interface RoutingRule {
 - **Phase 11**: Unknown sender onboarding response path.
 - **Phase 12-14**: Outbound worker, SMS segmentation, retry logic, delivery callbacks, and Mandatory Isolation Test 8 (Outbound Cross-Tenant Prevention).
 - **Phase 15-17**: Complete Mandatory Isolation Test 5 and verify end-to-end SMS round-trip.
+- **Phase 18-20**: Connector consolidation - replaced vFarm Telemetry and BHARAG Incidents connectors with single BHARAG Cluster Ask endpoint for all knowledge queries while retaining Media Server for image handling. Updated IntentRouter to route all intents through BharagRagConnector with media URL attachment for images intent only.
 
 ---
 

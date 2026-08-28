@@ -127,9 +127,14 @@ npm start
 
 > **Note**: For local manual testing without a live Twilio signature, set header `-H "x-test-bypass-signature: true"`.
 
-### 1. Health Check
+### 1. Health Check & Debug State
 ```bash
+# Check server health
 curl -i http://localhost:3000/health
+
+# Inspect in-memory messages in, messages out, transcripts, and conversations
+# (Requires NODE_ENV=development in .env)
+curl -i http://localhost:3000/debug/state
 ```
 
 ### 2. Inbound SMS — Known Customer Status Query

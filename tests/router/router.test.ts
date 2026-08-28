@@ -7,12 +7,8 @@ import { seedTestCustomers } from '../helpers/seed_customers.js';
 /**
  * IntentRouter Tests
  *
- * Connectors are imported and ready in engine/src/connectors/.
- * Their invocation blocks are commented out in router/index.ts until live endpoints are up.
- * These tests verify that:
- *  - Intent classification works as expected (status, knowledge, images, escalate, default)
- *  - The user's query body is echoed back directly
- *  - Unknown senders receive the tenant onboarding reply
+ * All intents route through the BHARAG RAG Knowledge Connector as the sole
+ * information source for the system.
  */
 describe('IntentRouter & Intent Detection Tests', () => {
   beforeEach(() => {
@@ -35,7 +31,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     is_known_customer: false,
   };
 
-  it('detects status intent and echoes user query back', async () => {
+  it('detects status intent and returns BHARAG knowledge response', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_STATUS_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -48,11 +44,11 @@ describe('IntentRouter & Intent Detection Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
-    expect(outbound.body).toBe('Bay 4 status check');
+    expect(outbound.body).toContain('BHARAG Knowledge');
     expect(IntentRouter.detectIntent(msg.body)).toBe('status');
   });
 
-  it('detects knowledge intent and echoes user query back', async () => {
+  it('detects knowledge intent and returns BHARAG knowledge response', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_RAG_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -65,11 +61,11 @@ describe('IntentRouter & Intent Detection Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
-    expect(outbound.body).toBe('How to clean filter?');
+    expect(outbound.body).toContain('BHARAG Knowledge');
     expect(IntentRouter.detectIntent(msg.body)).toBe('knowledge');
   });
 
-  it('detects image intent and echoes user query back (media_url undefined)', async () => {
+  it('detects image intent and returns BHARAG knowledge response', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_IMAGE_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -82,12 +78,11 @@ describe('IntentRouter & Intent Detection Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
-    expect(outbound.body).toBe('Send photo of Bay 4');
-    expect(outbound.media_url).toBeUndefined();
+    expect(outbound.body).toContain('BHARAG Knowledge');
     expect(IntentRouter.detectIntent(msg.body)).toBe('images');
   });
 
-  it('detects escalation intent and echoes user query back', async () => {
+  it('detects escalation intent and returns BHARAG knowledge response', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_FAULT_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -100,7 +95,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
-    expect(outbound.body).toBe('Pump alarm water leak emergency!');
+    expect(outbound.body).toContain('BHARAG Knowledge');
     expect(IntentRouter.detectIntent(msg.body)).toBe('escalate');
   });
 

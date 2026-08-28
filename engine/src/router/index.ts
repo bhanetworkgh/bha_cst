@@ -3,8 +3,7 @@ import { SystemsRegistry } from '../systems/registry.js';
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 
-// ── Source Connectors (Imported and ready for activation) ────────────────────
-import { VfarmConnector }           from '../connectors/vfarm.js';
+// ── Source Connectors ──────────────────────────────────────────────────────────
 import { BharagRagConnector }       from '../connectors/bharag_rag.js';
 import { BharagIncidentsConnector }  from '../connectors/bharag_incidents.js';
 import { MediaServerConnector }     from '../connectors/media.js';
@@ -13,7 +12,7 @@ export type DetectedIntent = 'status' | 'knowledge' | 'images' | 'escalate' | 'd
 
 export class IntentRouter {
   /**
-   * Detect intent from message text using keyword matching (Spec §2 & §4).
+   * Detect intent from message text using keyword matching.
    * Intent classification remains active to audit incoming queries.
    */
   static detectIntent(body: string, _systemConfig?: SystemConfig | null): DetectedIntent {
@@ -24,7 +23,7 @@ export class IntentRouter {
     if (faultKeywords.some((kw) => text.includes(kw))) return 'escalate';
 
     // 2. Image / photo requests
-    const imageKeywords = ['photo', 'image', 'picture', 'snap', 'look', 'view', 'capture', 'camera'];
+    const imageKeywords = ['photo', 'image', 'picture', 'snap', 'look', 'view', 'capture', 'camera', 'send'];
     if (imageKeywords.some((kw) => text.includes(kw))) return 'images';
 
     // 3. Status & telemetry inquiries
@@ -39,12 +38,10 @@ export class IntentRouter {
   }
 
   /**
-   * Main Router Execution Pipeline (Spec §4).
+   * Main Router Execution Pipeline.
    *
-   * CONNECTOR INTEGRATION STATUS:
-   *   All 4 connectors are compiled and ready in engine/src/connectors/.
-   *   Their execution blocks are commented out below until external servers are live.
-   *   Currently, the router echoes back ONLY the message received from the user.
+   * Primary source: BHARAG RAG Knowledge Connector (text responses)
+   * Media source: Media Server Connector (image attachments for images intent)
    */
   static async routeAndHandle(
     msg: InboundMessage,
@@ -92,56 +89,26 @@ export class IntentRouter {
         intent,
       });
 
-      // ── Connector Executions (Commented out; sends back user's query) ──────
-      switch (intent) {
+      // ── BHARAG RAG Knowledge Connector (primary source for all text responses) ──
+      replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
 
-        // ── Source 1: vFarm Telemetry Connector ────────────────────────────
-        case 'status': {
-          // TODO: Uncomment when vFarm Server Read API is live
-          // const statusRes = await VfarmConnector.getUnitStatus(identity.customer_ref, identity.unit_context);
-          // replyBody = statusRes.text;
-          replyBody = msg.body;
-          break;
-        }
+      // ── BHARAG Incidents Connector (for escalate intent) ───────────────────────
+      if (intent === 'escalate') {
+        const incidentRes = await BharagIncidentsConnector.fileIncident({
+          customerRef:    identity.customer_ref,
+          conversationId: conversation_id,
+          summary:        `Customer escalation: "${msg.body}"`,
+          workspaceKey:   systemConfig?.bharag_workspace_key,
+          priority:       'high',
+        });
+        Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
+      }
 
-        // ── Source 2: BHARAG RAG Knowledge Connector ────────────────────────
-        case 'knowledge': {
-          // TODO: Uncomment when BHARAG Ask API is live
-          // replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
-          replyBody = msg.body;
-          break;
-        }
-
-        // ── Source 4: Media Server Signed S3 URL Connector ──────────────────
-        case 'images': {
-          // TODO: Uncomment when Media Server API is live
-          // const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
-          // mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
-          // replyBody = `vFarm Media Capture for ${unitId}: Photo retrieved successfully.`;
-          replyBody = msg.body;
-          break;
-        }
-
-        // ── Source 3: BHARAG Incidents.v0 Ticket Connector ─────────────────
-        case 'escalate': {
-          // TODO: Uncomment when BHARAG Incidents API is live
-          // const incidentRes = await BharagIncidentsConnector.fileIncident({
-          //   customerRef:    identity.customer_ref,
-          //   conversationId: conversation_id,
-          //   summary:        `Customer escalation: "${msg.body}"`,
-          //   workspaceKey:   systemConfig?.bharag_workspace_key,
-          //   priority:       'high',
-          // });
-          // replyBody = `vFarm Support Alert: Incident ticket #${incidentRes.incident_id} filed in BHARAG. An engineer has been paged.`;
-          replyBody = msg.body;
-          break;
-        }
-
-        case 'default':
-        default: {
-          replyBody = msg.body;
-          break;
-        }
+      // ── Media Server Connector (for images intent) ──────────────────────────────
+      if (intent === 'images') {
+        const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
+        mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
+        Logger.info(`Media Server: Fetched signed URL for unit ${unitId}: ${mediaUrl}`);
       }
     }
 
@@ -166,16 +133,10 @@ export class IntentRouter {
       tool_or_route: 'IntentRouter.routeAndHandle()',
       outcome:    'ok',
       reason:     identity.is_known_customer
-        ? `Intent "${this.detectIntent(msg.body)}" processed (user message echoed)`
+        ? `Intent "${this.detectIntent(msg.body)}" processed via BHARAG RAG + Media Server + Incidents`
         : 'Onboarding reply sent',
       correlation_id: msg.correlation_id,
     });
-
-    // Suppress unused imports check for connectors until activated
-    void VfarmConnector;
-    void BharagRagConnector;
-    void BharagIncidentsConnector;
-    void MediaServerConnector;
 
     return savedOutbound;
   }
