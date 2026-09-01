@@ -35,7 +35,27 @@ bha-cst/
 - **Knowledge**: BHARAG RAG ask endpoint.
 - **Media**: Signed URLs from Media Server.
 
-## Tenancy Isolation (GAP-AUTH-01 Compliance)
+## Tenancy Isolation & Security Rules (GAP-AUTH-01 Compliance)
+
+> **1. Organization Boundary**: Organization is the top-level tenant boundary.
+> **2. Workspaces/Projects**: Workspaces/projects exist inside an organization.
+> **3. Workspace Isolation**: Workspace/project access cannot cross organization boundaries.
+> **4. Identity Rule**: Caller phone numbers are routing hints, not authentication credentials.
+> **5. Known/Unknown Rule**: Only onboarded users receive personalized/account-level information.
+> **6. Server-Side Roles**: Roles are server-resolved (`owner`, `manager`, `tech`).
+> **7. Role Matrix**: Each role has explicit permissions.
+> **8. Step-Up Rule**: Sensitive write/action operations require step-up authentication regardless of role.
+> **9. BHARAG Cluster**: CST uses BHARAG Cluster Search rather than selecting an arbitrary workspace.
+> **10. Server Scope Authority**: Organization/workspace scope cannot be supplied or overridden by customer or LLM.
+> **11. Incidents Ownership**: Incidents remain owned by BHARAG `incidents.v0`.
+> **12. Fail Closed**: Unresolved or conflicting tenancy scope produces an immediate refusal.
+
+### Roles & Authorization Model
+- **owner**: Full read, view status, BHARAG cluster search, file incidents, manage workspace users & permissions, perform sensitive operations (**with step-up auth only**).
+- **manager**: Read context, view status, BHARAG cluster search, file incidents, operational actions (**with step-up auth only**).
+- **tech**: Read context, view status, BHARAG cluster search, investigate issues, file incidents. Cannot manage users/roles or execute control actions.
+- **unknown**: Safe generic onboarding response (`onboarding_reply`); zero account/device access.
+
 1. **Receiving Phone Number**: For inbound SMS, the receiving `To` phone number is the sole server-side tenancy decision.
 2. **Twilio Signature Verification**: Verified BEFORE any database access.
 3. **Fail Closed**: Any unknown receiving number or missing tenant scope produces an immediate refusal with structured audit logs.

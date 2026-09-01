@@ -4,7 +4,28 @@
 
 ---
 
-## 🏗️ System Architecture & Boundaries
+## 🔒 Security, Identity & Tenancy Rules
+
+> **1. Organization Boundary**: Organization is the top-level tenant boundary.
+> **2. Workspaces/Projects**: Workspaces/projects exist inside an organization.
+> **3. Workspace Isolation**: Workspace/project access cannot cross organization boundaries.
+> **4. Identity Rule**: Caller phone numbers are routing hints, not authentication credentials.
+> **5. Known/Unknown Rule**: Only onboarded users receive personalized/account-level information.
+> **6. Server-Side Roles**: Roles are server-resolved (`owner`, `manager`, `tech`).
+> **7. Role Matrix**: Each role has explicit permissions.
+> **8. Step-Up Rule**: Sensitive write/action operations require step-up authentication regardless of role.
+> **9. BHARAG Cluster**: CST uses BHARAG Cluster Search rather than selecting an arbitrary workspace.
+> **10. Server Scope Authority**: Organization/workspace scope cannot be supplied or overridden by customer or LLM.
+> **11. Incidents Ownership**: Incidents remain owned by BHARAG `incidents.v0`.
+> **12. Fail Closed**: Unresolved or conflicting tenancy scope produces an immediate refusal.
+
+### Roles & Authorization Model
+* **owner**: Full read, view status, BHARAG cluster search, file incidents, manage workspace users & permissions, perform sensitive operations (**with step-up auth only**).
+* **manager**: Read context, view status, BHARAG cluster search, file incidents, operational actions (**with step-up auth only**).
+* **tech**: Read context, view status, BHARAG cluster search, investigate issues, file incidents. Cannot manage users/roles or execute control actions.
+* **unknown**: Safe generic onboarding response (`systemConfig.onboarding_reply`); zero account/device access.
+
+---
 
 Per `2026-08-26-spec-bha-cst-architecture-v1.0.md`, `bha-cst` maintains strict system boundaries:
 

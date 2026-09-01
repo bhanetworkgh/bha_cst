@@ -20,11 +20,13 @@ describe('Isolation Test 8: Outbound Cross-Tenant Prevention', () => {
     // Register a minimal Tenant B fixture for cross-tenant isolation tests.
     // This replaces the old hardcoded Tenant B entry that was removed from the default registry.
     SystemsRegistry.registerSystem({
-      system_id: 'system-tenant-b-02',
-      tenant_id: 'tenant-b-02',
-      name: 'Tenant B (Test Fixture)',
-      status: 'active',
-      phone_numbers: ['+15559992222'],
+      system_id:       'system-tenant-b-02',
+      organization_id: 'tenant-b-02',
+      tenant_id:       'tenant-b-02',
+      workspace_id:    'ws-tenant-b-main',
+      name:            'Tenant B (Test Fixture)',
+      status:          'active',
+      phone_numbers:   ['+15559992222'],
       onboarding_reply: 'Welcome to Tenant B Support!',
     });
   });

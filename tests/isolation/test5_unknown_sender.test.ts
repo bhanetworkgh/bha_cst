@@ -7,7 +7,7 @@ import { TwilioClientWrapper, SendSmsParams } from '../../engine/src/transport/t
 
 import { seedTestCustomers } from '../helpers/seed_customers.js';
 
-describe('Isolation Test 5: New Contact Auto-Registration Path', () => {
+describe('Isolation Test 5: Unknown Sender Safe Onboarding Response Path', () => {
   const app = createApp();
 
   beforeEach(() => {
@@ -15,7 +15,6 @@ describe('Isolation Test 5: New Contact Auto-Registration Path', () => {
     SystemsRegistry.resetToDefault();
     seedTestCustomers();
 
-    // Mock the BHARAG RAG connector fetch so connectors don't hit real network
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return {
         ok: true,
@@ -28,14 +27,14 @@ describe('Isolation Test 5: New Contact Auto-Registration Path', () => {
     vi.restoreAllMocks();
   });
 
-  it('auto-registers a new sender and serves them via connectors without a wall', async () => {
+  it('serves unknown sender a safe generic onboarding reply without auto-registering customer data', async () => {
     let sentMessageParams: SendSmsParams | null = null;
     TwilioClientWrapper.setMockHandler(async (params: SendSmsParams) => {
       sentMessageParams = params;
       return { sid: 'SM_OUTBOUND_TEST5', status: 'queued' };
     });
 
-    const newSenderPhone = '+15550009999'; // Sender not pre-registered
+    const unknownSenderPhone = '+15550009999'; // Sender not pre-registered
     const validReceivingNumber = '+19715885823'; // vFarm system #1 number
 
     const res = await request(app)
@@ -44,7 +43,7 @@ describe('Isolation Test 5: New Contact Auto-Registration Path', () => {
       .type('form')
       .send({
         MessageSid: 'SM_TEST_5_NEW_CONTACT',
-        From: newSenderPhone,
+        From: unknownSenderPhone,
         To: validReceivingNumber,
         Body: 'Hello, I need help with my new farm',
       });
@@ -54,18 +53,18 @@ describe('Isolation Test 5: New Contact Auto-Registration Path', () => {
     // Wait briefly for async handler execution
     await new Promise((r) => setTimeout(r, 150));
 
-    // Verify outbound reply was sent (real connector response, not an onboarding wall)
+    // 1. Verify outbound reply was sent containing the safe onboarding reply
     expect(sentMessageParams).not.toBeNull();
     const sent = sentMessageParams as SendSmsParams | null;
-    expect(sent?.to).toBe(newSenderPhone);
-    expect(sent?.body).toBeTruthy();
+    expect(sent?.to).toBe(unknownSenderPhone);
+    const systemConfig = SystemsRegistry.getSystemByTenantId('tenant-vfarm-01');
+    expect(sent?.body).toBe(systemConfig?.onboarding_reply);
 
-    // Verify the new sender was auto-registered as a customer
-    const autoRecord = DbClient.lookupCustomerByPhone(newSenderPhone, 'tenant-vfarm-01');
-    expect(autoRecord).not.toBeNull();
-    expect(autoRecord?.customer_ref).toMatch(/^auto_tenant-vfarm-01_/);
+    // 2. Verify the unknown sender was NOT auto-registered in the customer registry
+    const customerRecord = DbClient.lookupCustomerByPhone(unknownSenderPhone, 'tenant-vfarm-01');
+    expect(customerRecord).toBeNull();
 
-    // Verify conversation and message transcript were stored
+    // 3. Verify conversation transcript was logged under opaque reference
     expect(DbClient.getConversationCount()).toBe(1);
     const storedMsg = DbClient.getInboundMessage('SM_TEST_5_NEW_CONTACT');
     expect(storedMsg).toBeDefined();

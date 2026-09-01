@@ -77,14 +77,26 @@ pattern and extend the vocab. CS Twin is a new front door. This guide is that re
 | the shared resolver middleware | one shared scope middleware in engine/, used by BOTH front doors |
 
 The transport door is special and it is yours, so be precise about it: an inbound SMS carries
-no JWT. Its identity chain is `receiving number -> systems registry -> tenant`, then
-`sender phone -> that tenant's resolve endpoint -> customer_ref`. Two hard rules fall out:
+no JWT. Its identity chain is receiving number -> systems registry -> tenant, then sender phone -> customer registry -> user/person -> role -> permissions.
 
-- The receiving-number lookup IS the tenancy decision for inbound. If the number is not in the
-  systems registry: refuse (log, no reply). Never guess a default tenant.
-- The Twilio signature check is part of isolation, not just security hygiene: an unsigned or
-  bad-signature webhook is an unauthenticated caller trying to write into a tenant's
-  conversation store. Reject before touching anything.
+> **1. Organization Boundary**: Organization is the top-level tenant boundary.
+> **2. Workspaces/Projects**: Workspaces/projects exist inside an organization.
+> **3. Workspace Isolation**: Workspace/project access cannot cross organization boundaries.
+> **4. Identity Rule**: Caller phone numbers are routing hints, not authentication credentials.
+> **5. Known/Unknown Rule**: Only onboarded users receive personalized/account-level information.
+> **6. Server-Side Roles**: Roles are server-resolved (`owner`, `manager`, `tech`).
+> **7. Role Matrix**: Each role has explicit permissions.
+> **8. Step-Up Rule**: Sensitive write/action operations require step-up authentication regardless of role.
+> **9. BHARAG Cluster**: CST uses BHARAG Cluster Search rather than selecting an arbitrary workspace.
+> **10. Server Scope Authority**: Organization/workspace scope cannot be supplied or overridden by customer or LLM.
+> **11. Incidents Ownership**: Incidents remain owned by BHARAG `incidents.v0`.
+> **12. Fail Closed**: Unresolved or conflicting tenancy scope produces an immediate refusal.
+
+### Roles & Server-Side Authorization
+- **owner**: Full read, view status, BHARAG cluster search, file incidents, manage workspace users & permissions, perform sensitive operations (**with step-up auth only**). Cannot cross organizations or bypass step-up.
+- **manager**: Read context, view status, BHARAG cluster search, file incidents, operational actions (**with step-up auth only**). Cannot manage org ownership/roles or cross organizations.
+- **tech**: Read context, view status, BHARAG cluster search, investigate issues, file incidents. Cannot manage users/roles or execute unrestricted sensitive actions.
+- **unknown**: Safe generic onboarding response (`onboarding_reply`); zero account/device access.
 
 Everything downstream is stamped: every row in conversations, messages, messages_in,
 messages_out carries `tenant_id`, and every query filters by the server-resolved tenant, never

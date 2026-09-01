@@ -10,24 +10,33 @@ import { DbClient } from '../../engine/src/db/client.js';
 
 export function seedTestCustomers(): void {
   DbClient.seedCustomer({
-    tenant_id:    'tenant-vfarm-01',
-    phone_e164:   '+923082113844',
-    customer_ref: 'cust_vfarm_003_test_user',
-    unit_id:      'unit_bay_01',
-    farm_id:      'farm_austin_main',
+    organization_id: 'tenant-vfarm-01',
+    tenant_id:       'tenant-vfarm-01',
+    workspace_id:    'ws-vfarm-main',
+    phone_e164:      '+923082113844',
+    customer_ref:    'cust_vfarm_003_test_user',
+    role:            'owner',
+    unit_id:         'unit_bay_01',
+    farm_id:         'farm_austin_main',
   });
   DbClient.seedCustomer({
-    tenant_id:    'tenant-vfarm-01',
-    phone_e164:   '+15551234567',
-    customer_ref: 'cust_vfarm_001_john_doe',
-    unit_id:      'unit_bay_04',
-    farm_id:      'farm_austin_main',
+    organization_id: 'tenant-vfarm-01',
+    tenant_id:       'tenant-vfarm-01',
+    workspace_id:    'ws-vfarm-main',
+    phone_e164:      '+15551234567',
+    customer_ref:    'cust_vfarm_001_john_doe',
+    role:            'manager',
+    unit_id:         'unit_bay_04',
+    farm_id:         'farm_austin_main',
   });
   DbClient.seedCustomer({
-    tenant_id:    'tenant-vfarm-01',
-    phone_e164:   '+15558887777',
-    customer_ref: 'cust_vfarm_002_alice_smith',
-    unit_id:      'unit_bay_12',
-    farm_id:      'farm_austin_main',
+    organization_id: 'tenant-vfarm-01',
+    tenant_id:       'tenant-vfarm-01',
+    workspace_id:    'ws-vfarm-main',
+    phone_e164:      '+15558887777',
+    customer_ref:    'cust_vfarm_002_alice_smith',
+    role:            'tech',
+    unit_id:         'unit_bay_12',
+    farm_id:         'farm_austin_main',
   });
 }

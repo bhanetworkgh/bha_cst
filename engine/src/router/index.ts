@@ -2,6 +2,7 @@ import { InboundMessage, IdentityContext, OutboundMessage, SystemConfig } from '
 import { SystemsRegistry } from '../systems/registry.js';
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
+import { StepUpAuthService } from '../identity/stepup.js';
 
 // ── Source Connectors ──────────────────────────────────────────────────────────
 import { BharagRagConnector }       from '../connectors/bharag_rag.js';
@@ -38,30 +39,58 @@ export class IntentRouter {
   }
 
   /**
-   * Main Router Execution Pipeline.
+   * Check if message text attempts user or role management operations.
+   */
+  private static isUserManagementAttempt(text: string): boolean {
+    const keywords = ['grant role', 'change role', 'add user', 'set permission', 'promote user', 'demote user', 'make owner', 'make admin'];
+    return keywords.some((kw) => text.includes(kw));
+  }
+
+  /**
+   * Check if message text attempts operational control actions.
+   */
+  private static isControlAttempt(text: string): boolean {
+    const keywords = ['turn off', 'turn on', 'pump off', 'valve open', 'setpoint', 'override', 'reboot', 'reset'];
+    return keywords.some((kw) => text.includes(kw));
+  }
+
+  /**
+   * Main Router Execution Pipeline (8-Step Architecture):
    *
-   * Primary source: BHARAG RAG Knowledge Connector (text responses)
-   * Media source: Media Server Connector (image attachments for images intent)
+   * 1. Verify Organization/Tenant scope.
+   * 2. Resolve Workspace/Project scope.
+   * 3. Resolve Customer Identity.
+   * 4. Resolve Server-side Role & Permissions (owner / manager / tech).
+   * 5. Unknown User Gate -> Safe Onboarding Reply.
+   * 6. Role Permission Boundary Check -> Reject unauthorized operations per role.
+   * 7. Step-Up Authentication Seam -> Sensitive actions require explicit step-up.
+   * 8. Dispatch to Connectors (BHARAG Cluster Ask, Media Server, BHARAG Incidents).
    */
   static async routeAndHandle(
     msg: InboundMessage,
     identity: IdentityContext
   ): Promise<OutboundMessage> {
-    const systemConfig = SystemsRegistry.getSystemByTenantId(identity.tenant_id);
-    const onboardingReply = systemConfig?.onboarding_reply ?? 'Welcome to Support!';
+    const systemConfig = SystemsRegistry.getSystemByOrganizationId(identity.organization_id)
+      || SystemsRegistry.getSystemByTenantId(identity.tenant_id);
+    const onboardingReply = systemConfig?.onboarding_reply ?? 'Welcome to vFarm Support! Contact our onboarding team to link your phone number to your farm.';
 
-    // Create or fetch conversation record
+    const orgId = identity.organization_id || identity.tenant_id;
+    const wsId = identity.workspace_id || 'ws-vfarm-main';
+
+    // Create or fetch conversation record scoped to Organization and Workspace
     const { conversation_id } = await DbClient.getOrCreateConversation(
-      identity.tenant_id,
+      orgId,
       identity.system_id,
-      identity.customer_ref
+      identity.customer_ref,
+      orgId,
+      wsId
     );
 
     // Persist inbound message to transcript
     await DbClient.addMessageToTranscript({
       message_id:   msg.message_id,
       conversation_id,
-      tenant_id:    identity.tenant_id,
+      tenant_id:    orgId,
       direction:    'inbound',
       from_e164:    msg.from_e164,
       to_e164:      msg.to_e164,
@@ -74,28 +103,128 @@ export class IntentRouter {
     let mediaUrl: string | undefined;
 
     const intent = this.detectIntent(msg.body, systemConfig);
-    Logger.info(`IntentRouter: Detected intent "${intent}" for ${identity.customer_ref}`, {
-      tenant_id:       identity.tenant_id,
+    const msgText = (msg.body || '').toLowerCase();
+
+    Logger.info(`IntentRouter: Processing intent "${intent}" for actor ${identity.customer_ref} (org=${orgId}, ws=${wsId}, role=${identity.role})`, {
+      organization_id: orgId,
+      tenant_id:       orgId,
+      workspace_id:    wsId,
       conversation_id,
       intent,
+      role:            identity.role,
     });
 
-    // ── BHARAG RAG Knowledge Connector (primary source for all text responses) ──
+    // ── STEP 5: UNKNOWN USER GATE ─────────────────────────────────────────────
+    if (!identity.is_known_customer) {
+      Logger.audit({
+        timestamp:     new Date().toISOString(),
+        tenant_id:     orgId,
+        actor:         identity.customer_ref,
+        role:          'unknown_user',
+        entry_point:   'webhook',
+        tool_or_route: 'IntentRouter.routeAndHandle()',
+        outcome:       'ok',
+        reason:        'Unknown sender served safe generic onboarding response',
+        correlation_id: msg.correlation_id,
+      });
+
+      const outboundMessage: OutboundMessage = {
+        tenant_id:      orgId,
+        to_e164:        msg.from_e164,
+        body:           onboardingReply,
+        correlation_id: msg.correlation_id,
+        status:         'pending',
+      };
+
+      return await DbClient.saveOutboundMessage(outboundMessage);
+    }
+
+    // ── STEP 6: ROLE PERMISSION BOUNDARY CHECKS ──────────────────────────────
+
+    // User/Role Management Attempts via SMS Rail: Always blocked (admin panel only)
+    if (this.isUserManagementAttempt(msgText)) {
+      Logger.audit({
+        timestamp:     new Date().toISOString(),
+        tenant_id:     orgId,
+        actor:         identity.customer_ref,
+        role:          identity.role,
+        entry_point:   'webhook',
+        tool_or_route: 'IntentRouter.routeAndHandle()',
+        outcome:       'refused',
+        reason:        `User management attempt via SMS refused for role ${identity.role}`,
+        correlation_id: msg.correlation_id,
+      });
+
+      const outboundMessage: OutboundMessage = {
+        tenant_id:      orgId,
+        to_e164:        msg.from_e164,
+        body:           'User and role management operations are restricted to the Organization Admin Panel.',
+        correlation_id: msg.correlation_id,
+        status:         'pending',
+      };
+      return await DbClient.saveOutboundMessage(outboundMessage);
+    }
+
+    // Tech Role attempting Control Actions: Refused by role boundary
+    if (identity.role === 'tech' && this.isControlAttempt(msgText)) {
+      Logger.audit({
+        timestamp:     new Date().toISOString(),
+        tenant_id:     orgId,
+        actor:         identity.customer_ref,
+        role:          identity.role,
+        entry_point:   'webhook',
+        tool_or_route: 'IntentRouter.routeAndHandle()',
+        outcome:       'refused',
+        reason:        'Tech role is not authorized to execute equipment control operations',
+        correlation_id: msg.correlation_id,
+      });
+
+      const outboundMessage: OutboundMessage = {
+        tenant_id:      orgId,
+        to_e164:        msg.from_e164,
+        body:           "Role 'tech' is not authorized to execute control operations. Please contact a workspace manager or owner.",
+        correlation_id: msg.correlation_id,
+        status:         'pending',
+      };
+      return await DbClient.saveOutboundMessage(outboundMessage);
+    }
+
+    // ── STEP 7: STEP-UP AUTHENTICATION SEAM FOR SENSITIVE WRITE ACTIONS ──────
+    if (StepUpAuthService.isSensitiveAction(msg.body, intent)) {
+      const stepUpResult = StepUpAuthService.verifyStepUp(identity);
+      if (!stepUpResult.verified) {
+        replyBody = stepUpResult.message || 'Sensitive operations require step-up authentication.';
+        
+        const outboundMessage: OutboundMessage = {
+          tenant_id:      orgId,
+          to_e164:        msg.from_e164,
+          body:           replyBody,
+          correlation_id: msg.correlation_id,
+          status:         'pending',
+        };
+
+        return await DbClient.saveOutboundMessage(outboundMessage);
+      }
+    }
+
+    // ── STEP 8: DISPATCH TO CONNECTORS (BHARAG Cluster, Media, Incidents) ─────
+
+    // BHARAG RAG Knowledge Connector (queries cluster ask endpoint using server-resolved workspace key)
     replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
 
-    // ── BHARAG Incidents Connector (for escalate intent) ───────────────────────
+    // BHARAG Incidents Connector (escalate intent)
     if (intent === 'escalate') {
       const incidentRes = await BharagIncidentsConnector.fileIncident({
         customerRef:    identity.customer_ref,
         conversationId: conversation_id,
-        summary:        `Customer escalation: "${msg.body}"`,
+        summary:        `Customer escalation [org=${orgId}, ws=${wsId}]: "${msg.body}"`,
         workspaceKey:   systemConfig?.bharag_workspace_key,
         priority:       'high',
       });
       Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
     }
 
-    // ── Media Server Connector (for images intent) ──────────────────────────────
+    // Media Server Connector (images intent)
     if (intent === 'images') {
       const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
       mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
@@ -104,7 +233,7 @@ export class IntentRouter {
 
     // Enqueue outbound reply for transport worker
     const outboundMessage: OutboundMessage = {
-      tenant_id:      identity.tenant_id,
+      tenant_id:      orgId,
       to_e164:        msg.from_e164,
       body:           replyBody,
       media_url:      mediaUrl,
@@ -115,14 +244,14 @@ export class IntentRouter {
     const savedOutbound = await DbClient.saveOutboundMessage(outboundMessage);
 
     Logger.audit({
-      timestamp:  new Date().toISOString(),
-      tenant_id:  identity.tenant_id,
-      actor:      identity.customer_ref,
-      role:       'customer',
-      entry_point: 'webhook',
+      timestamp:      new Date().toISOString(),
+      tenant_id:      orgId,
+      actor:          identity.customer_ref,
+      role:           identity.role || 'known_customer',
+      entry_point:   'webhook',
       tool_or_route: 'IntentRouter.routeAndHandle()',
-      outcome:    'ok',
-      reason:     `Intent "${intent}" processed via BHARAG RAG + Media Server + Incidents`,
+      outcome:        'ok',
+      reason:         `Intent "${intent}" processed via BHARAG Cluster for org "${orgId}" (ws="${wsId}", role="${identity.role}")`,
       correlation_id: msg.correlation_id,
     });
 

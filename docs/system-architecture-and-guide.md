@@ -64,12 +64,30 @@ Twilio HTTP POST Request
 4. Deduplication (MessageSid) & Ingress Queue
 ```
 
-### Core Tenancy Rules
+### Core Tenancy & Identity Security Rules
+
+> **Identity Rule**: Caller phone number is a routing input, not an authentication credential.
+
+> **Known/Unknown Rule**: Only onboarded users receive personalized/account-level responses.
+
+> **Step-Up Rule**: Sensitive write/action operations require explicit verification.
+
+> **BHARAG Rule**: CST uses BHARAG cluster search rather than selecting a single workspace.
+
+> **Tenant Rule**: Tenant/system scope is resolved server-side and cannot be supplied by the customer message or LLM.
+
+### Server-Side Roles & Permissions
+- **owner**: Full read, write, control, and settings permissions for the system.
+- **manager**: Read telemetry/knowledge/media, write control actions, file escalations.
+- **tech**: Read telemetry/knowledge/media, file escalations.
+- **unknown**: Safe generic onboarding response; zero account/device/farm data access.
+
 1. **Receiving Phone Number Is Tenancy Decision**: For inbound SMS, the receiving `To` E.164 number uniquely identifies the tenant/system. Scope is NEVER derived from SMS text, sender claims, client body parameters, or LLM output.
 2. **Pre-Database Signature Check**: `verifyTwilioSignature` executes BEFORE any database lookup. Invalid signatures are rejected with HTTP 403/401 and logged as security tripwires.
 3. **Fail Closed**: Any unknown receiving number returns `404 SYSTEM_NOT_FOUND`, creates 0 database rows, and sends no reply.
-4. **Unknown Sender Path**: If the receiving number is valid but sender phone is unmapped, CST sends the system's onboarding response and assigns an opaque reference (`opaque_unresolved_<phone>`). Identity is NEVER guessed.
-5. **Outbound Cross-Tenant Prevention**: Before calling Twilio Messages API, the worker checks `validateOutboundTenancyScope`. If Tenant A attempts to message a number registered to Tenant B, the send is refused and logged.
+4. **Unknown Sender Path**: If the receiving number is valid but sender phone is unmapped, CST sends the system's onboarding response (`onboarding_reply`) and assigns an opaque reference (`opaque_unresolved_<phone>`). Identity is NEVER guessed and 0 customer data is exposed.
+5. **Step-Up Authentication Seam**: Sensitive write/action operations require explicit verification through `StepUpAuthService`. Unverified sensitive write requests are rejected safely.
+6. **Outbound Cross-Tenant Prevention**: Before calling Twilio Messages API, the worker checks `validateOutboundTenancyScope`. If Tenant A attempts to message a number registered to Tenant B, the send is refused and logged.
 
 ---
 

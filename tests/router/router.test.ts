@@ -27,18 +27,26 @@ describe('IntentRouter & Intent Detection Tests', () => {
   });
 
   const knownIdentity: IdentityContext = {
-    customer_ref: 'cust_vfarm_001_john_doe',
-    tenant_id: 'tenant-vfarm-01',
-    system_id: 'system-vfarm-01',
+    customer_ref:      'cust_vfarm_001_john_doe',
+    organization_id:   'tenant-vfarm-01',
+    tenant_id:         'tenant-vfarm-01',
+    system_id:         'system-vfarm-01',
+    workspace_id:      'ws-vfarm-main',
     is_known_customer: true,
-    unit_context: { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main' },
+    role:              'manager',
+    permissions:       ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate'],
+    unit_context:      { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main' },
   };
 
   const unknownIdentity: IdentityContext = {
-    customer_ref: 'opaque_unresolved_9999',
-    tenant_id: 'tenant-vfarm-01',
-    system_id: 'system-vfarm-01',
+    customer_ref:      'opaque_unresolved_9999',
+    organization_id:   'tenant-vfarm-01',
+    tenant_id:         'tenant-vfarm-01',
+    system_id:         'system-vfarm-01',
+    workspace_id:      'ws-vfarm-main',
     is_known_customer: false,
+    role:              'unknown',
+    permissions:       [],
   };
 
   it('detects status intent and returns BHARAG knowledge response', async () => {
@@ -123,9 +131,13 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const identity: IdentityContext = {
       customer_ref:      'cust_vfarm_003_test_user',
+      organization_id:   'tenant-vfarm-01',
       tenant_id:         'tenant-vfarm-01',
       system_id:         'system-vfarm-01',
+      workspace_id:      'ws-vfarm-main',
       is_known_customer: true,
+      role:              'owner',
+      permissions:       ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate', 'write:settings'],
       unit_context:      { unit_id: 'unit_bay_01', farm_id: 'farm_austin_main' },
     };
 
@@ -136,23 +148,21 @@ describe('IntentRouter & Intent Detection Tests', () => {
     expect(['knowledge', 'status']).toContain(IntentRouter.detectIntent(msg.body));
   });
 
-  it('routes new (unregistered) sender through connectors just like a known customer', async () => {
+  it('serves unregistered (unknown) sender safe onboarding response without calling knowledge connector', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_UNKNOWN_TEST_001',
       tenant_id:      'tenant-vfarm-01',
       from_e164:      '+15559998888',
       to_e164:        '+19715885823',
-      body:           'Hello',
+      body:           'Hello, how is my farm?',
       media:          [],
       received_at:    new Date().toISOString(),
       correlation_id: 'corr_unknown_test',
     };
 
-    // unknownIdentity.is_known_customer is false, but the router no longer
-    // gates connectors on that flag — all contacts get RAG responses.
     const outbound = await IntentRouter.routeAndHandle(msg, unknownIdentity);
-    // Should receive a real connector response, not an onboarding wall
-    expect(outbound.body).toContain('BHARAG Knowledge');
+    // Should receive safe onboarding response, not personalized telemetry or knowledge
+    expect(outbound.body).toContain('Welcome to vFarm Support');
     expect(outbound.to_e164).toBe(msg.from_e164);
   });
 });

@@ -2,36 +2,77 @@ import { IdentityContext, SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
 
+export function getPermissionsForRole(role: 'owner' | 'manager' | 'tech' | 'unknown'): string[] {
+  switch (role) {
+    case 'owner':
+      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate', 'write:settings'];
+    case 'manager':
+      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate'];
+    case 'tech':
+      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:escalate'];
+    default:
+      return [];
+  }
+}
+
 export class IdentityResolver {
   /**
-   * Resolve a sender's phone number against the customers table.
+   * Resolve a sender's phone number against the system's customer registry.
    *
-   * If the phone is already registered → return known identity with full unit context.
-   * If the phone is NOT registered → auto-register as a new customer for this tenant
-   * and return them as a known customer so connectors can serve them immediately.
+   * Architecture Tenancy Chain:
+   * Receiving Number -> System -> Organization -> Workspace -> Customer -> Role -> Permissions
    *
-   * Per Spec §3: CST never stores the phone-to-person mapping permanently —
-   * the customers table is a cached projection from vFarm's Customer Registry.
-   * Auto-registered customers are tagged with `is_new_contact: true` in unit_context
-   * so downstream systems can distinguish first-contact records from fully synced ones.
+   * - Known user: resolved server-side from customer registry within Organization scope, returning role & permissions.
+   * - Unknown user: if phone is NOT pre-onboarded, do NOT guess identity or auto-register.
+   *   Returns is_known_customer: false, role: 'unknown', permissions: [].
+   * - Strict E.164 phone matching is required. Partial matches are treated as unknown.
    */
   static async resolveSenderIdentity(
     fromE164: string,
     systemConfig: SystemConfig
   ): Promise<IdentityContext> {
-    // 1. Check in-memory store + Postgres
-    let record = await DbClient.lookupCustomerByPhoneAsync(fromE164, systemConfig.tenant_id);
+    const orgId = systemConfig.organization_id || systemConfig.tenant_id;
+    const defaultWsId = systemConfig.workspace_id || 'ws-vfarm-main';
+
+    if (!fromE164) {
+      return {
+        customer_ref:      'opaque_unresolved_user',
+        organization_id:   orgId,
+        tenant_id:         orgId,
+        system_id:         systemConfig.system_id,
+        workspace_id:      defaultWsId,
+        is_known_customer: false,
+        role:              'unknown',
+        permissions:       [],
+      };
+    }
+
+    const cleanPhone = fromE164.trim();
+    // 1. Check in-memory store + Postgres for exact E.164 phone match within Organization scope
+    const record = await DbClient.lookupCustomerByPhoneAsync(cleanPhone, orgId);
 
     if (record) {
-      Logger.info(`Resolved identity for ${fromE164}`, {
-        tenant_id:    systemConfig.tenant_id,
-        customer_ref: record.customer_ref,
+      const userRole = record.role || 'manager';
+      const permissions = getPermissionsForRole(userRole);
+      const userWsId = record.workspace_id || defaultWsId;
+
+      Logger.info(`Resolved identity for ${cleanPhone} in org ${orgId} (workspace=${userWsId}, role=${userRole})`, {
+        organization_id: orgId,
+        tenant_id:       orgId,
+        workspace_id:    userWsId,
+        customer_ref:    record.customer_ref,
+        role:            userRole,
       });
+
       return {
         customer_ref:      record.customer_ref,
-        tenant_id:         systemConfig.tenant_id,
+        organization_id:   orgId,
+        tenant_id:         orgId,
         system_id:         systemConfig.system_id,
+        workspace_id:      userWsId,
         is_known_customer: true,
+        role:              userRole,
+        permissions,
         unit_context: {
           ...(record.unit_id ? { unit_id: record.unit_id } : {}),
           ...(record.farm_id ? { farm_id: record.farm_id } : {}),
@@ -39,27 +80,25 @@ export class IdentityResolver {
       };
     }
 
-    // 2. Unknown sender — auto-register as a new contact for this tenant
-    const customerRef = `auto_${systemConfig.tenant_id}_${fromE164.replace(/[^0-9]/g, '')}`;
-    Logger.info(`Auto-registering new contact ${fromE164} as ${customerRef} for tenant ${systemConfig.tenant_id}`, {
-      tenant_id: systemConfig.tenant_id,
-      system_id: systemConfig.system_id,
-    });
-
-    await DbClient.seedCustomer({
-      tenant_id:    systemConfig.tenant_id,
-      phone_e164:   fromE164,
-      customer_ref: customerRef,
+    // 2. Unknown sender — do NOT guess identity, do NOT auto-register in DB.
+    // Return unresolved identity context so router can serve safe onboarding reply.
+    const safeRef = `opaque_unresolved_${cleanPhone.replace(/[^0-9]/g, '')}`;
+    Logger.info(`Unregistered sender ${cleanPhone} for org ${orgId}`, {
+      organization_id: orgId,
+      tenant_id:       orgId,
+      system_id:       systemConfig.system_id,
+      workspace_id:    defaultWsId,
     });
 
     return {
-      customer_ref:      customerRef,
-      tenant_id:         systemConfig.tenant_id,
+      customer_ref:      safeRef,
+      organization_id:   orgId,
+      tenant_id:         orgId,
       system_id:         systemConfig.system_id,
-      is_known_customer: true,   // they are now registered
-      unit_context: {
-        is_new_contact: true,    // flag for downstream: not yet synced from vFarm
-      },
+      workspace_id:      defaultWsId,
+      is_known_customer: false,
+      role:              'unknown',
+      permissions:       [],
     };
   }
 }

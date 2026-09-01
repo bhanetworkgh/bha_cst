@@ -30,9 +30,13 @@ export interface OutboundMessage {
 
 export interface IdentityContext {
   customer_ref: string;
-  tenant_id: string;
+  organization_id: string; // Top-level tenant security boundary
+  tenant_id: string;       // Alias for organization_id
   system_id: string;
+  workspace_id: string;    // Workspace / Project scope
   is_known_customer: boolean;
+  role: 'owner' | 'manager' | 'tech' | 'unknown';
+  permissions: string[];
   unit_context?: Record<string, unknown>;
 }
 
@@ -64,7 +68,9 @@ export interface EscalationRule {
 
 export interface SystemConfig {
   system_id: string;
-  tenant_id: string;
+  organization_id: string;   // Organization (tenant boundary)
+  tenant_id: string;         // Alias for organization_id
+  workspace_id: string;      // Primary workspace / project
   name: string;
   status: 'active' | 'suspended';
   phone_numbers: string[];           // E.164 numbers assigned to this system

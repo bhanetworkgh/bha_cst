@@ -19,10 +19,15 @@ function buildDefaultSystems(): SystemConfig[] {
     .map((p) => p.trim())
     .filter(Boolean);
 
+  const orgId = env.VFARM_TENANT_ID || 'tenant-vfarm-01';
+  const workspaceId = 'ws-vfarm-main';
+
   return [
     {
       system_id:             env.VFARM_SYSTEM_ID,
-      tenant_id:             env.VFARM_TENANT_ID,
+      organization_id:       orgId,
+      tenant_id:             orgId,
+      workspace_id:          workspaceId,
       name:                  env.VFARM_SYSTEM_NAME,
       status:                'active',
       phone_numbers:         vfarmPhones,
@@ -68,31 +73,42 @@ export class SystemsRegistry {
   }
 
   static registerSystem(config: SystemConfig): void {
-    this.systems.set(config.system_id, config);
-    for (const phone of config.phone_numbers) {
-      this.numberToSystemMap.set(phone.trim(), config);
+    const orgId = config.organization_id || config.tenant_id;
+    const wsId = config.workspace_id || 'ws-default-main';
+    const normalizedConfig: SystemConfig = {
+      ...config,
+      organization_id: orgId,
+      tenant_id: orgId,
+      workspace_id: wsId,
+    };
+
+    this.systems.set(normalizedConfig.system_id, normalizedConfig);
+    for (const phone of normalizedConfig.phone_numbers) {
+      this.numberToSystemMap.set(phone.trim(), normalizedConfig);
     }
 
     const pool = DbClient.getPool();
     if (pool) {
       const query = `
-        INSERT INTO systems (system_id, tenant_id, name, status, phone_numbers, onboarding_reply, resolve_endpoint_url, bharag_workspace_key, messaging_service_sid, media_base_url, escalation_rules, routing_rules)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        INSERT INTO systems (system_id, tenant_id, organization_id, workspace_id, name, status, phone_numbers, onboarding_reply, resolve_endpoint_url, bharag_workspace_key, messaging_service_sid, media_base_url, escalation_rules, routing_rules)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (system_id) DO NOTHING
       `;
       pool.query(query, [
-        config.system_id,
-        config.tenant_id,
-        config.name,
-        config.status || 'active',
-        JSON.stringify(config.phone_numbers || []),
-        config.onboarding_reply,
-        config.resolve_endpoint_url || null,
-        config.bharag_workspace_key || null,
-        config.messaging_service_sid || null,
-        config.media_base_url || null,
-        JSON.stringify(config.escalation_rules || []),
-        JSON.stringify(config.routing_rules || []),
+        normalizedConfig.system_id,
+        normalizedConfig.tenant_id,
+        normalizedConfig.organization_id,
+        normalizedConfig.workspace_id,
+        normalizedConfig.name,
+        normalizedConfig.status || 'active',
+        JSON.stringify(normalizedConfig.phone_numbers || []),
+        normalizedConfig.onboarding_reply,
+        normalizedConfig.resolve_endpoint_url || null,
+        normalizedConfig.bharag_workspace_key || null,
+        normalizedConfig.messaging_service_sid || null,
+        normalizedConfig.media_base_url || null,
+        JSON.stringify(normalizedConfig.escalation_rules || []),
+        JSON.stringify(normalizedConfig.routing_rules || []),
       ]).catch((err) => Logger.error(`SystemsRegistry Postgres Error: ${err.message}`));
     }
   }
@@ -122,7 +138,14 @@ export class SystemsRegistry {
 
   static getSystemByTenantId(tenantId: string): SystemConfig | null {
     for (const sys of this.systems.values()) {
-      if (sys.tenant_id === tenantId) return sys;
+      if (sys.tenant_id === tenantId || sys.organization_id === tenantId) return sys;
+    }
+    return null;
+  }
+
+  static getSystemByOrganizationId(organizationId: string): SystemConfig | null {
+    for (const sys of this.systems.values()) {
+      if (sys.organization_id === organizationId) return sys;
     }
     return null;
   }
