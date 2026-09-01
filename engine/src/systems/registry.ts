@@ -1,6 +1,7 @@
 import { SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
 import { getEnv } from '../config/env.js';
+import { DbClient } from '../db/client.js';
 
 /**
  * Build system list purely from validated env vars.
@@ -70,6 +71,29 @@ export class SystemsRegistry {
     this.systems.set(config.system_id, config);
     for (const phone of config.phone_numbers) {
       this.numberToSystemMap.set(phone.trim(), config);
+    }
+
+    const pool = DbClient.getPool();
+    if (pool) {
+      const query = `
+        INSERT INTO systems (system_id, tenant_id, name, status, phone_numbers, onboarding_reply, resolve_endpoint_url, bharag_workspace_key, messaging_service_sid, media_base_url, escalation_rules, routing_rules)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (system_id) DO NOTHING
+      `;
+      pool.query(query, [
+        config.system_id,
+        config.tenant_id,
+        config.name,
+        config.status || 'active',
+        JSON.stringify(config.phone_numbers || []),
+        config.onboarding_reply,
+        config.resolve_endpoint_url || null,
+        config.bharag_workspace_key || null,
+        config.messaging_service_sid || null,
+        config.media_base_url || null,
+        JSON.stringify(config.escalation_rules || []),
+        JSON.stringify(config.routing_rules || []),
+      ]).catch((err) => Logger.error(`SystemsRegistry Postgres Error: ${err.message}`));
     }
   }
 

@@ -15,7 +15,8 @@ export class BharagRagConnector {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout for knowledge queries
+      const timeoutMs = env.BHARAG_CLUSTER_TIMEOUT_MS || 10000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       const response = await fetch(clusterUrl, {
         method: 'POST',
@@ -24,7 +25,7 @@ export class BharagRagConnector {
           'Content-Type': 'application/json',
           'x-api-key': clusterKey,
         },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ query: question }),
         signal: controller.signal,
       }).catch(() => null);
 

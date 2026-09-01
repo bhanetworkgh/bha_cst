@@ -28,9 +28,17 @@ export function verifyTwilioSignature(req: Request, res: Response, next: NextFun
   }
 
   // Construct full request URL including protocol and host
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.headers['host'] || 'localhost:3000';
-  const url = `${protocol}://${host}${req.originalUrl || req.url}`;
+  let url: string;
+  if (env.PUBLIC_WEBHOOK_URL) {
+    const baseUrl = env.PUBLIC_WEBHOOK_URL.replace(/\/+$/, '');
+    const path = req.originalUrl || req.url;
+    url = `${baseUrl}${path}`;
+  } else {
+    const rawProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+    const protocol = rawProto.split(',')[0].trim();
+    const host = (req.headers['x-forwarded-host'] as string) || req.headers['host'] || 'localhost:3000';
+    url = `${protocol}://${host}${req.originalUrl || req.url}`;
+  }
 
   const authToken = env.TWILIO_AUTH_TOKEN;
   const params = (req.body || {}) as Record<string, string>;

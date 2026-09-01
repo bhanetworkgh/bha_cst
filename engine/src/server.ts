@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { getEnv } from './config/env.js';
 import { Logger } from './config/logger.js';
+import { processOutboundQueue } from './transport/twilio/outbound.js';
 
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
@@ -14,11 +15,24 @@ const server = app.listen(env.PORT, () => {
   });
 });
 
+// ── Outbound Queue Background Worker Loop ──────────────────────────────────
+// Polls the database for pending outbound messages every 5 seconds so retries
+// and background-queued messages deliver automatically.
+const WORKER_INTERVAL_MS = 5000;
+const workerTimer = setInterval(async () => {
+  try {
+    await processOutboundQueue();
+  } catch (err: any) {
+    Logger.error(`Outbound background worker error: ${err.message}`);
+  }
+}, WORKER_INTERVAL_MS);
+
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
 // Render and AWS send SIGTERM before killing the process.
 // We close the HTTP server to stop accepting new requests, then exit cleanly.
 function shutdown(signal: string): void {
   Logger.info(`Received ${signal} — starting graceful shutdown`);
+  clearInterval(workerTimer);
   server.close((err) => {
     if (err) {
       Logger.error(`Error during server shutdown: ${err.message}`);

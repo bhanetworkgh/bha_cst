@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { DbClient } from '../../engine/src/db/client.js';
@@ -14,6 +14,16 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
     seedTestCustomers();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: 'BHARAG Knowledge: Bay 4 telemetry parameters normal.' }),
+      } as Response;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('completes full SMS roundtrip: webhook in -> verify -> resolve -> canned handle() -> outbound queue -> Twilio send', async () => {

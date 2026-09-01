@@ -18,8 +18,14 @@ export interface OutboundMessage {
   media_url?: string;
   correlation_id: string;
   provider_sid?: string;
-  status?: 'pending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered';
+  status?: 'pending' | 'queued' | 'sending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered';
+  retry_count?: number;
+  max_retries?: number;
+  next_retry_at?: string;
+  error_message?: string;
+  segments?: number;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface IdentityContext {

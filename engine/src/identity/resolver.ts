@@ -4,20 +4,23 @@ import { DbClient } from '../db/client.js';
 
 export class IdentityResolver {
   /**
-   * Resolve a sender's phone number against the customers table in DbClient.
+   * Resolve a sender's phone number against the customers table.
+   *
+   * If the phone is already registered → return known identity with full unit context.
+   * If the phone is NOT registered → auto-register as a new customer for this tenant
+   * and return them as a known customer so connectors can serve them immediately.
    *
    * Per Spec §3: CST never stores the phone-to-person mapping permanently —
    * the customers table is a cached projection from vFarm's Customer Registry.
-   * The source-of-truth always remains vFarm.
-   *
-   * If the phone is not in the customers table → unknown sender path.
-   * DO NOT GUESS identity.
+   * Auto-registered customers are tagged with `is_new_contact: true` in unit_context
+   * so downstream systems can distinguish first-contact records from fully synced ones.
    */
   static async resolveSenderIdentity(
     fromE164: string,
     systemConfig: SystemConfig
   ): Promise<IdentityContext> {
-    const record = DbClient.lookupCustomerByPhone(fromE164, systemConfig.tenant_id);
+    // 1. Check in-memory store + Postgres
+    let record = await DbClient.lookupCustomerByPhoneAsync(fromE164, systemConfig.tenant_id);
 
     if (record) {
       Logger.info(`Resolved identity for ${fromE164}`, {
@@ -36,17 +39,27 @@ export class IdentityResolver {
       };
     }
 
-    Logger.warn(`Unknown sender ${fromE164} — not in customers table for tenant ${systemConfig.tenant_id}`, {
+    // 2. Unknown sender — auto-register as a new contact for this tenant
+    const customerRef = `auto_${systemConfig.tenant_id}_${fromE164.replace(/[^0-9]/g, '')}`;
+    Logger.info(`Auto-registering new contact ${fromE164} as ${customerRef} for tenant ${systemConfig.tenant_id}`, {
       tenant_id: systemConfig.tenant_id,
       system_id: systemConfig.system_id,
     });
 
-    // Unknown sender: opaque reference, no guessed identity
+    await DbClient.seedCustomer({
+      tenant_id:    systemConfig.tenant_id,
+      phone_e164:   fromE164,
+      customer_ref: customerRef,
+    });
+
     return {
-      customer_ref:      `opaque_unresolved_${fromE164.replace(/[^0-9]/g, '')}`,
+      customer_ref:      customerRef,
       tenant_id:         systemConfig.tenant_id,
       system_id:         systemConfig.system_id,
-      is_known_customer: false,
+      is_known_customer: true,   // they are now registered
+      unit_context: {
+        is_new_contact: true,    // flag for downstream: not yet synced from vFarm
+      },
     };
   }
 }

@@ -63,17 +63,20 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
 }
 
 /**
- * Worker function to process pending outbound messages queue.
+ * Worker function to process pending & queued outbound messages.
+ * Manages status transitions: pending/queued -> sending -> sent | failed | refused
  */
 export async function processOutboundQueue(): Promise<void> {
   const pendingMessages = await DbClient.getPendingOutboundMessages();
 
   for (const msg of pendingMessages) {
+    if (!msg.id) continue;
+
     // Step 1: Enforce tenant isolation check before send
     const isAllowed = validateOutboundTenancyScope(msg);
 
     if (!isAllowed) {
-      await DbClient.updateOutboundStatus(msg.id!, 'refused', 'Cross-tenant send refused');
+      await DbClient.updateOutboundStatus(msg.id, 'refused', 'Cross-tenant send refused');
       continue;
     }
 
@@ -85,9 +88,10 @@ export async function processOutboundQueue(): Promise<void> {
       tenant_id: msg.tenant_id,
     });
 
-    // Step 3: Attempt send with retry strategy
-    const maxRetries = 3;
-    let attempt = 0;
+    await DbClient.updateOutboundStatus(msg.id, 'sending');
+
+    const maxRetries = msg.max_retries || 3;
+    let attempt = msg.retry_count || 0;
     let success = false;
     let lastError = '';
 
@@ -104,12 +108,12 @@ export async function processOutboundQueue(): Promise<void> {
           mediaUrl: msg.media_url ? [msg.media_url] : undefined,
         });
 
-        // Record sending system number and provider_sid on outbound record
-        await DbClient.updateOutboundFromE164(msg.id!, fromNumber || '');
+        // Record sending system number, provider_sid, and status 'sent'
+        await DbClient.updateOutboundFromE164(msg.id, fromNumber || '');
         if (res.sid) {
-          await DbClient.updateOutboundProviderSid(msg.id!, res.sid);
+          await DbClient.updateOutboundProviderSid(msg.id, res.sid);
         }
-        await DbClient.updateOutboundStatus(msg.id!, 'sent');
+        await DbClient.updateOutboundStatus(msg.id, 'sent', undefined, attempt);
         success = true;
 
         Logger.audit({
@@ -135,7 +139,7 @@ export async function processOutboundQueue(): Promise<void> {
           isNonRetriable,
         });
 
-        // Stop retrying immediately if the error is permanent (e.g. invalid phone number, geo permission denied)
+        // Permanent non-retriable error (e.g. invalid phone number, geo permission denied)
         if (isNonRetriable) {
           Logger.error(`Permanent non-retriable Twilio error encountered for destination ${msg.to_e164}: ${lastError}`);
           break;
@@ -149,18 +153,23 @@ export async function processOutboundQueue(): Promise<void> {
     }
 
     if (!success) {
-      await DbClient.updateOutboundStatus(msg.id!, 'failed', lastError);
-      Logger.audit({
-        timestamp: new Date().toISOString(),
-        tenant_id: msg.tenant_id,
-        actor: 'outbound_worker',
-        role: 'transport_worker',
-        entry_point: 'api',
-        tool_or_route: 'processOutboundQueue',
-        outcome: 'error',
-        reason: `Outbound send failed after ${maxRetries} attempts: ${lastError}`,
-        correlation_id: msg.correlation_id,
-      });
+      const nextRetryAt = attempt < maxRetries ? new Date(Date.now() + Math.pow(2, attempt) * 1000).toISOString() : undefined;
+      const finalStatus = attempt < maxRetries ? 'queued' : 'failed';
+      await DbClient.updateOutboundStatus(msg.id, finalStatus, lastError, attempt, nextRetryAt);
+
+      if (finalStatus === 'failed') {
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: msg.tenant_id,
+          actor: 'outbound_worker',
+          role: 'transport_worker',
+          entry_point: 'api',
+          tool_or_route: 'processOutboundQueue',
+          outcome: 'error',
+          reason: `Outbound send failed after ${attempt} attempts: ${lastError}`,
+          correlation_id: msg.correlation_id,
+        });
+      }
     }
   }
 }

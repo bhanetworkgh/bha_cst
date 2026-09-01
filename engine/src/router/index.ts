@@ -73,43 +73,33 @@ export class IntentRouter {
     let replyBody: string;
     let mediaUrl: string | undefined;
 
-    // ── Unknown Sender Path ──────────────────────────────────────────────────
-    if (!identity.is_known_customer) {
-      Logger.info(`IntentRouter: Unknown sender ${msg.from_e164} on ${identity.system_id} → onboarding path`, {
-        tenant_id: identity.tenant_id,
+    const intent = this.detectIntent(msg.body, systemConfig);
+    Logger.info(`IntentRouter: Detected intent "${intent}" for ${identity.customer_ref}`, {
+      tenant_id:       identity.tenant_id,
+      conversation_id,
+      intent,
+    });
+
+    // ── BHARAG RAG Knowledge Connector (primary source for all text responses) ──
+    replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
+
+    // ── BHARAG Incidents Connector (for escalate intent) ───────────────────────
+    if (intent === 'escalate') {
+      const incidentRes = await BharagIncidentsConnector.fileIncident({
+        customerRef:    identity.customer_ref,
+        conversationId: conversation_id,
+        summary:        `Customer escalation: "${msg.body}"`,
+        workspaceKey:   systemConfig?.bharag_workspace_key,
+        priority:       'high',
       });
-      replyBody = onboardingReply;
+      Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
+    }
 
-    // ── Known Customer Path ──────────────────────────────────────────────────
-    } else {
-      const intent = this.detectIntent(msg.body, systemConfig);
-      Logger.info(`IntentRouter: Detected intent "${intent}" for ${identity.customer_ref}`, {
-        tenant_id:       identity.tenant_id,
-        conversation_id,
-        intent,
-      });
-
-      // ── BHARAG RAG Knowledge Connector (primary source for all text responses) ──
-      replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
-
-      // ── BHARAG Incidents Connector (for escalate intent) ───────────────────────
-      if (intent === 'escalate') {
-        const incidentRes = await BharagIncidentsConnector.fileIncident({
-          customerRef:    identity.customer_ref,
-          conversationId: conversation_id,
-          summary:        `Customer escalation: "${msg.body}"`,
-          workspaceKey:   systemConfig?.bharag_workspace_key,
-          priority:       'high',
-        });
-        Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
-      }
-
-      // ── Media Server Connector (for images intent) ──────────────────────────────
-      if (intent === 'images') {
-        const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
-        mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
-        Logger.info(`Media Server: Fetched signed URL for unit ${unitId}: ${mediaUrl}`);
-      }
+    // ── Media Server Connector (for images intent) ──────────────────────────────
+    if (intent === 'images') {
+      const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
+      mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
+      Logger.info(`Media Server: Fetched signed URL for unit ${unitId}: ${mediaUrl}`);
     }
 
     // Enqueue outbound reply for transport worker
@@ -128,13 +118,11 @@ export class IntentRouter {
       timestamp:  new Date().toISOString(),
       tenant_id:  identity.tenant_id,
       actor:      identity.customer_ref,
-      role:       identity.is_known_customer ? 'customer' : 'unknown_sender',
+      role:       'customer',
       entry_point: 'webhook',
       tool_or_route: 'IntentRouter.routeAndHandle()',
       outcome:    'ok',
-      reason:     identity.is_known_customer
-        ? `Intent "${this.detectIntent(msg.body)}" processed via BHARAG RAG + Media Server + Incidents`
-        : 'Onboarding reply sent',
+      reason:     `Intent "${intent}" processed via BHARAG RAG + Media Server + Incidents`,
       correlation_id: msg.correlation_id,
     });
 

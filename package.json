@@ -2,15 +2,18 @@
   "name": "bha-cst",
   "version": "1.0.0",
   "description": "Customer Service Twin - Multi-tenant conversation engine",
+  "type": "module",
   "main": "engine/src/server.ts",
   "scripts": {
     "build": "tsc -b engine/tsconfig.json",
     "start": "node dist/server.js",
     "start:dev": "tsx watch engine/src/server.ts",
     "dev": "tsx watch engine/src/server.ts",
+    "db:migrate": "node scripts/migrate.js",
     "typecheck": "tsc --noEmit -p engine/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:verbose": "vitest run --reporter=verbose",
     "test:ci": "vitest run --reporter=verbose"
   },
   "keywords": [],

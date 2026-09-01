@@ -7,6 +7,9 @@ import { Logger } from './config/logger.js';
 export function createApp(): Express {
   const app = express();
 
+  // Enable trust proxy for reverse proxies / AWS ALBs / Render SSL termination
+  app.set('trust proxy', true);
+
   // ── Body Parsing ────────────────────────────────────────────────────────────
   // Twilio sends application/x-www-form-urlencoded webhooks.
   // Limit body size to 100kb to prevent payload floods.
@@ -19,6 +22,36 @@ export function createApp(): Express {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.removeHeader('X-Powered-By');
+    next();
+  });
+
+  // ── Rate Limiter Middleware for Webhook Endpoints ─────────────────────────
+  const requestCounts = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute window
+  const MAX_REQUESTS_PER_WINDOW = 120; // 120 reqs/min per IP
+
+  app.use('/webhooks', (req: Request, res: Response, next: NextFunction) => {
+    // Bypass rate limiting in test environment
+    if (process.env.NODE_ENV === 'test') {
+      return next();
+    }
+
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const clientRecord = requestCounts.get(ip);
+
+    if (!clientRecord || now > clientRecord.resetAt) {
+      requestCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      return next();
+    }
+
+    clientRecord.count++;
+    if (clientRecord.count > MAX_REQUESTS_PER_WINDOW) {
+      Logger.warn(`Rate limit exceeded for IP ${ip} on ${req.path}`);
+      res.status(429).json({ error: 'TOO_MANY_REQUESTS', message: 'Rate limit exceeded. Try again later.' });
+      return;
+    }
+
     next();
   });
 

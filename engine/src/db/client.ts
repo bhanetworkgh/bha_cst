@@ -1,5 +1,7 @@
 import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
 import { randomUUID } from 'crypto';
+import pg from 'pg';
+import { Logger } from '../config/logger.js';
 
 interface CustomerRecord {
   phone_e164:   string;
@@ -10,42 +12,161 @@ interface CustomerRecord {
 }
 
 export class DbClient {
+  private static pool: pg.Pool | null = null;
+
+  // In-memory stores for unit testing / fast fallback
   private static messagesInStore:    Map<string, InboundMessage>  = new Map();
   private static messagesOutStore:   Map<string, OutboundMessage> = new Map();
   private static conversationsStore: Map<string, any>             = new Map();
   private static transcriptsStore:   Map<string, any>             = new Map();
-  /** customers table: keyed by "tenant_id:phone_e164" */
   private static customersStore:     Map<string, CustomerRecord>  = new Map();
+
+  static getPool(): pg.Pool | null {
+    if (this.pool) return this.pool;
+    const connectionString = process.env.DATABASE_URL;
+    if (connectionString && process.env.NODE_ENV !== 'test') {
+      try {
+        this.pool = new pg.Pool({ connectionString, max: 10, idleTimeoutMillis: 30000 });
+        Logger.info('DbClient: Initialized PostgreSQL database connection pool');
+      } catch (err: any) {
+        Logger.warn(`DbClient: Failed to initialize Postgres pool: ${err.message}`);
+      }
+    }
+    return this.pool;
+  }
+
+  static setPool(pool: pg.Pool | null): void {
+    this.pool = pool;
+  }
 
   /**
    * Save inbound message and handle MessageSid deduplication.
    * Return isDuplicate: true if message_id was already present.
    */
   static async saveInboundMessage(msg: InboundMessage): Promise<{ isDuplicate: boolean }> {
-    if (this.messagesInStore.has(msg.message_id)) {
-      return { isDuplicate: true };
+    const isDuplicate = this.messagesInStore.has(msg.message_id);
+    if (!isDuplicate) {
+      this.messagesInStore.set(msg.message_id, { ...msg });
     }
-    this.messagesInStore.set(msg.message_id, { ...msg });
-    return { isDuplicate: false };
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO messages_in (message_id, tenant_id, from_e164, to_e164, body, media, received_at, status, correlation_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'enqueued', $8)
+          ON CONFLICT (message_id) DO NOTHING
+        `;
+        const res = await pool.query(query, [
+          msg.message_id,
+          msg.tenant_id,
+          msg.from_e164,
+          msg.to_e164,
+          msg.body,
+          JSON.stringify(msg.media || []),
+          msg.received_at || new Date().toISOString(),
+          msg.correlation_id,
+        ]);
+        return { isDuplicate: res.rowCount === 0 };
+      } catch (err: any) {
+        Logger.error(`DbClient.saveInboundMessage Postgres Error: ${err.message}`);
+      }
+    }
+
+    return { isDuplicate };
   }
 
   static async saveOutboundMessage(msg: OutboundMessage): Promise<OutboundMessage> {
     const id = msg.id || `out_${randomUUID()}`;
+    const now = new Date().toISOString();
     const record: OutboundMessage = {
       ...msg,
       id,
       status: msg.status || 'pending',
-      created_at: msg.created_at || new Date().toISOString(),
+      retry_count: msg.retry_count || 0,
+      max_retries: msg.max_retries || 3,
+      created_at: msg.created_at || now,
+      updated_at: msg.updated_at || now,
     };
     this.messagesOutStore.set(id, record);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO messages_out (id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (id) DO UPDATE SET
+            status = EXCLUDED.status,
+            retry_count = EXCLUDED.retry_count,
+            error_message = EXCLUDED.error_message,
+            from_e164 = EXCLUDED.from_e164
+        `;
+        await pool.query(query, [
+          record.id,
+          record.tenant_id,
+          record.from_e164 || null,
+          record.to_e164,
+          record.body,
+          record.media_url || null,
+          record.correlation_id,
+          record.status,
+          record.retry_count,
+          record.error_message || null,
+          record.created_at,
+        ]);
+      } catch (err: any) {
+        Logger.error(`DbClient.saveOutboundMessage Postgres Error: ${err.message}`);
+      }
+    }
+
     return record;
   }
 
   static async getPendingOutboundMessages(): Promise<OutboundMessage[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          SELECT id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at
+          FROM messages_out
+          WHERE status IN ('pending', 'queued')
+        `;
+        const res = await pool.query(query);
+        const dbPending: OutboundMessage[] = res.rows.map((r) => ({
+          id: r.id,
+          tenant_id: r.tenant_id,
+          from_e164: r.from_e164,
+          to_e164: r.to_e164,
+          body: r.body,
+          media_url: r.media_url,
+          correlation_id: r.correlation_id,
+          status: r.status,
+          retry_count: r.retry_count,
+          error_message: r.error_message,
+          created_at: r.created_at,
+        }));
+
+        for (const msg of dbPending) {
+          if (msg.id) this.messagesOutStore.set(msg.id, msg);
+        }
+        return dbPending;
+      } catch (err: any) {
+        Logger.error(`DbClient.getPendingOutboundMessages Postgres Error: ${err.message}`);
+      }
+    }
+
     const pending: OutboundMessage[] = [];
+    const now = new Date();
     for (const msg of this.messagesOutStore.values()) {
-      if (msg.status === 'pending') {
-        pending.push(msg);
+      const isEligibleStatus = msg.status === 'pending' || msg.status === 'queued';
+      if (isEligibleStatus) {
+        if (msg.next_retry_at) {
+          const scheduledTime = new Date(msg.next_retry_at);
+          if (now >= scheduledTime) pending.push(msg);
+        } else {
+          pending.push(msg);
+        }
       }
     }
     return pending;
@@ -53,23 +174,51 @@ export class DbClient {
 
   static async updateOutboundStatus(
     id: string,
-    status: 'pending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered',
-    error?: string
+    status: OutboundMessage['status'],
+    error?: string,
+    retryCount?: number,
+    nextRetryAt?: string
   ): Promise<void> {
     const msg = this.messagesOutStore.get(id);
     if (msg) {
       msg.status = status;
-      if (error) (msg as any).error_message = error;
+      msg.updated_at = new Date().toISOString();
+      if (error !== undefined) msg.error_message = error;
+      if (retryCount !== undefined) msg.retry_count = retryCount;
+      if (nextRetryAt !== undefined) msg.next_retry_at = nextRetryAt;
       this.messagesOutStore.set(id, msg);
+    }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          UPDATE messages_out
+          SET status = $1, error_message = COALESCE($2, error_message), retry_count = COALESCE($3, retry_count)
+          WHERE id = $4
+        `;
+        await pool.query(query, [status, error || null, retryCount || null, id]);
+      } catch (err: any) {
+        Logger.error(`DbClient.updateOutboundStatus Postgres Error: ${err.message}`);
+      }
     }
   }
 
-  /** Record the Twilio from-number that was used to send this outbound message (GAP-5 fix). */
+  /** Record the Twilio from-number that was used to send this outbound message. */
   static async updateOutboundFromE164(id: string, fromE164: string): Promise<void> {
     const msg = this.messagesOutStore.get(id);
     if (msg) {
       msg.from_e164 = fromE164;
       this.messagesOutStore.set(id, msg);
+    }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE messages_out SET from_e164 = $1 WHERE id = $2', [fromE164, id]);
+      } catch (err: any) {
+        Logger.error(`DbClient.updateOutboundFromE164 Postgres Error: ${err.message}`);
+      }
     }
   }
 
@@ -79,6 +228,15 @@ export class DbClient {
     if (msg) {
       msg.provider_sid = providerSid;
       this.messagesOutStore.set(id, msg);
+    }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE messages_out SET provider_sid = $1 WHERE id = $2', [providerSid, id]);
+      } catch (err: any) {
+        Logger.error(`DbClient.updateOutboundProviderSid Postgres Error: ${err.message}`);
+      }
     }
   }
 
@@ -94,7 +252,6 @@ export class DbClient {
     let updated = false;
     let resolvedTenantId: string | undefined;
 
-    // 1. Update outbound store
     for (const msg of this.messagesOutStore.values()) {
       if (msg.provider_sid === providerSid || msg.id === providerSid || msg.correlation_id?.includes(providerSid)) {
         msg.status = status;
@@ -105,7 +262,6 @@ export class DbClient {
       }
     }
 
-    // 2. Update transcripts store
     for (const transcript of this.transcriptsStore.values()) {
       if (transcript.provider_sid === providerSid || transcript.message_id === providerSid) {
         transcript.delivery_status = status;
@@ -116,10 +272,29 @@ export class DbClient {
       }
     }
 
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query1 = `UPDATE messages_out SET status = $1, error_message = $2 WHERE id = $3 OR correlation_id LIKE $4 RETURNING tenant_id`;
+        const res1 = await pool.query(query1, [status, errorDetails || null, providerSid, `%${providerSid}%`]);
+        if (res1.rowCount && res1.rowCount > 0) {
+          updated = true;
+          resolvedTenantId = res1.rows[0].tenant_id;
+        }
+
+        const query2 = `UPDATE messages SET delivery_status = $1 WHERE message_id = $2 OR provider_sid = $3 RETURNING tenant_id`;
+        const res2 = await pool.query(query2, [status, providerSid, providerSid]);
+        if (res2.rowCount && res2.rowCount > 0) {
+          updated = true;
+          if (!resolvedTenantId) resolvedTenantId = res2.rows[0].tenant_id;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.updateDeliveryStatusByProviderSid Postgres Error: ${err.message}`);
+      }
+    }
+
     return { updated, tenant_id: resolvedTenantId };
   }
-
-
 
   static async getOrCreateConversation(
     tenantId: string,
@@ -141,6 +316,25 @@ export class DbClient {
       };
       this.conversationsStore.set(key, conv);
     }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO conversations (conversation_id, tenant_id, system_id, customer_ref, channel, state, incident_ids, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, 'sms', 'open', '[]'::jsonb, NOW(), NOW())
+          ON CONFLICT (tenant_id, customer_ref) DO NOTHING
+          RETURNING conversation_id
+        `;
+        const res = await pool.query(query, [conv.conversation_id, tenantId, systemId, customerRef]);
+        if (res.rows.length > 0) {
+          conv.conversation_id = res.rows[0].conversation_id;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getOrCreateConversation Postgres Error: ${err.message}`);
+      }
+    }
+
     return { conversation_id: conv.conversation_id };
   }
 
@@ -153,6 +347,20 @@ export class DbClient {
         }
         conv.updated_at = new Date().toISOString();
         break;
+      }
+    }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          UPDATE conversations
+          SET incident_ids = COALESCE(incident_ids, '[]'::jsonb) || JSONB_BUILD_ARRAY($1::text), updated_at = NOW()
+          WHERE conversation_id = $2
+        `;
+        await pool.query(query, [incidentId, conversationId]);
+      } catch (err: any) {
+        Logger.error(`DbClient.addIncidentToConversation Postgres Error: ${err.message}`);
       }
     }
   }
@@ -172,6 +380,30 @@ export class DbClient {
       ...msg,
       created_at: new Date().toISOString(),
     });
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO messages (message_id, conversation_id, tenant_id, direction, from_e164, to_e164, body, media_refs, provider_sid, delivery_status, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'received', NOW())
+          ON CONFLICT (message_id) DO NOTHING
+        `;
+        await pool.query(query, [
+          msg.message_id,
+          msg.conversation_id,
+          msg.tenant_id,
+          msg.direction,
+          msg.from_e164,
+          msg.to_e164,
+          msg.body,
+          JSON.stringify(msg.media_refs || []),
+          msg.provider_sid || null,
+        ]);
+      } catch (err: any) {
+        Logger.error(`DbClient.addMessageToTranscript Postgres Error: ${err.message}`);
+      }
+    }
   }
 
   static getInboundMessage(messageId: string): InboundMessage | undefined {
@@ -212,20 +444,30 @@ export class DbClient {
 
   // ── Customer Registry (mirrors `customers` table in Postgres) ─────────────
 
-  /**
-   * Seed one or more customer records into the in-memory customers store.
-   * Called by tests and the app bootstrap to load records from the DB.
-   * Equivalent to INSERT ... ON CONFLICT DO UPDATE.
-   */
   static seedCustomer(record: CustomerRecord): void {
     const key = `${record.tenant_id}:${record.phone_e164}`;
     this.customersStore.set(key, record);
+
+    const pool = this.getPool();
+    if (pool) {
+      const query = `
+        INSERT INTO customers (tenant_id, phone_e164, customer_ref, unit_id, farm_id)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, phone_e164) DO UPDATE SET
+          customer_ref = EXCLUDED.customer_ref,
+          unit_id = EXCLUDED.unit_id,
+          farm_id = EXCLUDED.farm_id
+      `;
+      pool.query(query, [
+        record.tenant_id,
+        record.phone_e164,
+        record.customer_ref,
+        record.unit_id || null,
+        record.farm_id || null,
+      ]).catch((err) => Logger.error(`DbClient.seedCustomer Postgres Error: ${err.message}`));
+    }
   }
 
-  /**
-   * Look up a known customer by their E.164 phone number and tenant.
-   * Returns null if the phone is not registered (unknown sender path).
-   */
   static lookupCustomerByPhone(
     phoneE164: string,
     tenantId: string
@@ -234,7 +476,48 @@ export class DbClient {
     return this.customersStore.get(key) ?? null;
   }
 
-  /** How many customers are seeded (for test assertions). */
+  /**
+   * Async version of lookupCustomerByPhone that also checks Postgres
+   * if the in-memory store misses (e.g. after a server restart).
+   */
+  static async lookupCustomerByPhoneAsync(
+    phoneE164: string,
+    tenantId: string
+  ): Promise<CustomerRecord | null> {
+    // Fast path: in-memory hit
+    const memRecord = this.lookupCustomerByPhone(phoneE164, tenantId);
+    if (memRecord) return memRecord;
+
+    // Slow path: Postgres lookup
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT tenant_id, phone_e164, customer_ref, unit_id, farm_id FROM customers WHERE tenant_id = $1 AND phone_e164 = $2',
+          [tenantId, phoneE164]
+        );
+        if (res.rows.length > 0) {
+          const row = res.rows[0];
+          const record: CustomerRecord = {
+            tenant_id:    row.tenant_id,
+            phone_e164:   row.phone_e164,
+            customer_ref: row.customer_ref,
+            unit_id:      row.unit_id  || undefined,
+            farm_id:      row.farm_id  || undefined,
+          };
+          // Populate in-memory cache
+          const key = `${tenantId}:${phoneE164}`;
+          this.customersStore.set(key, record);
+          return record;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.lookupCustomerByPhoneAsync Postgres Error: ${err.message}`);
+      }
+    }
+
+    return null;
+  }
+
   static getCustomerCount(): number {
     return this.customersStore.size;
   }
