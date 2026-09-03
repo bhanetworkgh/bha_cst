@@ -34,10 +34,8 @@ services:
 
     # ── Database migrations run once before each new deployment goes live ─────
     # Render runs preDeployCommand before switching traffic to the new instance.
-    preDeployCommand: node scripts/migrate.js
+    startCommand: node scripts/migrate.js && npm start
 
-    # ── Start ─────────────────────────────────────────────────────────────────
-    startCommand: npm start        # → node dist/server.js
 
     # ── Health Check ─────────────────────────────────────────────────────────
     # Render polls this endpoint; the instance is only marked healthy after it
