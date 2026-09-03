@@ -1,0 +1,133 @@
+##############################################################################
+#  render.yaml — Render Blueprint for bha-cst (Customer Service Twin)
+#
+#  Docs: https://render.com/docs/blueprint-spec
+#
+#  Services defined:
+#    1. bha-cst          — Node.js web service (Express + TypeScript)
+#    2. bha-cst-postgres — Managed PostgreSQL 16 database
+#
+#  How to deploy:
+#    1. Push this file to the root of your Git repo.
+#    2. In the Render dashboard → New → Blueprint → select your repo.
+#    3. Render will detect this file and provision everything automatically.
+#    4. Fill in every env var marked  sync: false  in the Render dashboard
+#       (those are secrets — never committed to source control).
+##############################################################################
+
+databases:
+  - name: bha-cst-postgres
+    databaseName: bha_cst
+    user: bha_cst_user
+    plan: free          # upgrade to "starter" or higher for production
+    region: oregon      # match your web service region
+    postgresMajorVersion: 16
+
+services:
+  - type: web
+    name: bha-cst
+    runtime: node
+    region: oregon
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+    buildCommand: npm ci && npm run build
+
+    # ── Database migrations run once before each new deployment goes live ─────
+    # Render runs preDeployCommand before switching traffic to the new instance.
+    preDeployCommand: node scripts/migrate.js
+
+    # ── Start ─────────────────────────────────────────────────────────────────
+    startCommand: npm start        # → node dist/server.js
+
+    # ── Health Check ─────────────────────────────────────────────────────────
+    # Render polls this endpoint; the instance is only marked healthy after it
+    # returns HTTP 200.  Matches the /health route in engine/src/app.ts.
+    healthCheckPath: /health
+
+    # ── Autoscaling / Scaling ─────────────────────────────────────────────────
+    plan: free           # upgrade to "starter" or higher for production
+    autoDeploy: true     # re-deploy automatically on every push to main
+
+    # ── Environment Variables ─────────────────────────────────────────────────
+    # ALL values are loaded from your .env file via the Render dashboard.
+    # No variable values are hardcoded in this YAML.
+    # Set each variable in: Render Dashboard → bha-cst → Environment
+    envVars:
+      # --- Database (auto-wired from the managed DB above — not a hardcoded value) ---
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bha-cst-postgres
+          property: connectionString
+
+      # --- Runtime ---
+      - key: NODE_ENV
+        sync: false
+
+      - key: PORT
+        sync: false
+
+      # --- Twilio Credentials ---
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        sync: false
+
+      # --- vFarm System Identity ---
+      - key: VFARM_SYSTEM_ID
+        sync: false
+
+      - key: VFARM_TENANT_ID
+        sync: false
+
+      - key: VFARM_SYSTEM_NAME
+        sync: false
+
+      - key: VFARM_PHONE_NUMBERS
+        sync: false
+
+      - key: VFARM_ONBOARDING_REPLY
+        sync: false
+
+      # --- vFarm External API Seams ---
+      - key: VFARM_RESOLVE_ENDPOINT
+        sync: false
+
+      - key: VFARM_RESOLVE_API_KEY
+        sync: false
+
+      # --- BHARAG RAG & Incidents ---
+      - key: BHARAG_API_URL
+        sync: false
+
+      - key: BHARAG_WORKSPACE_KEY
+        sync: false
+
+      - key: BHARAG_CLUSTER_URL
+        sync: false
+
+      - key: BHARAG_CLUSTER_KEY
+        sync: false
+
+      - key: BHARAG_CLUSTER_TIMEOUT_MS
+        sync: false
+
+      # --- Media Server & AWS S3 ---
+      - key: MEDIA_SERVER_URL
+        sync: false
+
+      - key: S3_MEDIA_BUCKET_URL
+        sync: false
+
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+
+      - key: AWS_REGION
+        sync: false
+
+      # --- Optional: Public webhook base URL (set after first deploy) ---
+      - key: PUBLIC_WEBHOOK_URL
+        sync: false

@@ -6,7 +6,7 @@
   "main": "engine/src/server.ts",
   "scripts": {
     "build": "tsc -b engine/tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/engine/src/server.js",
     "start:dev": "tsx watch engine/src/server.ts",
     "dev": "tsx watch engine/src/server.ts",
     "db:migrate": "node scripts/migrate.js",
