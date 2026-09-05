@@ -41,4 +41,11 @@ describe('Swagger API Documentation Endpoints', () => {
     // Express router / swagger-ui redirects bare /api-docs to /api-docs/ with 301
     expect([200, 301]).toContain(res.status);
   });
+
+  it('redirects root / to /api-docs', async () => {
+    const res = await request(app).get('/');
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/api-docs');
+  });
 });

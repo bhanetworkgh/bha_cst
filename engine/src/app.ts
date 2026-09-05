@@ -62,6 +62,9 @@ export function createApp(): Express {
   app.use('/webhooks', outboundRouter);
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
+  app.get('/', (_req: Request, res: Response) => {
+    res.redirect('/api-docs');
+  });
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
   app.get('/api-docs.json', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/json');
