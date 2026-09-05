@@ -236,6 +236,21 @@ curl -i -X POST http://localhost:3000/webhooks/twilio/sms \
 
 ---
 
+## 📖 API Documentation (Swagger / OpenAPI)
+
+Interactive API documentation is built-in and accessible directly from the running engine:
+
+* **Interactive Swagger UI**: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
+* **Raw OpenAPI 3.0 Spec (JSON)**: [http://localhost:3000/api-docs.json](http://localhost:3000/api-docs.json)
+
+The Swagger documentation covers:
+* Webhook ingestion (`POST /webhooks/twilio/sms`) with form-urlencoded schemas, headers, error responses, and 8-step pipeline details.
+* Twilio delivery status callbacks (`POST /webhooks/twilio/delivery-status`).
+* Engine health checks (`GET /health`).
+* In-memory debug state snapshots (`GET /debug/state`).
+
+---
+
 ## 📚 Documentation References
 * [System Architecture & Implementation Guide](docs/system-architecture-and-guide.md)
 * [Tenant Isolation Guide](docs/tenant-isolation-guide.md)

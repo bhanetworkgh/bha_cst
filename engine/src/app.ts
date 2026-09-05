@@ -3,6 +3,8 @@ import { inboundRouter } from './transport/twilio/inbound.js';
 import { outboundRouter } from './transport/twilio/outbound.js';
 import { DbClient } from './db/client.js';
 import { Logger } from './config/logger.js';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './docs/swagger.js';
 
 export function createApp(): Express {
   const app = express();
@@ -58,6 +60,13 @@ export function createApp(): Express {
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', inboundRouter);
   app.use('/webhooks', outboundRouter);
+
+  // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  app.get('/api-docs.json', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.json(swaggerSpec);
+  });
 
   // ── Health Check ────────────────────────────────────────────────────────────
   // Render / AWS ALB hit this endpoint to determine if the instance is live.

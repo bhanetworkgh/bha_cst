@@ -332,12 +332,13 @@ export class DbClient {
         const query = `
           INSERT INTO conversations (conversation_id, tenant_id, organization_id, workspace_id, system_id, customer_ref, channel, state, incident_ids, created_at, updated_at)
           VALUES ($1, $2, $3, $4, $5, $6, 'sms', 'open', '[]'::jsonb, NOW(), NOW())
-          ON CONFLICT (tenant_id, customer_ref) DO NOTHING
+          ON CONFLICT (tenant_id, customer_ref) DO UPDATE SET updated_at = NOW()
           RETURNING conversation_id
         `;
         const res = await pool.query(query, [conv.conversation_id, orgId, orgId, wsId, systemId, customerRef]);
         if (res.rows.length > 0) {
           conv.conversation_id = res.rows[0].conversation_id;
+          this.conversationsStore.set(key, conv);
         }
       } catch (err: any) {
         Logger.error(`DbClient.getOrCreateConversation Postgres Error: ${err.message}`);
