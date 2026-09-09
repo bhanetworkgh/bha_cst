@@ -6,7 +6,11 @@ export class BharagRagConnector {
    * Query common BHARAG RAG Knowledge Substrate via Cluster Ask API (Spec §3, §4 & §6).
    * Uses the unified BHARAG cluster endpoint with x-api-key authentication.
    */
-  static async askKnowledge(question: string, workspaceKey?: string): Promise<string> {
+  static async askKnowledge(
+    question: string,
+    workspaceKey?: string,
+    unitContext?: Record<string, unknown>
+  ): Promise<string> {
     const env = getEnv();
     const clusterUrl = env.BHARAG_CLUSTER_URL;
     const clusterKey = env.BHARAG_CLUSTER_KEY;
@@ -18,6 +22,19 @@ export class BharagRagConnector {
       const timeoutMs = env.BHARAG_CLUSTER_TIMEOUT_MS || 10000;
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+      const payload: Record<string, unknown> = {
+        query: question,
+      };
+      if (workspaceKey) {
+        payload.workspaceKey = workspaceKey;
+      }
+      if (unitContext?.farm_id) {
+        payload.farm_id = unitContext.farm_id;
+      }
+      if (unitContext?.unit_id) {
+        payload.unit_id = unitContext.unit_id;
+      }
+
       const response = await fetch(clusterUrl, {
         method: 'POST',
         headers: {
@@ -25,7 +42,7 @@ export class BharagRagConnector {
           'Content-Type': 'application/json',
           'x-api-key': clusterKey,
         },
-        body: JSON.stringify({ query: question }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       }).catch(() => null);
 

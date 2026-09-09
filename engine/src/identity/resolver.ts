@@ -76,6 +76,7 @@ export class IdentityResolver {
         unit_context: {
           ...(record.unit_id ? { unit_id: record.unit_id } : {}),
           ...(record.farm_id ? { farm_id: record.farm_id } : {}),
+          role: userRole,
         },
       };
     }
