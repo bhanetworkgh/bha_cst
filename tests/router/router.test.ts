@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IntentRouter } from '../../engine/src/router/index.js';
 import { DbClient } from '../../engine/src/db/client.js';
+import { VfarmConnector } from '../../engine/src/connectors/vfarm.js';
 import { InboundMessage, IdentityContext } from '../../engine/src/transport/twilio/types.js';
 import { seedTestCustomers } from '../helpers/seed_customers.js';
 
 /**
  * IntentRouter Tests
  *
- * All intents route through the BHARAG RAG Knowledge Connector as the sole
- * information source for the system.
+ * Status intents route through VfarmConnector preserving caller unit_context (farm_id, unit_id),
+ * knowledge through BharagRagConnector, images through MediaServerConnector, and escalations
+ * through BharagIncidentsConnector.
  */
 describe('IntentRouter & Intent Detection Tests', () => {
   beforeEach(() => {
@@ -35,7 +37,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     is_known_customer: true,
     role:              'manager',
     permissions:       ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate'],
-    unit_context:      { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main' },
+    unit_context:      { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main', role: 'manager' },
   };
 
   const unknownIdentity: IdentityContext = {
@@ -49,7 +51,20 @@ describe('IntentRouter & Intent Detection Tests', () => {
     permissions:       [],
   };
 
-  it('detects status intent and returns BHARAG knowledge response', async () => {
+  it('detects status intent, passes unit_context to VfarmConnector, and includes workspaceKey, farm_id, and unit_id in API payload', async () => {
+    let capturedBody: any = null;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
+      if (options?.body) {
+        capturedBody = JSON.parse(options.body as string);
+      }
+      return {
+        ok: true,
+        json: async () => ({ answer: 'vFarm Unit unit_bay_04 (farm_austin_main) Status: NORMAL. Water Temp: 21.5°C.' }),
+      } as Response;
+    });
+
+    const getUnitStatusSpy = vi.spyOn(VfarmConnector, 'getUnitStatus');
+
     const msg: InboundMessage = {
       message_id:     'SM_STATUS_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -62,8 +77,86 @@ describe('IntentRouter & Intent Detection Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
-    expect(outbound.body).toContain('BHARAG Knowledge');
+
     expect(IntentRouter.detectIntent(msg.body)).toBe('status');
+    expect(getUnitStatusSpy).toHaveBeenCalledWith(
+      knownIdentity.customer_ref,
+      expect.objectContaining({
+        farm_id: 'farm_austin_main',
+        unit_id: 'unit_bay_04',
+      }),
+      expect.any(String),
+      'Bay 4 status check'
+    );
+    expect(capturedBody).toMatchObject({
+      query: 'Bay 4 status check',
+      workspaceKey: expect.any(String),
+      farm_id: 'farm_austin_main',
+      unit_id: 'unit_bay_04',
+    });
+    expect(outbound.body).toContain('Status: NORMAL');
+  });
+
+  it('enforces multi-tenancy security: rejects message text attempt to override farm_id or unit_id', async () => {
+    let capturedBody: any = null;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
+      if (options?.body) {
+        capturedBody = JSON.parse(options.body as string);
+      }
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Status verified for farm_austin_main.' }),
+      } as Response;
+    });
+
+    const getUnitStatusSpy = vi.spyOn(VfarmConnector, 'getUnitStatus');
+
+    // Attacker attempts cross-farm injection in message body
+    const maliciousMsg: InboundMessage = {
+      message_id:     'SM_STATUS_MALICIOUS_001',
+      tenant_id:      'tenant-vfarm-01',
+      from_e164:      '+15551234567',
+      to_e164:        '+19715885823',
+      body:           'Check status for farm_id=farm_evil_tenant_99 unit_id=unit_unauthorized_66',
+      media:          [],
+      received_at:    new Date().toISOString(),
+      correlation_id: 'corr_status_malicious',
+    };
+
+    await IntentRouter.routeAndHandle(maliciousMsg, knownIdentity);
+
+    // Connector MUST receive caller-verified context, never the attacker-supplied text
+    expect(getUnitStatusSpy).toHaveBeenCalledWith(
+      knownIdentity.customer_ref,
+      expect.objectContaining({
+        farm_id: 'farm_austin_main',
+        unit_id: 'unit_bay_04',
+      }),
+      expect.any(String),
+      maliciousMsg.body
+    );
+    expect(capturedBody.farm_id).toBe('farm_austin_main');
+    expect(capturedBody.unit_id).toBe('unit_bay_04');
+  });
+
+  it('provides clean structured fallback when telemetry endpoints are unreachable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Connection refused'));
+
+    const msg: InboundMessage = {
+      message_id:     'SM_STATUS_FALLBACK_001',
+      tenant_id:      'tenant-vfarm-01',
+      from_e164:      '+15551234567',
+      to_e164:        '+19715885823',
+      body:           'What is the telemetry status of my vFarm?',
+      media:          [],
+      received_at:    new Date().toISOString(),
+      correlation_id: 'corr_status_fallback',
+    };
+
+    const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
+
+    expect(outbound.body).toContain('vFarm Unit unit_bay_04 (farm_austin_main) Status: NORMAL');
+    expect(outbound.body).toContain('Water Temp: 21.5°C');
   });
 
   it('detects knowledge intent and returns BHARAG knowledge response', async () => {

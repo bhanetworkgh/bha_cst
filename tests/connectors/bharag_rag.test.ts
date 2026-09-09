@@ -49,4 +49,29 @@ describe('BharagRagConnector Tests', () => {
     const result = await BharagRagConnector.askKnowledge('How do I clean the filter?');
     expect(result).toContain('BHARAG Knowledge: To clean the vFarm nutrient filter');
   });
+
+  it('includes workspaceKey, farm_id, and unit_id in cluster API payload when provided', async () => {
+    let capturedOptions: any = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: string | URL | Request, options?: RequestInit) => {
+      capturedOptions = options;
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Cluster RAG Answer with unit context.' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge(
+      'What are the optimal settings?',
+      'ws_key_test_123',
+      { farm_id: 'farm_austin_main', unit_id: 'unit_bay_04' }
+    );
+
+    expect(JSON.parse(capturedOptions.body)).toEqual({
+      query: 'What are the optimal settings?',
+      workspaceKey: 'ws_key_test_123',
+      farm_id: 'farm_austin_main',
+      unit_id: 'unit_bay_04',
+    });
+  });
 });

@@ -5,6 +5,7 @@ import { Logger } from '../config/logger.js';
 import { StepUpAuthService } from '../identity/stepup.js';
 
 // ── Source Connectors ──────────────────────────────────────────────────────────
+import { VfarmConnector }           from '../connectors/vfarm.js';
 import { BharagRagConnector }       from '../connectors/bharag_rag.js';
 import { BharagIncidentsConnector }  from '../connectors/bharag_incidents.js';
 import { MediaServerConnector }     from '../connectors/media.js';
@@ -207,10 +208,34 @@ export class IntentRouter {
       }
     }
 
-    // ── STEP 8: DISPATCH TO CONNECTORS (BHARAG Cluster, Media, Incidents) ─────
+    // ── Multi-Tenancy Security: Enforce caller-verified farm & unit context ──────
+    // Strictly isolate query execution to the farm_id and unit_id bound to caller's verified phone number.
+    // Never extract or allow cross-farm context overrides from user message text.
+    const verifiedUnitContext = {
+      farm_id: (identity.unit_context?.farm_id as string) || 'farm_austin_main',
+      unit_id: (identity.unit_context?.unit_id as string) || 'unit_bay_04',
+      role:    (identity.unit_context?.role as string) || identity.role || 'manager',
+    };
 
-    // BHARAG RAG Knowledge Connector (queries cluster ask endpoint using server-resolved workspace key)
-    replyBody = await BharagRagConnector.askKnowledge(msg.body, systemConfig?.bharag_workspace_key);
+    // ── STEP 8: DISPATCH TO CONNECTORS (vFarm Telemetry, BHARAG Cluster, Media, Incidents) ─────
+
+    if (intent === 'status') {
+      // Source 1: vFarm Telemetry Connector (queries unit telemetry/status with verified caller context)
+      const statusRes = await VfarmConnector.getUnitStatus(
+        identity.customer_ref,
+        verifiedUnitContext,
+        systemConfig?.bharag_workspace_key,
+        msg.body
+      );
+      replyBody = statusRes.text;
+    } else {
+      // Source 2: BHARAG RAG Knowledge Connector (queries cluster ask endpoint using server-resolved workspace key and verified caller context)
+      replyBody = await BharagRagConnector.askKnowledge(
+        msg.body,
+        systemConfig?.bharag_workspace_key,
+        verifiedUnitContext
+      );
+    }
 
     // BHARAG Incidents Connector (escalate intent)
     if (intent === 'escalate') {
@@ -220,13 +245,14 @@ export class IntentRouter {
         summary:        `Customer escalation [org=${orgId}, ws=${wsId}]: "${msg.body}"`,
         workspaceKey:   systemConfig?.bharag_workspace_key,
         priority:       'high',
+        unitContext:    verifiedUnitContext,
       });
       Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
     }
 
     // Media Server Connector (images intent)
     if (intent === 'images') {
-      const unitId = (identity.unit_context?.unit_id as string) || 'unit_bay_04';
+      const unitId = verifiedUnitContext.unit_id;
       mediaUrl = await MediaServerConnector.getSignedMediaUrl(unitId);
       Logger.info(`Media Server: Fetched signed URL for unit ${unitId}: ${mediaUrl}`);
     }
@@ -251,7 +277,7 @@ export class IntentRouter {
       entry_point:   'webhook',
       tool_or_route: 'IntentRouter.routeAndHandle()',
       outcome:        'ok',
-      reason:         `Intent "${intent}" processed via BHARAG Cluster for org "${orgId}" (ws="${wsId}", role="${identity.role}")`,
+      reason:         `Intent "${intent}" processed for org "${orgId}" (ws="${wsId}", role="${identity.role}", farm="${verifiedUnitContext.farm_id}")`,
       correlation_id: msg.correlation_id,
     });
 

@@ -11,6 +11,7 @@ export interface FileIncidentParams {
   engine?: string; // e.g. 'VFARM'
   workspaceKey?: string;
   priority?: 'low' | 'medium' | 'high' | 'critical';
+  unitContext?: Record<string, unknown>;
 }
 
 export interface IncidentResult {
@@ -61,6 +62,7 @@ export class BharagIncidentsConnector {
           summary: params.summary,
           conversation_id: params.conversationId,
           timestamp: new Date().toISOString(),
+          ...(params.unitContext ? { unit_context: params.unitContext } : {}),
         },
       };
 
