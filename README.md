@@ -240,8 +240,10 @@ curl -i -X POST http://localhost:3000/webhooks/twilio/sms \
 
 Interactive API documentation is built-in and accessible directly from the running engine:
 
-* **Interactive Swagger UI**: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
-* **Raw OpenAPI 3.0 Spec (JSON)**: [http://localhost:3000/api-docs.json](http://localhost:3000/api-docs.json)
+* **Production Swagger UI**: [https://bha-cst.onrender.com/api-docs](https://bha-cst.onrender.com/api-docs)
+* **Production OpenAPI Spec (JSON)**: [https://bha-cst.onrender.com/api-docs.json](https://bha-cst.onrender.com/api-docs.json)
+* **Local Swagger UI**: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
+* **Local OpenAPI Spec (JSON)**: [http://localhost:3000/api-docs.json](http://localhost:3000/api-docs.json)
 
 The Swagger documentation covers:
 * Webhook ingestion (`POST /webhooks/twilio/sms`) with form-urlencoded schemas, headers, error responses, and 8-step pipeline details.
@@ -252,6 +254,7 @@ The Swagger documentation covers:
 ---
 
 ## 📚 Documentation References
+* [API Endpoints Reference](docs/api-endpoints.md)
 * [System Architecture & Implementation Guide](docs/system-architecture-and-guide.md)
 * [Tenant Isolation Guide](docs/tenant-isolation-guide.md)
 * [Architecture Blueprint](2026-08-26-spec-bha-cst-architecture-v1.0.md)

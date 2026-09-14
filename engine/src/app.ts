@@ -50,6 +50,11 @@ export function createApp(): Express {
     clientRecord.count++;
     if (clientRecord.count > MAX_REQUESTS_PER_WINDOW) {
       Logger.warn(`Rate limit exceeded for IP ${ip} on ${req.path}`);
+      Logger.infra({
+        message: `Rate limit exceeded: ${ip} exceeded ${MAX_REQUESTS_PER_WINDOW} requests/min on ${req.path}`,
+        commercial_impact: 'Webhook endpoint throttled for this IP. Legitimate Twilio deliveries may be delayed or dropped if Twilio is retrying from the same IP range. Monitor for false positives.',
+        meta: { ip, path: req.path, limit: MAX_REQUESTS_PER_WINDOW },
+      });
       res.status(429).json({ error: 'TOO_MANY_REQUESTS', message: 'Rate limit exceeded. Try again later.' });
       return;
     }

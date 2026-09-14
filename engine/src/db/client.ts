@@ -131,9 +131,11 @@ export class DbClient {
     if (pool) {
       try {
         const query = `
-          SELECT id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at
+          SELECT id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at, next_retry_at
           FROM messages_out
-          WHERE status IN ('pending', 'queued')
+          WHERE (status = 'pending') OR (status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
+          ORDER BY created_at ASC
+          LIMIT 50
         `;
         const res = await pool.query(query);
         const dbPending: OutboundMessage[] = res.rows.map((r) => ({

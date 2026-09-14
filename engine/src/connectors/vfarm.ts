@@ -113,17 +113,33 @@ export class VfarmConnector {
         }
       }
     } catch (err: any) {
-      Logger.warn(`vFarm live telemetry API fetch fallback: ${err.message}`);
+      Logger.warn(`vFarm live telemetry API fetch fallback: ${err.message}`, {
+        unit_id: unitId,
+        farm_id: farmId,
+        customer_ref: customerRef,
+      });
+      Logger.infra({
+        message: 'vFarm telemetry unavailable: cluster API error or timeout',
+        commercial_impact: 'Customer cannot receive live sensor data. Farming decisions may be delayed. Escalate if outage persists beyond 5 minutes.',
+        meta: { unit_id: unitId, farm_id: farmId, customer_ref: customerRef, error: err.message },
+      });
     }
 
     // Degraded fallback when live telemetry endpoints are unreachable or data is unavailable.
     // Explicitly avoids returning synthetic or false-confidence sensor readings.
+    // See: docs/degraded-state-spec-v0.1.md
     const telemetry: VfarmUnitStatus = {
       unit_id: unitId,
       farm_id: farmId,
       status: 'telemetry_unavailable',
       last_updated: new Date().toISOString(),
     };
+
+    Logger.infra({
+      message: 'vFarm telemetry unavailable: cluster returned no usable data',
+      commercial_impact: 'Customer cannot receive live sensor data. Farming decisions may be delayed. Escalate if outage persists beyond 5 minutes.',
+      meta: { unit_id: unitId, farm_id: farmId, customer_ref: customerRef },
+    });
 
     const formattedText = `vFarm Unit ${unitId} (${farmId}): Telemetry currently unavailable for this unit. Live sensor readings cannot be retrieved at this time.`;
 

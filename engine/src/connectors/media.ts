@@ -32,6 +32,7 @@ export class MediaServerConnector {
       Logger.warn(`Media Server API fetch fallback: ${err.message}`);
     }
 
-    return `https://vfarm-media-captures.s3.us-east-1.amazonaws.com/units/${unitId}/latest_snap.jpg`;
+    const s3BucketUrl = env.S3_MEDIA_BUCKET_URL || 'https://vfarm-media-captures.s3.us-east-1.amazonaws.com';
+    return `${s3BucketUrl}/units/${unitId}/latest_snap.jpg`;
   }
 }
