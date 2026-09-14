@@ -4,11 +4,11 @@ import { Logger } from '../config/logger.js';
 export interface VfarmUnitStatus {
   unit_id: string;
   farm_id: string;
-  status: 'normal' | 'warning' | 'fault';
-  water_temp_c: number;
-  ph_level: number;
-  ec_level: number;
-  water_level: 'normal' | 'low' | 'critical';
+  status: 'normal' | 'warning' | 'fault' | 'telemetry_unavailable';
+  water_temp_c?: number;
+  ph_level?: number;
+  ec_level?: number;
+  water_level?: 'normal' | 'low' | 'critical';
   last_updated: string;
 }
 
@@ -25,8 +25,21 @@ export class VfarmConnector {
     question?: string
   ): Promise<{ text: string; telemetry?: VfarmUnitStatus }> {
     const env = getEnv();
-    const farmId = (unitContext?.farm_id as string) || 'farm_austin_main';
-    const unitId = (unitContext?.unit_id as string) || 'unit_bay_04';
+    const farmId = unitContext?.farm_id as string | undefined;
+    const unitId = unitContext?.unit_id as string | undefined;
+
+    if (!farmId || !unitId) {
+      return {
+        text: 'Your phone number is not linked to an active vFarm unit. Please contact support or provide your unit ID.',
+        telemetry: {
+          unit_id: unitId || 'unbound',
+          farm_id: farmId || 'unbound',
+          status: 'telemetry_unavailable',
+          last_updated: new Date().toISOString(),
+        },
+      };
+    }
+
     const wsKey = workspaceKey || env.BHARAG_WORKSPACE_KEY;
     const query = question || `What is the current status and telemetry of unit ${unitId} at farm ${farmId}?`;
 
@@ -62,19 +75,28 @@ export class VfarmConnector {
 
       if (response && response.ok) {
         const data = (await response.json()) as any;
-        if (data.status) {
+        if (data.status && data.status !== 'telemetry_unavailable') {
           const telemetry: VfarmUnitStatus = {
             unit_id: data.unit_id || unitId,
             farm_id: data.farm_id || farmId,
-            status: data.status || 'normal',
-            water_temp_c: data.water_temp_c ?? 21.5,
-            ph_level: data.ph_level ?? 6.2,
-            ec_level: data.ec_level ?? 1.8,
-            water_level: data.water_level || 'normal',
+            status: data.status,
+            water_temp_c: data.water_temp_c != null ? Number(data.water_temp_c) : undefined,
+            ph_level: data.ph_level != null ? Number(data.ph_level) : undefined,
+            ec_level: data.ec_level != null ? Number(data.ec_level) : undefined,
+            water_level: data.water_level,
             last_updated: data.last_updated || new Date().toISOString(),
           };
+
+          const readings: string[] = [];
+          if (telemetry.water_temp_c !== undefined) readings.push(`Water Temp: ${telemetry.water_temp_c}°C`);
+          if (telemetry.ph_level !== undefined) readings.push(`pH: ${telemetry.ph_level}`);
+          if (telemetry.ec_level !== undefined) readings.push(`EC: ${telemetry.ec_level}`);
+          if (telemetry.water_level !== undefined) readings.push(`Water Level: ${telemetry.water_level}`);
+
+          const readingsText = readings.length > 0 ? `. ${readings.join(', ')}.` : '.';
+
           return {
-            text: `vFarm Unit ${telemetry.unit_id} (${telemetry.farm_id}) Status: ${telemetry.status.toUpperCase()}. Water Temp: ${telemetry.water_temp_c}°C, pH: ${telemetry.ph_level}, EC: ${telemetry.ec_level}, Water Level: ${telemetry.water_level}.`,
+            text: `vFarm Unit ${telemetry.unit_id} (${telemetry.farm_id}) Status: ${telemetry.status.toUpperCase()}${readingsText}`,
             telemetry,
           };
         }
@@ -94,19 +116,16 @@ export class VfarmConnector {
       Logger.warn(`vFarm live telemetry API fetch fallback: ${err.message}`);
     }
 
-    // Clean fallback telemetry response if telemetry endpoints are unreachable
+    // Degraded fallback when live telemetry endpoints are unreachable or data is unavailable.
+    // Explicitly avoids returning synthetic or false-confidence sensor readings.
     const telemetry: VfarmUnitStatus = {
       unit_id: unitId,
       farm_id: farmId,
-      status: 'normal',
-      water_temp_c: 21.5,
-      ph_level: 6.2,
-      ec_level: 1.8,
-      water_level: 'normal',
+      status: 'telemetry_unavailable',
       last_updated: new Date().toISOString(),
     };
 
-    const formattedText = `vFarm Unit ${unitId} (${farmId}) Status: NORMAL. Water Temp: ${telemetry.water_temp_c}°C, pH: ${telemetry.ph_level}, EC: ${telemetry.ec_level}, Water Level: ${telemetry.water_level}.`;
+    const formattedText = `vFarm Unit ${unitId} (${farmId}): Telemetry currently unavailable for this unit. Live sensor readings cannot be retrieved at this time.`;
 
     return { text: formattedText, telemetry };
   }

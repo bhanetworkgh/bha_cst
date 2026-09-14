@@ -49,6 +49,7 @@ describe('Isolation Test 9: Organization & Workspace Tenancy Boundaries', () => 
       is_known_customer: true,
       role:              'manager',
       permissions:       ['read:telemetry', 'read:knowledge'],
+      unit_context:      { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main', role: 'manager' },
     };
 
     const msg: InboundMessage = {
@@ -77,6 +78,7 @@ describe('Isolation Test 9: Organization & Workspace Tenancy Boundaries', () => 
       is_known_customer: true,
       role:              'manager',
       permissions:       ['read:telemetry', 'read:knowledge'],
+      unit_context:      { unit_id: 'unit_bay_04', farm_id: 'farm_austin_main', role: 'manager' },
     };
 
     // Attacker attempts to pass organization_id='org-tenant-b-02' and workspace_id='ws-tenant-b-main' inside message text

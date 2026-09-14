@@ -211,9 +211,39 @@ export class IntentRouter {
     // ── Multi-Tenancy Security: Enforce caller-verified farm & unit context ──────
     // Strictly isolate query execution to the farm_id and unit_id bound to caller's verified phone number.
     // Never extract or allow cross-farm context overrides from user message text.
+    // Never silently default to arbitrary real tenant units (e.g. farm_austin_main / unit_bay_04).
+    const boundFarmId = identity.unit_context?.farm_id as string | undefined;
+    const boundUnitId = identity.unit_context?.unit_id as string | undefined;
+
+    if (intent === 'status') {
+      if (!boundFarmId || !boundUnitId) {
+        Logger.audit({
+          timestamp:      new Date().toISOString(),
+          tenant_id:      orgId,
+          actor:          identity.customer_ref,
+          role:           identity.role,
+          entry_point:    'webhook',
+          tool_or_route:  'IntentRouter.routeAndHandle()',
+          outcome:        'refused',
+          reason:         'Status query refused: caller phone number is not linked to an active vFarm unit',
+          correlation_id: msg.correlation_id,
+        });
+
+        const outboundMessage: OutboundMessage = {
+          tenant_id:      orgId,
+          to_e164:        msg.from_e164,
+          body:           'Your phone number is not linked to an active vFarm unit. Please contact support or provide your unit ID.',
+          correlation_id: msg.correlation_id,
+          status:         'pending',
+        };
+
+        return await DbClient.saveOutboundMessage(outboundMessage);
+      }
+    }
+
     const verifiedUnitContext = {
-      farm_id: (identity.unit_context?.farm_id as string) || 'farm_austin_main',
-      unit_id: (identity.unit_context?.unit_id as string) || 'unit_bay_04',
+      farm_id: boundFarmId,
+      unit_id: boundUnitId,
       role:    (identity.unit_context?.role as string) || identity.role || 'manager',
     };
 
@@ -227,7 +257,7 @@ export class IntentRouter {
         systemConfig?.bharag_workspace_key,
         msg.body
       );
-      replyBody = statusRes.text;
+      replyBody = statusRes?.text || `vFarm Unit ${verifiedUnitContext.unit_id} (${verifiedUnitContext.farm_id}): Telemetry currently unavailable for this unit.`;
     } else {
       // Source 2: BHARAG RAG Knowledge Connector (queries cluster ask endpoint using server-resolved workspace key and verified caller context)
       replyBody = await BharagRagConnector.askKnowledge(

@@ -139,7 +139,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     expect(capturedBody.unit_id).toBe('unit_bay_04');
   });
 
-  it('provides clean structured fallback when telemetry endpoints are unreachable', async () => {
+  it('provides explicit telemetry_unavailable degraded fallback when telemetry endpoints are unreachable', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Connection refused'));
 
     const msg: InboundMessage = {
@@ -155,8 +155,10 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
 
-    expect(outbound.body).toContain('vFarm Unit unit_bay_04 (farm_austin_main) Status: NORMAL');
-    expect(outbound.body).toContain('Water Temp: 21.5°C');
+    expect(outbound.body).toContain('vFarm Unit unit_bay_04 (farm_austin_main)');
+    expect(outbound.body).toContain('Telemetry currently unavailable for this unit');
+    expect(outbound.body).not.toContain('21.5°C');
+    expect(outbound.body).not.toContain('Status: NORMAL');
   });
 
   it('detects knowledge intent and returns BHARAG knowledge response', async () => {
@@ -257,5 +259,41 @@ describe('IntentRouter & Intent Detection Tests', () => {
     // Should receive safe onboarding response, not personalized telemetry or knowledge
     expect(outbound.body).toContain('Welcome to vFarm Support');
     expect(outbound.to_e164).toBe(msg.from_e164);
+  });
+
+  it('explicitly refuses status query when known caller identity lacks bound unit_context', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const unboundIdentity: IdentityContext = {
+      customer_ref:      'cust_vfarm_unbound_001',
+      organization_id:   'tenant-vfarm-01',
+      tenant_id:         'tenant-vfarm-01',
+      system_id:         'system-vfarm-01',
+      workspace_id:      'ws-vfarm-main',
+      is_known_customer: true,
+      role:              'manager',
+      permissions:       ['read:telemetry'],
+      unit_context:      undefined,
+    };
+
+    const msg: InboundMessage = {
+      message_id:     'SM_UNBOUND_STATUS_001',
+      tenant_id:      'tenant-vfarm-01',
+      from_e164:      '+15557776666',
+      to_e164:        '+19715885823',
+      body:           'What is the current status of my unit?',
+      media:          [],
+      received_at:    new Date().toISOString(),
+      correlation_id: 'corr_unbound_status',
+    };
+
+    const outbound = await IntentRouter.routeAndHandle(msg, unboundIdentity);
+
+    // Must explicitly refuse status query and request clarification
+    expect(outbound.body).toBe('Your phone number is not linked to an active vFarm unit. Please contact support or provide your unit ID.');
+    expect(outbound.body).not.toContain('farm_austin_main');
+    expect(outbound.body).not.toContain('unit_bay_04');
+    // Must NOT trigger external telemetry fetch for arbitrary units
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
