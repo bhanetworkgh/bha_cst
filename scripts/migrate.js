@@ -2,13 +2,16 @@ import pg from 'pg';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import url from 'url';
 
 dotenv.config();
 
 const connectionString = process.env.DATABASE_URL || 'postgresql://localhost:5432/bha_cst';
 
 async function runMigrations() {
-  console.log(`Connecting to PostgreSQL at ${connectionString}...`);
+  // Never log the connection string itself - it carries the DB password.
+  const target = new url.URL(connectionString);
+  console.log(`Connecting to ${target.hostname}${target.pathname} as ${target.username}...`);
   const pool = new pg.Pool({ connectionString });
 
   const migrationsDir = path.join(process.cwd(), 'db', 'migrations');
