@@ -2,6 +2,8 @@
 
 This document provides a comprehensive overview of **how key operations are executed** and **where all configurations, state, logs, and data are stored** across the Customer Service Twin platform.
 
+> **Last updated**: 2026-09-14 — Added `Logger.infra()` / `InfraEvent`, `commercial_impact` field on logs, Recording SOP, and Degraded State Spec v0.1. See [§5 — Logging Architecture](#5-logging-architecture) and [§6 — Related Documentation](#6-related-documentation).
+
 ---
 
 ## 1. How Operations Are Executed (Workflow Guide)
@@ -98,16 +100,21 @@ customer twin/
 ├── .env                                  # Real environment secrets (Git-ignored)
 ├── .env.example                          # Environment template
 ├── db/
-│   └── migrations/                       # SQL migration files (001, 002)
+│   └── migrations/                       # SQL migration files (001–006)
 ├── docs/
+│   ├── api-endpoints.md                  # API endpoint reference
+│   ├── architecture.md                   # Architecture & tenancy security rules
+│   ├── degraded-state-spec-v0.1.md       # [NEW] Degraded telemetry state spec — no fake values policy
+│   ├── recording-sop.md                  # [NEW] Recording SOP — Session Type mandatory at recording start
 │   ├── system-architecture-and-guide.md  # Comprehensive architectural spec
-│   ├── tenant-isolation-guide.md         # Multi-tenant security & isolation rules
-│   └── system-operations-and-storage.md  # Operational workflows & storage reference
+│   └── system-operations-and-storage.md  # Operational workflows & storage reference (this file)
 └── engine/
     ├── src/
     │   ├── app.ts                        # Express server entrypoint
-    │   ├── config/                       # Zod env schema (env.ts) & Logger (logger.ts)
-    │   ├── connectors/                   # External APIs (bharag_rag.ts, bharag_incidents.ts, media_server.ts)
+    │   ├── config/
+    │   │   ├── env.ts                    # Zod env schema & validation
+    │   │   └── logger.ts                 # Logger: info/warn/error/infra/audit — see §5
+    │   ├── connectors/                   # External APIs (vfarm.ts, bharag_rag.ts, bharag_incidents.ts, media.ts)
     │   ├── db/                           # PostgreSQL database client & queries
     │   ├── identity/                     # Customer resolution (resolver.ts)
     │   ├── router/                       # Intent detection & route handling (index.ts)
@@ -116,3 +123,57 @@ customer twin/
     │       └── twilio/                   # Inbound webhook, signature validation, outbound client
     └── tests/                            # Automated Vitest test suite
 ```
+
+---
+
+## 5. Logging Architecture
+
+All structured logs are emitted via [`engine/src/config/logger.ts`](file:///Users/HaMi/Documents/Jason/customer%20twin/engine/src/config/logger.ts). Four log methods are available:
+
+| Method | Output Stream | JSON `type` field | When to Use |
+| :--- | :--- | :--- | :--- |
+| `Logger.info(message, meta?)` | `stdout` | *(none)* | Routine operational events |
+| `Logger.warn(message, meta?)` | `stderr` | *(none)* | Non-critical warnings |
+| `Logger.error(message, meta?)` | `stderr` | *(none)* | Errors and exceptions |
+| `Logger.infra(event)` | `stderr` | `INFRA_EVENT` | Infrastructure/reliability failures — **requires `commercial_impact`** |
+| `Logger.audit(event)` | `stdout`/`stderr` | `SECURITY_LEDGER` | Security & tenancy audit events — supports optional `commercial_impact` |
+
+### 5.1 `InfraEvent` — Infrastructure Reliability Logs
+
+The `InfraEvent` interface (defined in `logger.ts`) is the standard for all infra/reliability log events:
+
+```typescript
+interface InfraEvent {
+  message: string;
+  commercial_impact: string; // REQUIRED — must state business consequence
+  meta?: Record<string, unknown>;
+}
+```
+
+All `Logger.infra()` calls produce a JSON log entry with `type: "INFRA_EVENT"` and a mandatory `commercial_impact` field. This field is **required** — it ensures every infrastructure failure carries an explicit statement of business consequence for triage and escalation.
+
+**Call-sites with `Logger.infra()`:**
+
+| Location | Trigger | `commercial_impact` Summary |
+| :--- | :--- | :--- |
+| `connectors/vfarm.ts` | Cluster API error/timeout | Customer cannot receive live sensor data |
+| `connectors/vfarm.ts` | Cluster returned no usable data | Customer cannot receive live sensor data |
+| `transport/twilio/outbound.ts` | Permanent non-retriable Twilio error | Message permanently undeliverable |
+| `transport/twilio/outbound.ts` | Outbound send failed after all retries | Customer has not received a reply |
+| `app.ts` | Rate limit exceeded | Legitimate Twilio deliveries may be delayed |
+
+### 5.2 `SecurityLedgerEvent` — Security Audit Logs
+
+The `SecurityLedgerEvent` interface now carries an optional `commercial_impact?: string` field. Set this on any audit entry where a security decision has a known business effect (e.g. message delivery failure after all retries).
+
+---
+
+## 6. Related Documentation
+
+| Document | Purpose |
+| :--- | :--- |
+| [degraded-state-spec-v0.1.md](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/degraded-state-spec-v0.1.md) | v0.1 spec for degraded/unreachable telemetry states — defines `telemetry_unavailable` contract, prohibits fake sensor values, mandates `commercial_impact` infra log |
+| [recording-sop.md](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/recording-sop.md) | Recording SOP — Session Type mandatory at start of every video/audio/screen recording |
+| [architecture.md](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/architecture.md) | Architecture overview & tenancy isolation rules |
+| [api-endpoints.md](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/api-endpoints.md) | Full API endpoint reference |
+| [system-architecture-and-guide.md](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/system-architecture-and-guide.md) | Comprehensive architectural spec & per-message flow |

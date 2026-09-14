@@ -11,7 +11,16 @@ export interface SecurityLedgerEvent {
   outcome: LogOutcome;
   reason?: string;
   correlation_id?: string;
+  /** Explicit commercial or reliability impact statement for security/infra audit trail. */
+  commercial_impact?: string;
   details?: Record<string, unknown>;
+}
+
+export interface InfraEvent {
+  message: string;
+  /** Required: explicit statement of commercial or reliability impact. */
+  commercial_impact: string;
+  meta?: Record<string, unknown>;
 }
 
 export class Logger {
@@ -36,6 +45,22 @@ export class Logger {
     console.error(this.formatLog('ERROR', message, meta));
   }
 
+  /**
+   * Emit a structured infrastructure/reliability event log.
+   * `commercial_impact` is mandatory — every infra event must state its business consequence.
+   * Use for: telemetry unavailability, outbound send failures, rate-limit breaches, API outages.
+   */
+  static infra(event: InfraEvent): void {
+    console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      type: 'INFRA_EVENT',
+      message: event.message,
+      commercial_impact: event.commercial_impact,
+      ...event.meta,
+    }));
+  }
+
   static audit(event: SecurityLedgerEvent): void {
     const payload = {
       timestamp: event.timestamp || new Date().toISOString(),
@@ -48,6 +73,7 @@ export class Logger {
       outcome: event.outcome,
       reason: event.reason,
       correlation_id: event.correlation_id,
+      ...(event.commercial_impact ? { commercial_impact: event.commercial_impact } : {}),
       ...event.details,
     };
 

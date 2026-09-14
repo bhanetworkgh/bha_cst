@@ -62,12 +62,20 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
   return true;
 }
 
+let isProcessingQueue = false;
+
 /**
  * Worker function to process pending & queued outbound messages.
  * Manages status transitions: pending/queued -> sending -> sent | failed | refused
  */
 export async function processOutboundQueue(): Promise<void> {
-  const pendingMessages = await DbClient.getPendingOutboundMessages();
+  if (isProcessingQueue) {
+    return;
+  }
+  isProcessingQueue = true;
+
+  try {
+    const pendingMessages = await DbClient.getPendingOutboundMessages();
 
   for (const msg of pendingMessages) {
     if (!msg.id) continue;
@@ -142,6 +150,11 @@ export async function processOutboundQueue(): Promise<void> {
         // Permanent non-retriable error (e.g. invalid phone number, geo permission denied)
         if (isNonRetriable) {
           Logger.error(`Permanent non-retriable Twilio error encountered for destination ${msg.to_e164}: ${lastError}`);
+          Logger.infra({
+            message: `Permanent Twilio delivery failure: non-retriable error for ${msg.to_e164}`,
+            commercial_impact: 'Outbound customer message permanently undeliverable. Customer will not receive reply. Manual follow-up or channel switch required.',
+            meta: { tenant_id: msg.tenant_id, to_e164: msg.to_e164, error: lastError, correlation_id: msg.correlation_id },
+          });
           break;
         }
 
@@ -168,10 +181,19 @@ export async function processOutboundQueue(): Promise<void> {
           outcome: 'error',
           reason: `Outbound send failed after ${attempt} attempts: ${lastError}`,
           correlation_id: msg.correlation_id,
+          commercial_impact: 'Outbound customer message failed after all retries. Customer has not received a reply. Investigate Twilio account status and destination number validity.',
+        });
+        Logger.infra({
+          message: `Outbound send failed after ${attempt} attempt(s): ${lastError}`,
+          commercial_impact: 'Outbound customer message failed after all retries. Customer has not received a reply. Investigate Twilio account status and destination number validity.',
+          meta: { tenant_id: msg.tenant_id, to_e164: msg.to_e164, attempt, correlation_id: msg.correlation_id },
         });
       }
     }
   }
+} finally {
+  isProcessingQueue = false;
+}
 }
 
 // Delivery status callback handler
