@@ -5,12 +5,14 @@ import { DbClient } from '../../engine/src/db/client.js';
 import { normalizeTwilioInbound } from '../../engine/src/transport/twilio/normalize.js';
 
 import { seedTestCustomers } from '../helpers/seed_customers.js';
+import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 
 describe('Inbound Transport Unit Tests', () => {
   const app = createApp();
 
   beforeEach(() => {
     DbClient.clearAll();
+    SystemsRegistry.resetToDefault();
     seedTestCustomers();
   });
 

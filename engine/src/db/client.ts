@@ -2,6 +2,7 @@ import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
 import { randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
+import type { AlertAuditRow } from '../audit/alert_audit.js';
 
 export interface CustomerRecord {
   phone_e164:       string;
@@ -175,6 +176,49 @@ export class DbClient {
       }
     }
     return pending;
+  }
+
+  /**
+   * Atomically claim a pending or queued outbound message for processing.
+   * Uses atomic conditional update (WHERE status IN ('pending', 'queued')) to ensure
+   * exactly one worker can claim a message even under high concurrency.
+   * Returns true if successfully claimed, false if already claimed or finished.
+   */
+  static async claimOutboundMessage(id: string): Promise<boolean> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          UPDATE messages_out
+          SET status = 'sending', updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1 AND (status = 'pending' OR status = 'queued')
+          RETURNING id
+        `;
+        const res = await pool.query(query, [id]);
+        const claimed = (res.rowCount ?? 0) > 0;
+        if (claimed) {
+          const msg = this.messagesOutStore.get(id);
+          if (msg) {
+            msg.status = 'sending';
+            msg.updated_at = new Date().toISOString();
+            this.messagesOutStore.set(id, msg);
+          }
+        }
+        return claimed;
+      } catch (err: any) {
+        Logger.error(`DbClient.claimOutboundMessage Postgres Error: ${err.message}`);
+        return false;
+      }
+    }
+
+    const msg = this.messagesOutStore.get(id);
+    if (!msg || (msg.status !== 'pending' && msg.status !== 'queued')) {
+      return false;
+    }
+    msg.status = 'sending';
+    msg.updated_at = new Date().toISOString();
+    this.messagesOutStore.set(id, msg);
+    return true;
   }
 
   static async updateOutboundStatus(
@@ -501,6 +545,31 @@ export class DbClient {
     }
   }
 
+  static seedConversation(conv: {
+    conversation_id: string;
+    tenant_id: string;
+    organization_id?: string;
+    workspace_id?: string;
+    system_id?: string;
+    customer_ref?: string;
+    channel?: string;
+    state?: string;
+    alert_state?: string | null;
+    resolution_status?: string | null;
+  }): void {
+    const orgId = conv.organization_id || conv.tenant_id;
+    const cleanConv = {
+      ...conv,
+      organization_id: orgId,
+      tenant_id: conv.tenant_id,
+      customer_ref: conv.customer_ref || 'cust_default',
+      alert_state: conv.alert_state ?? null,
+      resolution_status: conv.resolution_status ?? null,
+    };
+    const key = `${orgId}:${cleanConv.customer_ref}`;
+    this.conversationsStore.set(key, cleanConv);
+  }
+
   static lookupCustomerByPhone(
     phoneE164: string,
     tenantId: string
@@ -530,7 +599,8 @@ export class DbClient {
     if (pool) {
       try {
         const res = await pool.query(
-          'SELECT tenant_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2',
+          `SELECT tenant_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id
+           FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`,
           [tenantId, cleanPhone]
         );
         if (res.rows.length > 0) {
@@ -542,8 +612,8 @@ export class DbClient {
             phone_e164:      row.phone_e164,
             customer_ref:    row.customer_ref,
             role:            (row.role as 'owner' | 'manager' | 'tech') || 'manager',
-            unit_id:         row.unit_id  || undefined,
-            farm_id:         row.farm_id  || undefined,
+            unit_id:         row.unit_id || undefined,
+            farm_id:         row.farm_id || undefined,
           };
           // Populate in-memory cache
           const key = `${tenantId}:${cleanPhone}`;
@@ -578,4 +648,45 @@ export class DbClient {
   static getCustomerCount(): number {
     return this.customersStore.size;
   }
+
+  // ── Alert Audit Log Writer ───────────────────────────────────────────────────
+
+  /**
+   * Insert an immutable alert audit row into alert_audit_log.
+   * Called from AlertAuditLog.write() after masking and size-capping.
+   * In-memory mode (tests): logs the event and returns without DB interaction.
+   */
+  static async writeAlertAuditRow(row: AlertAuditRow): Promise<void> {
+    const pool = this.getPool();
+    if (!pool) {
+      Logger.info(`DbClient.writeAlertAuditRow (in-memory): id=${row.id} outbound=${row.outbound_message_id} truncated=${row.truncated} masked=${row.masked_at !== null}`);
+      return;
+    }
+    try {
+      const query = `
+        INSERT INTO alert_audit_log
+          (id, outbound_message_id, tenant_id, organization_id, rendered_body, truncated,
+           template_id, version, params, masked_at, expires_at, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `;
+      await pool.query(query, [
+        row.id,
+        row.outbound_message_id,
+        row.tenant_id,
+        row.organization_id || row.tenant_id,
+        row.rendered_body,
+        row.truncated,
+        row.template_id || null,
+        row.version     || null,
+        row.params ? JSON.stringify(row.params) : null,
+        row.masked_at   || null,
+        row.expires_at,
+        row.created_at,
+      ]);
+    } catch (err: any) {
+      Logger.error(`DbClient.writeAlertAuditRow Postgres Error: ${err.message}`);
+      throw err;
+    }
+  }
 }
+

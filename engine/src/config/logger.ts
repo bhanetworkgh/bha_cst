@@ -1,3 +1,5 @@
+import { SlackNotifier } from '../notifications/slack.js';
+
 export type LogOutcome = 'ok' | 'refused' | 'error';
 export type EntryPoint = 'webhook' | 'admin_panel' | 'api';
 
@@ -43,6 +45,15 @@ export class Logger {
 
   static error(message: string, meta?: Record<string, unknown>): void {
     console.error(this.formatLog('ERROR', message, meta));
+    // Asynchronously dispatch Slack error alert
+    SlackNotifier.sendErrorAlert({
+      title: 'System Error',
+      message,
+      severity: 'ERROR',
+      tenant_id: (meta?.tenant_id as string) || null,
+      correlation_id: (meta?.correlation_id as string) || undefined,
+      meta,
+    }).catch(() => {});
   }
 
   /**
@@ -59,6 +70,18 @@ export class Logger {
       commercial_impact: event.commercial_impact,
       ...event.meta,
     }));
+
+    // If infrastructure event represents a permanent delivery failure or critical reliability issue, notify Slack
+    if (event.commercial_impact && /failure|outage|permanently|exhausted/i.test(event.message + event.commercial_impact)) {
+      SlackNotifier.sendErrorAlert({
+        title: 'Infrastructure Reliability Event',
+        message: `${event.message} — Impact: ${event.commercial_impact}`,
+        severity: 'CRITICAL',
+        tenant_id: (event.meta?.tenant_id as string) || null,
+        correlation_id: (event.meta?.correlation_id as string) || undefined,
+        meta: event.meta,
+      }).catch(() => {});
+    }
   }
 
   static audit(event: SecurityLedgerEvent): void {
@@ -81,8 +104,17 @@ export class Logger {
       console.warn(JSON.stringify({ ...payload, level: 'WARN', tripwire: true }));
     } else if (event.outcome === 'error') {
       console.error(JSON.stringify({ ...payload, level: 'ERROR' }));
+      SlackNotifier.sendErrorAlert({
+        title: `Security Ledger Error: ${event.tool_or_route}`,
+        message: event.reason || 'Security ledger error encountered',
+        severity: 'ERROR',
+        tenant_id: event.tenant_id,
+        correlation_id: event.correlation_id,
+        meta: { actor: event.actor, role: event.role, commercial_impact: event.commercial_impact, ...event.details },
+      }).catch(() => {});
     } else {
       console.log(JSON.stringify({ ...payload, level: 'INFO' }));
     }
   }
 }
+

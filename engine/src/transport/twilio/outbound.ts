@@ -5,6 +5,7 @@ import { TwilioClientWrapper } from './client.js';
 import { Logger } from '../../config/logger.js';
 import { verifyTwilioSignature } from './signature.js';
 import { Router, Request, Response } from 'express';
+import { AlertAuditLog } from '../../audit/alert_audit.js';
 
 
 export const outboundRouter = Router();
@@ -62,23 +63,24 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
   return true;
 }
 
-let isProcessingQueue = false;
-
 /**
  * Worker function to process pending & queued outbound messages.
  * Manages status transitions: pending/queued -> sending -> sent | failed | refused
+ * Concurrency-safe: uses atomic queue claiming so multiple workers can process concurrently
+ * without duplicate sends.
  */
 export async function processOutboundQueue(): Promise<void> {
-  if (isProcessingQueue) {
-    return;
-  }
-  isProcessingQueue = true;
-
-  try {
-    const pendingMessages = await DbClient.getPendingOutboundMessages();
+  const pendingMessages = await DbClient.getPendingOutboundMessages();
 
   for (const msg of pendingMessages) {
     if (!msg.id) continue;
+
+    // Atomically claim the message before processing.
+    // If another concurrent worker already claimed it, claimOutboundMessage returns false.
+    const isClaimed = await DbClient.claimOutboundMessage(msg.id);
+    if (!isClaimed) {
+      continue;
+    }
 
     // Step 1: Enforce tenant isolation check before send
     const isAllowed = validateOutboundTenancyScope(msg);
@@ -96,12 +98,11 @@ export async function processOutboundQueue(): Promise<void> {
       tenant_id: msg.tenant_id,
     });
 
-    await DbClient.updateOutboundStatus(msg.id, 'sending');
-
     const maxRetries = msg.max_retries || 3;
     let attempt = msg.retry_count || 0;
     let success = false;
     let lastError = '';
+    let isPermanentFailure = false;
 
     while (attempt < maxRetries && !success) {
       try {
@@ -123,6 +124,13 @@ export async function processOutboundQueue(): Promise<void> {
         }
         await DbClient.updateOutboundStatus(msg.id, 'sent', undefined, attempt);
         success = true;
+
+        // 018M: Immutable Alert Audit Log with write-time masking & size cap
+        await AlertAuditLog.write(
+          msg.id,
+          msg.tenant_id,
+          msg.body
+        );
 
         Logger.audit({
           timestamp: new Date().toISOString(),
@@ -149,6 +157,7 @@ export async function processOutboundQueue(): Promise<void> {
 
         // Permanent non-retriable error (e.g. invalid phone number, geo permission denied)
         if (isNonRetriable) {
+          isPermanentFailure = true;
           Logger.error(`Permanent non-retriable Twilio error encountered for destination ${msg.to_e164}: ${lastError}`);
           Logger.infra({
             message: `Permanent Twilio delivery failure: non-retriable error for ${msg.to_e164}`,
@@ -166,8 +175,9 @@ export async function processOutboundQueue(): Promise<void> {
     }
 
     if (!success) {
-      const nextRetryAt = attempt < maxRetries ? new Date(Date.now() + Math.pow(2, attempt) * 1000).toISOString() : undefined;
-      const finalStatus = attempt < maxRetries ? 'queued' : 'failed';
+      const isRetriable = !isPermanentFailure && attempt < maxRetries;
+      const nextRetryAt = isRetriable ? new Date(Date.now() + Math.pow(2, attempt) * 1000).toISOString() : undefined;
+      const finalStatus = isRetriable ? 'queued' : 'failed';
       await DbClient.updateOutboundStatus(msg.id, finalStatus, lastError, attempt, nextRetryAt);
 
       if (finalStatus === 'failed') {
@@ -191,9 +201,6 @@ export async function processOutboundQueue(): Promise<void> {
       }
     }
   }
-} finally {
-  isProcessingQueue = false;
-}
 }
 
 // Delivery status callback handler
