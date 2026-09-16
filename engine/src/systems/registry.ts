@@ -55,6 +55,12 @@ function buildDefaultSystems(): SystemConfig[] {
         { intent: 'escalate',  action: 'escalate'  },
         { intent: 'default',   action: 'default'   },
       ],
+
+      // ── Voice Clone Pointer (Jason's ElevenLabs account) ───────────────────
+      // CST only stores the pointer, never the clone itself.
+      elevenlabs_voice_id:   env.VFARM_ELEVENLABS_VOICE_ID || env.ELEVENLABS_VOICE_ID,
+      elevenlabs_model_id:   env.ELEVENLABS_MODEL_ID,
+      voice_enabled:         Boolean(env.VFARM_ELEVENLABS_VOICE_ID || env.ELEVENLABS_VOICE_ID),
     },
     // ── To register a new system: add SYSTEM2_* vars to .env and add an entry here ──
   ];
@@ -90,9 +96,17 @@ export class SystemsRegistry {
     const pool = DbClient.getPool();
     if (pool) {
       const query = `
-        INSERT INTO systems (system_id, tenant_id, organization_id, workspace_id, name, status, phone_numbers, onboarding_reply, resolve_endpoint_url, bharag_workspace_key, messaging_service_sid, media_base_url, escalation_rules, routing_rules)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-        ON CONFLICT (system_id) DO NOTHING
+        INSERT INTO systems (
+          system_id, tenant_id, organization_id, workspace_id, name, status,
+          phone_numbers, onboarding_reply, resolve_endpoint_url, bharag_workspace_key,
+          messaging_service_sid, media_base_url, escalation_rules, routing_rules,
+          elevenlabs_voice_id, elevenlabs_model_id, voice_enabled
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        ON CONFLICT (system_id) DO UPDATE SET
+          elevenlabs_voice_id = EXCLUDED.elevenlabs_voice_id,
+          elevenlabs_model_id = EXCLUDED.elevenlabs_model_id,
+          voice_enabled       = EXCLUDED.voice_enabled
       `;
       pool.query(query, [
         normalizedConfig.system_id,
@@ -109,6 +123,9 @@ export class SystemsRegistry {
         normalizedConfig.media_base_url || null,
         JSON.stringify(normalizedConfig.escalation_rules || []),
         JSON.stringify(normalizedConfig.routing_rules || []),
+        normalizedConfig.elevenlabs_voice_id || null,
+        normalizedConfig.elevenlabs_model_id || null,
+        normalizedConfig.voice_enabled ?? false,
       ]).catch((err) => Logger.error(`SystemsRegistry Postgres Error: ${err.message}`));
     }
   }

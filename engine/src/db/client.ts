@@ -15,15 +15,35 @@ export interface CustomerRecord {
   farm_id?:         string;
 }
 
+export interface VoiceDeliveryRecord {
+  id?: string;
+  system_id: string;
+  tenant_id: string;
+  conversation_id?: string;
+  message_id?: string;
+  status: 'synthesized' | 'sent' | 'failed' | 'refused';
+  voice_id?: string;
+  model_id?: string;
+  character_count: number;
+  audio_bytes: number;
+  mime_type?: string;
+  error_code?: string;
+  error_message?: string;
+  correlation_id?: string;
+  delivered_at?: string;
+  created_at?: string;
+}
+
 export class DbClient {
   private static pool: pg.Pool | null = null;
 
   // In-memory stores for unit testing / fast fallback
-  private static messagesInStore:    Map<string, InboundMessage>  = new Map();
-  private static messagesOutStore:   Map<string, OutboundMessage> = new Map();
-  private static conversationsStore: Map<string, any>             = new Map();
-  private static transcriptsStore:   Map<string, any>             = new Map();
-  private static customersStore:     Map<string, CustomerRecord>  = new Map();
+  private static messagesInStore:       Map<string, InboundMessage>      = new Map();
+  private static messagesOutStore:      Map<string, OutboundMessage>     = new Map();
+  private static conversationsStore:    Map<string, any>                 = new Map();
+  private static transcriptsStore:      Map<string, any>                 = new Map();
+  private static customersStore:        Map<string, CustomerRecord>      = new Map();
+  private static voiceDeliveriesStore:  Map<string, VoiceDeliveryRecord> = new Map();
 
   static getPool(): pg.Pool | null {
     if (this.pool) return this.pool;
@@ -496,6 +516,7 @@ export class DbClient {
     this.conversationsStore.clear();
     this.transcriptsStore.clear();
     this.customersStore.clear();
+    this.voiceDeliveriesStore.clear();
   }
 
   // ── Customer Registry (mirrors `customers` table in Postgres) ─────────────
@@ -687,6 +708,115 @@ export class DbClient {
       Logger.error(`DbClient.writeAlertAuditRow Postgres Error: ${err.message}`);
       throw err;
     }
+  }
+
+  // ── Voice Deliveries Ledger & Health Tracking ───────────────────────────────
+
+  /**
+   * Record a spoken delivery event for Destiny health tracking and audit.
+   */
+  static async recordVoiceDelivery(delivery: VoiceDeliveryRecord): Promise<VoiceDeliveryRecord> {
+    const id = delivery.id || `vd_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const record: VoiceDeliveryRecord = {
+      ...delivery,
+      id,
+      created_at: delivery.created_at || now,
+      delivered_at:
+        delivery.status === 'synthesized' || delivery.status === 'sent'
+          ? delivery.delivered_at || now
+          : undefined,
+    };
+
+    this.voiceDeliveriesStore.set(id, record);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO voice_deliveries (
+            id, system_id, tenant_id, conversation_id, message_id,
+            status, voice_id, model_id, character_count, audio_bytes,
+            mime_type, error_code, error_message, correlation_id,
+            delivered_at, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        `;
+        await pool.query(query, [
+          record.id,
+          record.system_id,
+          record.tenant_id,
+          record.conversation_id || null,
+          record.message_id || null,
+          record.status,
+          record.voice_id || null,
+          record.model_id || null,
+          record.character_count || 0,
+          record.audio_bytes || 0,
+          record.mime_type || 'audio/mpeg',
+          record.error_code || null,
+          record.error_message || null,
+          record.correlation_id || null,
+          record.delivered_at || null,
+          record.created_at,
+        ]);
+      } catch (err: any) {
+        Logger.error(`DbClient.recordVoiceDelivery Postgres Error: ${err.message}`);
+      }
+    }
+
+    return record;
+  }
+
+  /**
+   * Query spoken deliveries in the last 24 hours to compute Destiny's voice-lane health signal:
+   * "clone configured + at least one successful spoken delivery in the last 24h"
+   */
+  static async getVoiceDeliveriesInLast24Hours(systemId?: string): Promise<VoiceDeliveryRecord[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = systemId
+          ? `SELECT * FROM voice_deliveries WHERE system_id = $1 AND status IN ('synthesized', 'sent') AND created_at >= NOW() - INTERVAL '24 HOURS' ORDER BY created_at DESC`
+          : `SELECT * FROM voice_deliveries WHERE status IN ('synthesized', 'sent') AND created_at >= NOW() - INTERVAL '24 HOURS' ORDER BY created_at DESC`;
+        const params = systemId ? [systemId] : [];
+        const res = await pool.query(query, params);
+        if (res.rows && res.rows.length > 0) {
+          return res.rows.map((row: any) => ({
+            id: row.id,
+            system_id: row.system_id,
+            tenant_id: row.tenant_id,
+            conversation_id: row.conversation_id || undefined,
+            message_id: row.message_id || undefined,
+            status: row.status,
+            voice_id: row.voice_id || undefined,
+            model_id: row.model_id || undefined,
+            character_count: Number(row.character_count || 0),
+            audio_bytes: Number(row.audio_bytes || 0),
+            mime_type: row.mime_type || 'audio/mpeg',
+            error_code: row.error_code || undefined,
+            error_message: row.error_message || undefined,
+            correlation_id: row.correlation_id || undefined,
+            delivered_at: row.delivered_at ? new Date(row.delivered_at).toISOString() : undefined,
+            created_at: row.created_at ? new Date(row.created_at).toISOString() : undefined,
+          }));
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getVoiceDeliveriesInLast24Hours Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory fallback
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return Array.from(this.voiceDeliveriesStore.values()).filter((d) => {
+      if (systemId && d.system_id !== systemId) return false;
+      if (d.status !== 'synthesized' && d.status !== 'sent') return false;
+      const createdAt = new Date(d.created_at || 0).getTime();
+      return createdAt >= cutoff;
+    });
+  }
+
+  static getAllVoiceDeliveries(): VoiceDeliveryRecord[] {
+    return Array.from(this.voiceDeliveriesStore.values());
   }
 }
 

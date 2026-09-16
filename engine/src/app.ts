@@ -1,6 +1,7 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import { inboundRouter } from './transport/twilio/inbound.js';
 import { outboundRouter } from './transport/twilio/outbound.js';
+import { voiceRouter } from './transport/voice/voice_router.js';
 import { DbClient } from './db/client.js';
 import { Logger } from './config/logger.js';
 import swaggerUi from 'swagger-ui-express';
@@ -65,6 +66,7 @@ export function createApp(): Express {
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', inboundRouter);
   app.use('/webhooks', outboundRouter);
+  app.use(voiceRouter);
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
   app.get('/', (_req: Request, res: Response) => {
@@ -90,10 +92,11 @@ export function createApp(): Express {
       return;
     }
     res.status(200).json({
-      conversations: DbClient.getAllConversations(),
-      transcripts:   DbClient.getAllTranscripts(),
-      messages_in:   DbClient.getAllMessagesIn(),
-      messages_out:  DbClient.getAllMessagesOut(),
+      conversations:    DbClient.getAllConversations(),
+      transcripts:      DbClient.getAllTranscripts(),
+      messages_in:      DbClient.getAllMessagesIn(),
+      messages_out:     DbClient.getAllMessagesOut(),
+      voice_deliveries: DbClient.getAllVoiceDeliveries(),
     });
   });
 

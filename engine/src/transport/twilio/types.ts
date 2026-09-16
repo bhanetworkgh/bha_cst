@@ -81,6 +81,9 @@ export interface SystemConfig {
   media_base_url?: string;           // Media server base URL for signed URL fetches
   escalation_rules?: EscalationRule[]; // When/how to file incidents in BHARAG incidents.v0 (spec §2)
   routing_rules?: RoutingRule[];       // Per-intent routing config: auto-answer, escalate, quiet hours (spec §2)
+  elevenlabs_voice_id?: string;        // ElevenLabs voice clone pointer (Jason's account)
+  elevenlabs_model_id?: string;        // Fast synthesis model (e.g. eleven_turbo_v2_5)
+  voice_enabled?: boolean;             // Whether voice lane is enabled for this system
 }
 
 export interface TwilioWebhookPayload {

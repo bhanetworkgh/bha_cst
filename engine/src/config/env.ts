@@ -51,6 +51,13 @@ const envSchema = z.object({
   AWS_S3_BUCKET_NAME:   z.string().default('vfarm-media-captures'),
   // AWS Region where the S3 bucket is hosted
   AWS_REGION:           z.string().default('us-east-1'),
+
+  // ── ElevenLabs Voice Clone Configuration ──────────────────────────────────
+  ELEVENLABS_API_KEY:        z.string().optional(),
+  ELEVENLABS_BASE_URL:       z.string().url().optional(),
+  ELEVENLABS_MODEL_ID:       z.string().optional(),
+  ELEVENLABS_VOICE_ID:       z.string().optional(),
+  VFARM_ELEVENLABS_VOICE_ID: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

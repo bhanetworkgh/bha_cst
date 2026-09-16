@@ -75,6 +75,10 @@ Clients cannot inject or override the tenant_id.
       description: 'Liveness and readiness probes used by Render / AWS ALB.',
     },
     {
+      name: 'Voice',
+      description: 'ElevenLabs voice clone speech synthesis and interactive voice lane endpoints.',
+    },
+    {
       name: 'Debug',
       description:
         'Development-only endpoints that expose in-memory state. **Never available in production.**',
@@ -282,6 +286,120 @@ Clients cannot inject or override the tenant_id.
         },
         required: ['error', 'message'],
       },
+
+      // ── Voice Lane Schemas ────────────────────────────────────────────────
+      AudioSpeakRequest: {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: 'Text to synthesize into spoken audio via Jason\'s ElevenLabs voice clone.',
+            example: 'Your bay 4 irrigation cycle completed successfully.',
+          },
+          voiceId: {
+            type: 'string',
+            description: 'Optional override for ElevenLabs voice ID pointer.',
+            example: 'Hmy97GCI840wuICQesiM',
+          },
+          modelId: {
+            type: 'string',
+            description: 'Optional override for ElevenLabs model ID.',
+            example: 'eleven_turbo_v2_5',
+          },
+        },
+        required: ['text'],
+      },
+
+      AudioSpeakResponse: {
+        type: 'object',
+        properties: {
+          audioBase64: {
+            type: 'string',
+            description: 'Base64-encoded audio payload.',
+          },
+          mimeType: {
+            type: 'string',
+            example: 'audio/mpeg',
+          },
+        },
+        required: ['audioBase64', 'mimeType'],
+      },
+
+      VoiceTurnRequest: {
+        type: 'object',
+        properties: {
+          from_e164: {
+            type: 'string',
+            description: 'Caller phone number in E.164 format.',
+            example: '+15551234567',
+          },
+          to_e164: {
+            type: 'string',
+            description: 'System receiving phone number in E.164 format.',
+            example: '+19715885823',
+          },
+          speech_text: {
+            type: 'string',
+            description: 'Transcribed speech text from caller.',
+            example: 'What is the temperature in the bay?',
+          },
+          correlation_id: {
+            type: 'string',
+            description: 'Optional correlation ID for tracing across CST and audit ledgers.',
+            example: 'voice_turn_abc123',
+          },
+        },
+        required: ['from_e164', 'to_e164', 'speech_text'],
+      },
+
+      VoiceLaneHealthResponse: {
+        type: 'object',
+        properties: {
+          service: { type: 'string', example: 'bha-cst-engine' },
+          voice_lane: {
+            type: 'object',
+            properties: {
+              status: {
+                type: 'string',
+                enum: ['healthy', 'degraded', 'unconfigured'],
+                example: 'healthy',
+              },
+              can_route_voice: {
+                type: 'boolean',
+                example: true,
+              },
+              clone_configured: {
+                type: 'boolean',
+                example: true,
+              },
+              voice_id: {
+                type: 'string',
+                nullable: true,
+                example: 'Hmy9...esiM',
+              },
+              successful_deliveries_24h: {
+                type: 'number',
+                example: 1,
+              },
+              last_successful_spoken_delivery: {
+                type: 'string',
+                nullable: true,
+                example: '2026-09-17T00:30:00.000Z',
+              },
+              reason: {
+                type: 'string',
+                example: 'Voice clone configured and at least one successful delivery verified in last 24 hours.',
+              },
+              computed_at: {
+                type: 'string',
+                example: '2026-09-17T00:45:00.000Z',
+              },
+            },
+            required: ['status', 'can_route_voice', 'clone_configured', 'successful_deliveries_24h', 'reason'],
+          },
+        },
+        required: ['service', 'voice_lane'],
+      },
     },
   },
 
@@ -486,6 +604,142 @@ An \`ErrorCode\` value, if present, is stored in the \`error_message\` field for
               'application/json': {
                 schema: { $ref: '#/components/schemas/HealthResponse' },
                 example: { status: 'ok', service: 'bha-cst-engine' },
+              },
+            },
+          },
+        },
+      },
+    },
+
+    // ── GET /health/voice ──────────────────────────────────────────────────
+    '/health/voice': {
+      get: {
+        tags: ['Health', 'Voice'],
+        summary: 'Destiny voice-lane health signal',
+        operationId: 'getVoiceHealth',
+        description:
+          'Evaluates whether front-line voice routing is permitted based on: clone configured + at least one successful spoken delivery in the last 24h. If false, returns 503 and signals NS/RT to keep CST in SMS-only mode.',
+        responses: {
+          '200': {
+            description: 'Voice lane is healthy and verified for front-line routing.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/VoiceLaneHealthResponse' },
+              },
+            },
+          },
+          '503': {
+            description: 'Voice lane is unconfigured or degraded (0 successful deliveries in 24h). CST remains SMS-only.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/VoiceLaneHealthResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+
+    // ── POST /audio/speak ──────────────────────────────────────────────────
+    '/audio/speak': {
+      post: {
+        tags: ['Voice'],
+        summary: 'Direct speech synthesis via Jason\'s voice clone',
+        operationId: 'audioSpeak',
+        description:
+          'Synthesizes authorized text into base64 audio via ElevenLabs using Jason\'s voice clone pointer. Fails closed if clone is unconfigured or synthesis fails.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/AudioSpeakRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Audio successfully synthesized.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AudioSpeakResponse' },
+              },
+            },
+          },
+          '400': {
+            description: 'Missing or invalid request parameters.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          '502': {
+            description: 'Audio synthesis failed. Spoken turn dropped (fail-closed, no generic fallback).',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+
+    // ── POST /voice/turn ───────────────────────────────────────────────────
+    '/voice/turn': {
+      post: {
+        tags: ['Voice'],
+        summary: 'Interactive voice lane turn through CST orchestrator',
+        operationId: 'voiceTurn',
+        description:
+          'Passes caller voice turn through CST authorization chain, intent router, and BHARAG connectors. Synthesizes audio only if authorized. Strictly fails closed.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/VoiceTurnRequest' },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Voice turn successfully processed and synthesized.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string', example: 'synthesized' },
+                    text: { type: 'string' },
+                    audioBase64: { type: 'string' },
+                    mimeType: { type: 'string', example: 'audio/mpeg' },
+                    correlation_id: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          '403': {
+            description: 'CST authorization chain refused the answer (e.g. unauthorized role or sensitive write). Spoken turn refused.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          '422': {
+            description: 'System lacks voice clone configuration. Spoken turn dropped (strictly no generic voice fallback).',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          '502': {
+            description: 'Voice synthesis failed upstream. Turn dropped.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
               },
             },
           },

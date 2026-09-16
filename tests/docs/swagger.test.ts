@@ -19,12 +19,19 @@ describe('Swagger API Documentation Endpoints', () => {
     expect(res.body.paths['/webhooks/twilio/sms'].post).toBeDefined();
     expect(res.body.paths['/webhooks/twilio/delivery-status']).toBeDefined();
     expect(res.body.paths['/health']).toBeDefined();
+    expect(res.body.paths['/health/voice']).toBeDefined();
+    expect(res.body.paths['/audio/speak']).toBeDefined();
+    expect(res.body.paths['/voice/turn']).toBeDefined();
     expect(res.body.paths['/debug/state']).toBeDefined();
 
     // Verify schemas are present
     expect(res.body.components.schemas.TwilioSmsWebhookBody).toBeDefined();
     expect(res.body.components.schemas.TwilioDeliveryStatusBody).toBeDefined();
     expect(res.body.components.schemas.HealthResponse).toBeDefined();
+    expect(res.body.components.schemas.VoiceLaneHealthResponse).toBeDefined();
+    expect(res.body.components.schemas.AudioSpeakRequest).toBeDefined();
+    expect(res.body.components.schemas.AudioSpeakResponse).toBeDefined();
+    expect(res.body.components.schemas.VoiceTurnRequest).toBeDefined();
   });
 
   it('serves Swagger UI HTML page at GET /api-docs/', async () => {
