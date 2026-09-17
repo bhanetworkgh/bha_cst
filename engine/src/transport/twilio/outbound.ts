@@ -63,6 +63,8 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
   return true;
 }
 
+let isProcessingQueue = false;
+
 /**
  * Worker function to process pending & queued outbound messages.
  * Manages status transitions: pending/queued -> sending -> sent | failed | refused
@@ -70,7 +72,13 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
  * without duplicate sends.
  */
 export async function processOutboundQueue(): Promise<void> {
-  const pendingMessages = await DbClient.getPendingOutboundMessages();
+  if (isProcessingQueue) {
+    return;
+  }
+  isProcessingQueue = true;
+
+  try {
+    const pendingMessages = await DbClient.getPendingOutboundMessages();
 
   for (const msg of pendingMessages) {
     if (!msg.id) continue;
@@ -201,6 +209,9 @@ export async function processOutboundQueue(): Promise<void> {
       }
     }
   }
+} finally {
+  isProcessingQueue = false;
+}
 }
 
 // Delivery status callback handler

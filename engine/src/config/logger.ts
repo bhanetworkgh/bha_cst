@@ -84,6 +84,22 @@ export class Logger {
     }
   }
 
+  /**
+   * Emit a structured infrastructure/reliability event log.
+   * `commercial_impact` is mandatory — every infra event must state its business consequence.
+   * Use for: telemetry unavailability, outbound send failures, rate-limit breaches, API outages.
+   */
+  static infra(event: InfraEvent): void {
+    console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      type: 'INFRA_EVENT',
+      message: event.message,
+      commercial_impact: event.commercial_impact,
+      ...event.meta,
+    }));
+  }
+
   static audit(event: SecurityLedgerEvent): void {
     const payload = {
       timestamp: event.timestamp || new Date().toISOString(),
