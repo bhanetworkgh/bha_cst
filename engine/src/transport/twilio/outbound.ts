@@ -21,11 +21,30 @@ export function clearCrossTenantRules(): void {
   crossTenantForbiddenMap.clear();
 }
 
+import { CoreRegistry } from '../../core/registry.js';
+
 /**
  * Perform outbound tenant isolation check before calling Twilio.
- * Returns true if send is allowed; false if refused (Test 8).
+ * Returns true if send is allowed; false if refused (Test 8 & Spec §9).
  */
 export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
+  // Check CoreRegistry service number bindings
+  const boundServiceNumber = CoreRegistry.resolveServiceNumber(msg.to_e164);
+  if (boundServiceNumber && (boundServiceNumber.tenant_id !== msg.tenant_id)) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: msg.tenant_id,
+      actor: 'outbound_worker',
+      role: 'transport_worker',
+      entry_point: 'api',
+      tool_or_route: 'validateOutboundTenancyScope',
+      outcome: 'refused',
+      reason: `Outbound send refused: destination ${msg.to_e164} is a service number bound to tenant "${boundServiceNumber.tenant_id}", project "${boundServiceNumber.project_id}"`,
+      correlation_id: msg.correlation_id,
+    });
+    return false;
+  }
+
   // Check if destination phone is registered as belonging to another tenant's system number
   const registeredSystemForDest = SystemsRegistry.resolveSystemByPhoneNumber(msg.to_e164);
   if (registeredSystemForDest && registeredSystemForDest.tenant_id !== msg.tenant_id) {

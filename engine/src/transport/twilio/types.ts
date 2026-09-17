@@ -1,6 +1,7 @@
 export interface InboundMessage {
   message_id: string; // Twilio MessageSid
   tenant_id: string;
+  project_id?: string;
   from_e164: string;
   to_e164: string;
   body: string;
@@ -12,6 +13,7 @@ export interface InboundMessage {
 export interface OutboundMessage {
   id?: string;
   tenant_id: string;
+  project_id?: string;
   from_e164?: string; // The system Twilio number that sent this message
   to_e164: string;
   body: string;
@@ -33,6 +35,7 @@ export interface IdentityContext {
   organization_id: string; // Top-level tenant security boundary
   tenant_id: string;       // Alias for organization_id
   system_id: string;
+  project_id?: string;     // Project security boundary
   workspace_id: string;    // Workspace / Project scope
   is_known_customer: boolean;
   role: 'owner' | 'manager' | 'tech' | 'unknown';

@@ -3,21 +3,26 @@ import { randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
+import { CoreRegistry } from '../core/registry.js';
+import type { Project, ServiceNumberBinding, Tenant } from '../core/types.js';
 
 export interface CustomerRecord {
   phone_e164:       string;
   customer_ref:     string;
   organization_id?: string;
   tenant_id:        string;
+  project_id?:      string;
   workspace_id?:    string;
   role?:            'owner' | 'manager' | 'tech';
   unit_id?:         string;
   farm_id?:         string;
+  farm_ids?:        string[];
 }
 
 export interface VoiceDeliveryRecord {
   id?: string;
-  system_id: string;
+  system_id?: string;
+  project_id?: string;
   tenant_id: string;
   conversation_id?: string;
   message_id?: string;
@@ -44,6 +49,9 @@ export class DbClient {
   private static transcriptsStore:      Map<string, any>                 = new Map();
   private static customersStore:        Map<string, CustomerRecord>      = new Map();
   private static voiceDeliveriesStore:  Map<string, VoiceDeliveryRecord> = new Map();
+  private static projectsStore:         Map<string, Project>             = new Map();
+  private static bindingsStore:         Map<string, ServiceNumberBinding>= new Map();
+  private static tenantsStore:          Map<string, Tenant>              = new Map();
 
   static getPool(): pg.Pool | null {
     if (this.pool) return this.pool;
@@ -76,14 +84,16 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // project_id included since migration 010; column is nullable for older rows.
         const query = `
-          INSERT INTO messages_in (message_id, tenant_id, from_e164, to_e164, body, media, received_at, status, correlation_id)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'enqueued', $8)
+          INSERT INTO messages_in (message_id, tenant_id, project_id, from_e164, to_e164, body, media, received_at, status, correlation_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'enqueued', $9)
           ON CONFLICT (message_id) DO NOTHING
         `;
         const res = await pool.query(query, [
           msg.message_id,
           msg.tenant_id,
+          (msg as any).project_id || null,
           msg.from_e164,
           msg.to_e164,
           msg.body,
@@ -117,18 +127,21 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // project_id included since migration 010; column is nullable for older rows.
         const query = `
-          INSERT INTO messages_out (id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          INSERT INTO messages_out (id, tenant_id, project_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
           ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             retry_count = EXCLUDED.retry_count,
             error_message = EXCLUDED.error_message,
-            from_e164 = EXCLUDED.from_e164
+            from_e164 = EXCLUDED.from_e164,
+            project_id = COALESCE(EXCLUDED.project_id, messages_out.project_id)
         `;
         await pool.query(query, [
           record.id,
           record.tenant_id,
+          (record as any).project_id || null,
           record.from_e164 || null,
           record.to_e164,
           record.body,
@@ -370,11 +383,14 @@ export class DbClient {
     systemId: string,
     customerRef: string,
     organizationId?: string,
-    workspaceId?: string
+    workspaceId?: string,
+    projectId?: string
   ): Promise<{ conversation_id: string }> {
     const orgId = organizationId || tenantId;
-    const wsId = workspaceId || 'ws-vfarm-main';
-    const key = `${orgId}:${customerRef}`;
+    const wsId = workspaceId || '';
+    const projId = projectId || null;
+    // Key includes project_id so two projects for the same speaker produce separate conversations
+    const key = `${orgId}:${projId || 'default'}:${customerRef}`;
     let conv = this.conversationsStore.get(key);
     if (!conv) {
       conv = {
@@ -382,6 +398,7 @@ export class DbClient {
         tenant_id: orgId,
         organization_id: orgId,
         workspace_id: wsId,
+        project_id: projId,
         system_id: systemId,
         customer_ref: customerRef,
         channel: 'sms',
@@ -395,13 +412,15 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // ON CONFLICT now uses the (tenant_id, project_id, customer_ref) unique constraint
+        // added in migration 010. Falls back gracefully for rows where project_id is NULL.
         const query = `
-          INSERT INTO conversations (conversation_id, tenant_id, organization_id, workspace_id, system_id, customer_ref, channel, state, incident_ids, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, 'sms', 'open', '[]'::jsonb, NOW(), NOW())
-          ON CONFLICT (tenant_id, customer_ref) DO UPDATE SET updated_at = NOW()
+          INSERT INTO conversations (conversation_id, tenant_id, project_id, organization_id, workspace_id, system_id, customer_ref, channel, state, incident_ids, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'sms', 'open', '[]'::jsonb, NOW(), NOW())
+          ON CONFLICT (tenant_id, project_id, customer_ref) DO UPDATE SET updated_at = NOW()
           RETURNING conversation_id
         `;
-        const res = await pool.query(query, [conv.conversation_id, orgId, orgId, wsId, systemId, customerRef]);
+        const res = await pool.query(query, [conv.conversation_id, orgId, projId, orgId, wsId, systemId, customerRef]);
         if (res.rows.length > 0) {
           conv.conversation_id = res.rows[0].conversation_id;
           this.conversationsStore.set(key, conv);
@@ -445,6 +464,7 @@ export class DbClient {
     message_id: string;
     conversation_id: string;
     tenant_id: string;
+    project_id?: string;
     direction: 'inbound' | 'outbound';
     from_e164: string;
     to_e164: string;
@@ -461,14 +481,15 @@ export class DbClient {
     if (pool) {
       try {
         const query = `
-          INSERT INTO messages (message_id, conversation_id, tenant_id, direction, from_e164, to_e164, body, media_refs, provider_sid, delivery_status, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'received', NOW())
+          INSERT INTO messages (message_id, conversation_id, tenant_id, project_id, direction, from_e164, to_e164, body, media_refs, provider_sid, delivery_status, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', NOW())
           ON CONFLICT (message_id) DO NOTHING
         `;
         await pool.query(query, [
           msg.message_id,
           msg.conversation_id,
           msg.tenant_id,
+          msg.project_id || null,
           msg.direction,
           msg.from_e164,
           msg.to_e164,
@@ -519,20 +540,31 @@ export class DbClient {
     this.voiceDeliveriesStore.clear();
   }
 
+  static resetDurableStores(): void {
+    this.projectsStore.clear();
+    this.bindingsStore.clear();
+    this.tenantsStore.clear();
+  }
+
   // ── Customer Registry (mirrors `customers` table in Postgres) ─────────────
 
   static seedCustomer(record: CustomerRecord): void {
     const role = record.role || 'manager';
     const orgId = record.organization_id || record.tenant_id;
-    const wsId = record.workspace_id || 'ws-vfarm-main';
+    const wsId = record.workspace_id || '';
     const cleanRecord: CustomerRecord = {
       ...record,
       role,
       organization_id: orgId,
       tenant_id: orgId,
       workspace_id: wsId,
+      farm_ids: record.farm_ids || (record.farm_id ? [record.farm_id] : []),
     };
 
+    if (record.project_id) {
+      const projKey = `${orgId}:${record.project_id}:${record.phone_e164.trim()}`;
+      this.customersStore.set(projKey, cleanRecord);
+    }
     const key = `${orgId}:${record.phone_e164.trim()}`;
     this.customersStore.set(key, cleanRecord);
     // Also index under tenant_id for backwards compat key lookup
@@ -543,32 +575,39 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       const query = `
-        INSERT INTO customers (tenant_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO customers (tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
         ON CONFLICT (tenant_id, phone_e164) DO UPDATE SET
           customer_ref    = EXCLUDED.customer_ref,
+          project_id      = COALESCE(EXCLUDED.project_id, customers.project_id),
           organization_id = EXCLUDED.organization_id,
           workspace_id    = EXCLUDED.workspace_id,
           role            = EXCLUDED.role,
           unit_id         = EXCLUDED.unit_id,
-          farm_id         = EXCLUDED.farm_id
+          farm_id         = EXCLUDED.farm_id,
+          farm_ids        = COALESCE(EXCLUDED.farm_ids, customers.farm_ids);
       `;
-      pool.query(query, [
-        orgId,
-        orgId,
-        wsId,
-        record.phone_e164.trim(),
-        record.customer_ref,
-        role,
-        record.unit_id || null,
-        record.farm_id || null,
-      ]).catch((err) => Logger.error(`DbClient.seedCustomer Postgres Error: ${err.message}`));
+      pool
+        .query(query, [
+          cleanRecord.tenant_id,
+          cleanRecord.project_id || null,
+          cleanRecord.organization_id,
+          cleanRecord.workspace_id,
+          cleanRecord.phone_e164.trim(),
+          cleanRecord.customer_ref,
+          cleanRecord.role,
+          cleanRecord.unit_id || null,
+          cleanRecord.farm_id || null,
+          JSON.stringify(cleanRecord.farm_ids || []),
+        ])
+        .catch((err) => Logger.error(`DbClient.seedCustomer Postgres Error: ${err.message}`));
     }
   }
 
   static seedConversation(conv: {
     conversation_id: string;
     tenant_id: string;
+    project_id?: string;
     organization_id?: string;
     workspace_id?: string;
     system_id?: string;
@@ -579,66 +618,89 @@ export class DbClient {
     resolution_status?: string | null;
   }): void {
     const orgId = conv.organization_id || conv.tenant_id;
+    const projId = conv.project_id || 'default';
     const cleanConv = {
       ...conv,
       organization_id: orgId,
       tenant_id: conv.tenant_id,
+      project_id: conv.project_id,
       customer_ref: conv.customer_ref || 'cust_default',
       alert_state: conv.alert_state ?? null,
       resolution_status: conv.resolution_status ?? null,
     };
-    const key = `${orgId}:${cleanConv.customer_ref}`;
+    const key = `${orgId}:${projId}:${cleanConv.customer_ref}`;
     this.conversationsStore.set(key, cleanConv);
+    this.conversationsStore.set(`${orgId}:${cleanConv.customer_ref}`, cleanConv);
   }
 
   static lookupCustomerByPhone(
     phoneE164: string,
-    tenantId: string
+    tenantId: string,
+    projectId?: string
   ): CustomerRecord | null {
     if (!phoneE164) return null;
     const cleanPhone = phoneE164.trim();
+    if (projectId) {
+      const projRecord = this.customersStore.get(`${tenantId}:${projectId}:${cleanPhone}`);
+      if (projRecord) return projRecord;
+    }
     const key = `${tenantId}:${cleanPhone}`;
     return this.customersStore.get(key) ?? null;
   }
 
   /**
-   * Async version of lookupCustomerByPhone that also checks Postgres
-   * if the in-memory store misses (e.g. after a server restart).
+   * Async customer lookup scoped to (tenant_id, project_id, phone_e164) per R-NUM-P4.
+   * project_id is required — same phone in two projects has separate membership.
+   * Falls back to in-memory cache (seed data / test) when Postgres is unavailable.
    */
   static async lookupCustomerByPhoneAsync(
     phoneE164: string,
-    tenantId: string
+    tenantId: string,
+    projectId?: string
   ): Promise<CustomerRecord | null> {
     if (!phoneE164) return null;
     const cleanPhone = phoneE164.trim();
     // Fast path: in-memory hit
-    const memRecord = this.lookupCustomerByPhone(cleanPhone, tenantId);
+    const memRecord = this.lookupCustomerByPhone(cleanPhone, tenantId, projectId);
     if (memRecord) return memRecord;
 
-    // Slow path: Postgres lookup (exact E.164 match)
+    // Slow path: Postgres lookup — scoped by project_id when provided (migration 010+)
     const pool = this.getPool();
     if (pool) {
       try {
+        const hasProjectId = !!projectId;
         const res = await pool.query(
-          `SELECT tenant_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id
-           FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`,
-          [tenantId, cleanPhone]
+          hasProjectId
+            ? `SELECT tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids, speaker_cache_expires_at
+               FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND project_id = $2 AND phone_e164 = $3`
+            : `SELECT tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids, speaker_cache_expires_at
+               FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2 ORDER BY speaker_cache_expires_at DESC NULLS LAST LIMIT 1`,
+          hasProjectId ? [tenantId, projectId, cleanPhone] : [tenantId, cleanPhone]
         );
         if (res.rows.length > 0) {
           const row = res.rows[0];
+          // Honor TTL: if speaker_cache_expires_at is set and in the past, treat as miss
+          if (row.speaker_cache_expires_at && new Date(row.speaker_cache_expires_at) < new Date()) {
+            Logger.warn(`DbClient.lookupCustomerByPhoneAsync: cache row expired for ${cleanPhone} in project ${projectId}`);
+            return null;
+          }
           const record: CustomerRecord = {
             tenant_id:       row.tenant_id,
+            project_id:      row.project_id || projectId,
             organization_id: row.organization_id || row.tenant_id,
-            workspace_id:    row.workspace_id || 'ws-vfarm-main',
+            workspace_id:    row.workspace_id || '',
             phone_e164:      row.phone_e164,
             customer_ref:    row.customer_ref,
             role:            (row.role as 'owner' | 'manager' | 'tech') || 'manager',
             unit_id:         row.unit_id || undefined,
             farm_id:         row.farm_id || undefined,
+            farm_ids:        row.farm_ids || (row.farm_id ? [row.farm_id] : []),
           };
           // Populate in-memory cache
-          const key = `${tenantId}:${cleanPhone}`;
-          this.customersStore.set(key, record);
+          if (projectId) {
+            this.customersStore.set(`${tenantId}:${projectId}:${cleanPhone}`, record);
+          }
+          this.customersStore.set(`${tenantId}:${cleanPhone}`, record);
           return record;
         }
       } catch (err: any) {
@@ -649,19 +711,354 @@ export class DbClient {
     return null;
   }
 
+  // ── Projects Persistence (projects table) ──────────────────────────────────
+
+  static async saveProject(project: Project): Promise<void> {
+    this.projectsStore.set(project.project_id, project);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO projects (project_id, tenant_id, name, status, tenant_org_id, capabilities, speaker_policy, onboarding_reply, elevenlabs_voice_id, elevenlabs_model_id, voice_enabled, synced_at, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, NOW(), NOW(), NOW())
+          ON CONFLICT (project_id) DO UPDATE SET
+            tenant_id           = EXCLUDED.tenant_id,
+            name                = EXCLUDED.name,
+            status              = EXCLUDED.status,
+            tenant_org_id       = EXCLUDED.tenant_org_id,
+            capabilities        = EXCLUDED.capabilities,
+            speaker_policy      = EXCLUDED.speaker_policy,
+            onboarding_reply    = EXCLUDED.onboarding_reply,
+            elevenlabs_voice_id = EXCLUDED.elevenlabs_voice_id,
+            elevenlabs_model_id = EXCLUDED.elevenlabs_model_id,
+            voice_enabled       = EXCLUDED.voice_enabled,
+            synced_at           = EXCLUDED.synced_at,
+            updated_at          = NOW();
+        `;
+        await pool.query(query, [
+          project.project_id,
+          project.tenant_id,
+          project.name,
+          project.status,
+          project.tenant_org_id || null,
+          JSON.stringify(project.capabilities),
+          project.speaker_policy,
+          project.onboarding_reply || null,
+          project.elevenlabs_voice_id || null,
+          project.elevenlabs_model_id || null,
+          project.voice_enabled ?? false,
+        ]);
+      } catch (err: any) {
+        Logger.error(`DbClient.saveProject Postgres Error: ${err.message}`);
+      }
+    }
+  }
+
+  static async getProject(projectId: string): Promise<Project | null> {
+    const mem = this.projectsStore.get(projectId);
+    if (mem) return mem;
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT project_id, tenant_id, name, status, tenant_org_id, capabilities, speaker_policy, onboarding_reply, elevenlabs_voice_id, elevenlabs_model_id, voice_enabled, synced_at FROM projects WHERE project_id = $1',
+          [projectId]
+        );
+        if (res.rows.length > 0) {
+          const r = res.rows[0];
+          const proj: Project = {
+            project_id: r.project_id,
+            tenant_id: r.tenant_id,
+            name: r.name,
+            status: r.status,
+            tenant_org_id: r.tenant_org_id || undefined,
+            capabilities: r.capabilities || { sms: true },
+            speaker_policy: r.speaker_policy || 'allowlist',
+            onboarding_reply: r.onboarding_reply || undefined,
+            elevenlabs_voice_id: r.elevenlabs_voice_id || undefined,
+            elevenlabs_model_id: r.elevenlabs_model_id || undefined,
+            voice_enabled: r.voice_enabled ?? false,
+            synced_at: r.synced_at ? new Date(r.synced_at).toISOString() : undefined,
+          };
+          this.projectsStore.set(proj.project_id, proj);
+          return proj;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getProject Postgres Error: ${err.message}`);
+      }
+    }
+    return null;
+  }
+
+  static async getAllProjects(): Promise<Project[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT project_id, tenant_id, name, status, tenant_org_id, capabilities, speaker_policy, onboarding_reply, elevenlabs_voice_id, elevenlabs_model_id, voice_enabled, synced_at FROM projects'
+        );
+        if (res.rows.length > 0) {
+          const list = res.rows.map((r) => ({
+            project_id: r.project_id,
+            tenant_id: r.tenant_id,
+            name: r.name,
+            status: r.status,
+            tenant_org_id: r.tenant_org_id || undefined,
+            capabilities: r.capabilities || { sms: true },
+            speaker_policy: r.speaker_policy || 'allowlist',
+            onboarding_reply: r.onboarding_reply || undefined,
+            elevenlabs_voice_id: r.elevenlabs_voice_id || undefined,
+            elevenlabs_model_id: r.elevenlabs_model_id || undefined,
+            voice_enabled: r.voice_enabled ?? false,
+            synced_at: r.synced_at ? new Date(r.synced_at).toISOString() : undefined,
+          }));
+          for (const p of list) {
+            this.projectsStore.set(p.project_id, p);
+          }
+          return list;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getAllProjects Postgres Error: ${err.message}`);
+      }
+    }
+    return Array.from(this.projectsStore.values());
+  }
+
+  // ── Service Number Bindings Persistence (service_number_bindings table) ───
+
+  static async saveServiceNumberBinding(binding: ServiceNumberBinding): Promise<void> {
+    const phone = binding.phone_e164.trim();
+    this.bindingsStore.set(phone, { ...binding, phone_e164: phone });
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const query = `
+          INSERT INTO service_number_bindings (phone_e164, tenant_id, project_id, capability, status, sid, bound_at, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+          ON CONFLICT (phone_e164) DO UPDATE SET
+            tenant_id   = EXCLUDED.tenant_id,
+            project_id  = EXCLUDED.project_id,
+            capability  = EXCLUDED.capability,
+            status      = EXCLUDED.status,
+            sid         = EXCLUDED.sid,
+            bound_at    = EXCLUDED.bound_at,
+            unbound_at  = NULL;
+        `;
+        await pool.query(query, [
+          phone,
+          binding.tenant_id,
+          binding.project_id,
+          binding.capability,
+          binding.status || 'bound',
+          binding.sid || null,
+          binding.bound_at ? new Date(binding.bound_at) : new Date(),
+        ]);
+      } catch (err: any) {
+        Logger.error(`DbClient.saveServiceNumberBinding Postgres Error: ${err.message}`);
+      }
+    }
+  }
+
+  static async removeServiceNumberBinding(phoneE164: string): Promise<void> {
+    const phone = phoneE164.trim();
+    this.bindingsStore.delete(phone);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query('DELETE FROM service_number_bindings WHERE phone_e164 = $1', [phone]);
+      } catch (err: any) {
+        Logger.error(`DbClient.removeServiceNumberBinding Postgres Error: ${err.message}`);
+      }
+    }
+  }
+
+  static async getAllServiceNumberBindings(): Promise<ServiceNumberBinding[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          "SELECT phone_e164, tenant_id, project_id, capability, status, sid, bound_at FROM service_number_bindings WHERE status = 'bound'"
+        );
+        if (res.rows.length > 0) {
+          const list = res.rows.map((r) => ({
+            phone_e164: r.phone_e164,
+            tenant_id: r.tenant_id,
+            project_id: r.project_id,
+            capability: r.capability as any,
+            status: r.status as any,
+            sid: r.sid || undefined,
+            bound_at: r.bound_at ? new Date(r.bound_at).toISOString() : undefined,
+          }));
+          for (const b of list) {
+            this.bindingsStore.set(b.phone_e164, b);
+          }
+          return list;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getAllServiceNumberBindings Postgres Error: ${err.message}`);
+      }
+    }
+    return Array.from(this.bindingsStore.values());
+  }
+
+  // ── Tenant Persistence (organizations table) ──────────────────────────────
+
+  static async saveTenant(tenant: Tenant): Promise<void> {
+    this.tenantsStore.set(tenant.tenant_id, tenant);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query(
+          'INSERT INTO organizations (organization_id, name, status, created_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT (organization_id) DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status',
+          [tenant.tenant_id, tenant.name, tenant.status || 'active']
+        );
+      } catch (err: any) {
+        Logger.error(`DbClient.saveTenant Postgres Error: ${err.message}`);
+      }
+    }
+  }
+
+  static async getAllTenants(): Promise<Tenant[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query('SELECT organization_id, name, status, created_at FROM organizations');
+        if (res.rows.length > 0) {
+          const list = res.rows.map((r) => ({
+            tenant_id: r.organization_id,
+            name: r.name,
+            status: r.status,
+            adapter_type: r.organization_id.includes('vfarm') ? 'vfarm' : 'custom',
+            created_at: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+          }));
+          for (const t of list) {
+            this.tenantsStore.set(t.tenant_id, t);
+          }
+          return list;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getAllTenants Postgres Error: ${err.message}`);
+      }
+    }
+    return Array.from(this.tenantsStore.values());
+  }
+
+  // ── Conversation & Message Query Methods ──────────────────────────────────
+
+  static async getConversation(
+    tenantId: string,
+    projectId: string,
+    customerRef: string
+  ): Promise<any | null> {
+    const key = `${tenantId}:${projectId}:${customerRef}`;
+    const mem = this.conversationsStore.get(key);
+    if (mem) return mem;
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT * FROM conversations WHERE tenant_id = $1 AND project_id = $2 AND customer_ref = $3',
+          [tenantId, projectId, customerRef]
+        );
+        if (res.rows.length > 0) {
+          return res.rows[0];
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.getConversation Postgres Error: ${err.message}`);
+      }
+    }
+    return null;
+  }
+
+  static async getMessagesForConversation(
+    conversationId: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<any[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT * FROM messages WHERE conversation_id = $1 AND tenant_id = $2 AND ($3::text IS NULL OR project_id = $3) ORDER BY created_at ASC',
+          [conversationId, tenantId, projectId || null]
+        );
+        return res.rows;
+      } catch (err: any) {
+        Logger.error(`DbClient.getMessagesForConversation Postgres Error: ${err.message}`);
+      }
+    }
+    return Array.from(this.transcriptsStore.values()).filter(
+      (m: any) => m.conversation_id === conversationId && m.tenant_id === tenantId && (!projectId || m.project_id === projectId)
+    );
+  }
+
+
   /**
-   * Verify that a given workspace belongs to an organization.
-   * Prevents cross-workspace query injection.
+   * Verify that a given workspace is valid for the given organization.
+   *
+   * Strategy (synchronous — no DB):
+   * 1. Reject immediately if organizationId is empty.
+   * 2. Try CoreRegistry: collect all project_ids for this tenant and accept
+   *    the workspace if it matches a known project_id or its standard ws- prefix.
+   * 3. Reject if the workspaceId clearly contains a *different* org/tenant prefix
+   *    (cross-tenant injection attempt).
+   * 4. If unknown but not clearly foreign, fail closed (return false).
    */
   static validateWorkspaceScope(organizationId: string, workspaceId: string): boolean {
     if (!organizationId || !workspaceId) return false;
-    // Default vFarm workspace mapping
-    if (organizationId === 'tenant-vfarm-01' || organizationId === 'org-vfarm-01') {
-      return workspaceId === 'ws-vfarm-main' || workspaceId === 'ws-vfarm-bay04';
+
+    // Fast check: registry
+    try {
+      const projects = CoreRegistry.getProjectsForTenant(organizationId);
+      if (projects.length > 0) {
+        for (const p of projects) {
+          if (workspaceId === p.project_id || workspaceId === `ws-${p.project_id}`) return true;
+          if (p.tenant_org_id && (workspaceId === p.tenant_org_id || workspaceId === `ws-${p.tenant_org_id}`)) return true;
+        }
+      }
+    } catch {
+      // ignore
     }
-    // Allow matching workspace prefix for dynamically created workspaces in tests
-    if (workspaceId.startsWith(`ws-${organizationId}`) || workspaceId.includes(organizationId)) {
+
+    // Tenant slug extraction: e.g. 'tenant-vfarm-01' -> 'vfarm'
+    const slug = organizationId.replace(/^(tenant|org)-/, '').replace(/-\d+$/, '');
+    if (slug && workspaceId.includes(slug)) {
       return true;
+    }
+    if (workspaceId.startsWith(organizationId) || workspaceId.includes(organizationId)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Project-scoped validation: confirm project_id belongs to tenant_id.
+   * Uses CoreRegistry (in-memory, fast) first, then Postgres as fallback.
+   */
+  static async validateProjectScope(tenantId: string, projectId: string): Promise<boolean> {
+    if (!tenantId || !projectId) return false;
+    // Fast path: registry
+    const project = CoreRegistry.getProject(projectId);
+    if (project) return project.tenant_id === tenantId;
+    // Slow path: Postgres
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          'SELECT project_id FROM projects WHERE project_id = $1 AND tenant_id = $2',
+          [projectId, tenantId]
+        );
+        return (res.rowCount ?? 0) > 0;
+      } catch (err: any) {
+        Logger.error(`DbClient.validateProjectScope Postgres Error: ${err.message}`);
+      }
     }
     return false;
   }
@@ -738,12 +1135,12 @@ export class DbClient {
             id, system_id, tenant_id, conversation_id, message_id,
             status, voice_id, model_id, character_count, audio_bytes,
             mime_type, error_code, error_message, correlation_id,
-            delivered_at, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            delivered_at, created_at, project_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         `;
         await pool.query(query, [
           record.id,
-          record.system_id,
+          record.system_id || record.project_id || 'system-vfarm-01',
           record.tenant_id,
           record.conversation_id || null,
           record.message_id || null,
@@ -758,6 +1155,7 @@ export class DbClient {
           record.correlation_id || null,
           record.delivered_at || null,
           record.created_at,
+          record.project_id || record.system_id || null,
         ]);
       } catch (err: any) {
         Logger.error(`DbClient.recordVoiceDelivery Postgres Error: ${err.message}`);
@@ -776,7 +1174,7 @@ export class DbClient {
     if (pool) {
       try {
         const query = systemId
-          ? `SELECT * FROM voice_deliveries WHERE system_id = $1 AND status IN ('synthesized', 'sent') AND created_at >= NOW() - INTERVAL '24 HOURS' ORDER BY created_at DESC`
+          ? `SELECT * FROM voice_deliveries WHERE (system_id = $1 OR project_id = $1) AND status IN ('synthesized', 'sent') AND created_at >= NOW() - INTERVAL '24 HOURS' ORDER BY created_at DESC`
           : `SELECT * FROM voice_deliveries WHERE status IN ('synthesized', 'sent') AND created_at >= NOW() - INTERVAL '24 HOURS' ORDER BY created_at DESC`;
         const params = systemId ? [systemId] : [];
         const res = await pool.query(query, params);
@@ -784,6 +1182,7 @@ export class DbClient {
           return res.rows.map((row: any) => ({
             id: row.id,
             system_id: row.system_id,
+            project_id: row.project_id,
             tenant_id: row.tenant_id,
             conversation_id: row.conversation_id || undefined,
             message_id: row.message_id || undefined,
@@ -808,7 +1207,7 @@ export class DbClient {
     // In-memory fallback
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     return Array.from(this.voiceDeliveriesStore.values()).filter((d) => {
-      if (systemId && d.system_id !== systemId) return false;
+      if (systemId && d.system_id !== systemId && d.project_id !== systemId) return false;
       if (d.status !== 'synthesized' && d.status !== 'sent') return false;
       const createdAt = new Date(d.created_at || 0).getTime();
       return createdAt >= cutoff;

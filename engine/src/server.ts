@@ -3,10 +3,17 @@ import { getEnv } from './config/env.js';
 import { Logger } from './config/logger.js';
 import { processOutboundQueue } from './transport/twilio/outbound.js';
 
+import { CoreRegistry } from './core/registry.js';
+
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
 const env = getEnv();
 const app = createApp();
+
+// Bootstrap durable project & binding registry from Postgres
+await CoreRegistry.initFromDb().catch((err) => {
+  Logger.warn(`Failed to initialize CoreRegistry from DB: ${err.message}`);
+});
 
 const server = app.listen(env.PORT, () => {
   Logger.info(`CS Twin Engine listening on port ${env.PORT}`, {
@@ -14,6 +21,7 @@ const server = app.listen(env.PORT, () => {
     service: 'bha-cst',
   });
 });
+
 
 // ── Outbound Queue Background Worker Loop ──────────────────────────────────
 // Polls the database for pending outbound messages every 5 seconds so retries

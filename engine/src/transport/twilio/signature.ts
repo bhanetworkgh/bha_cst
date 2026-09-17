@@ -62,3 +62,7 @@ export function verifyTwilioSignature(req: Request, res: Response, next: NextFun
 
   next();
 }
+
+export function generateTwilioSignature(url: string, params: Record<string, string>, authToken: string): string {
+  return twilio.getExpectedTwilioSignature(authToken, url, params);
+}

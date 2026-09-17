@@ -1,7 +1,11 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import { inboundRouter } from './transport/twilio/inbound.js';
+import { smsInterfaceRouter } from './interfaces/sms/index.js';
 import { outboundRouter } from './transport/twilio/outbound.js';
 import { voiceRouter } from './transport/voice/voice_router.js';
+import { voiceInterfaceRouter } from './interfaces/voice/index.js';
+import { webInterfaceRouter } from './interfaces/web/index.js';
+import { adminRouter } from './admin/routes.js';
 import { DbClient } from './db/client.js';
 import { Logger } from './config/logger.js';
 import swaggerUi from 'swagger-ui-express';
@@ -64,9 +68,12 @@ export function createApp(): Express {
   });
 
   // ── Routes ──────────────────────────────────────────────────────────────────
-  app.use('/webhooks', inboundRouter);
+  app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);
+  app.use('/api/v1/admin', adminRouter);
   app.use(voiceRouter);
+  app.use(voiceInterfaceRouter);
+  app.use(webInterfaceRouter);
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
   app.get('/', (_req: Request, res: Response) => {
