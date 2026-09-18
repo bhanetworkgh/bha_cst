@@ -10,6 +10,7 @@
     "start:dev": "tsx watch engine/src/server.ts",
     "dev": "tsx watch engine/src/server.ts",
     "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js",
     "typecheck": "tsc --noEmit -p engine/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

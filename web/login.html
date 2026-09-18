@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>CST Platform Admin · Sign In</title>
+  <meta name="description" content="Secure admin login for CST Multi-Tenant Platform">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base:       #060b14;
+      --bg-surface:    #0d1520;
+      --bg-card:       #111c2d;
+      --border:        rgba(99, 179, 237, 0.12);
+      --border-focus:  rgba(99, 179, 237, 0.55);
+      --accent:        #3b82f6;
+      --accent-glow:   rgba(59, 130, 246, 0.35);
+      --accent-hover:  #2563eb;
+      --text-primary:  #e2e8f0;
+      --text-muted:    #64748b;
+      --text-label:    #94a3b8;
+      --success:       #10b981;
+      --error:         #ef4444;
+      --error-bg:      rgba(239, 68, 68, 0.08);
+      --error-border:  rgba(239, 68, 68, 0.3);
+      --gold:          #f59e0b;
+    }
+
+    html, body {
+      min-height: 100vh;
+      background: var(--bg-base);
+      font-family: 'Inter', system-ui, sans-serif;
+      color: var(--text-primary);
+      overflow: hidden;
+    }
+
+    /* ── Animated mesh background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 0%, rgba(59,130,246,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 80% 100%, rgba(139,92,246,0.1) 0%, transparent 55%),
+        radial-gradient(ellipse 40% 40% at 60% 40%, rgba(16,185,129,0.05) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Grid dots texture */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(circle, rgba(99,179,237,0.07) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .login-wrapper {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    /* ── Floating orb animations ── */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.18;
+      pointer-events: none;
+      z-index: 0;
+      animation: floatOrb 12s ease-in-out infinite alternate;
+    }
+    .orb-1 { width: 400px; height: 400px; background: #3b82f6; top: -120px; left: -80px; animation-duration: 14s; }
+    .orb-2 { width: 300px; height: 300px; background: #8b5cf6; bottom: -80px; right: -60px; animation-duration: 10s; animation-delay: -5s; }
+    .orb-3 { width: 200px; height: 200px; background: #10b981; top: 50%; left: 60%; animation-duration: 16s; animation-delay: -3s; }
+
+    @keyframes floatOrb {
+      from { transform: translate(0, 0) scale(1); }
+      to   { transform: translate(30px, -40px) scale(1.1); }
+    }
+
+    /* ── Card ── */
+    .login-card {
+      width: 100%;
+      max-width: 440px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2.5rem 2.5rem 2rem;
+      box-shadow:
+        0 0 0 1px rgba(99,179,237,0.04),
+        0 20px 60px rgba(0,0,0,0.5),
+        0 0 80px rgba(59,130,246,0.06);
+      backdrop-filter: blur(12px);
+      animation: cardIn 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(24px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* ── Brand area ── */
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin-bottom: 2rem;
+    }
+
+    .brand-mark {
+      width: 46px;
+      height: 46px;
+      background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Manrope', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: 0.03em;
+      box-shadow: 0 4px 20px rgba(59,130,246,0.4);
+      flex-shrink: 0;
+    }
+
+    .brand-text {
+      flex: 1;
+    }
+
+    .brand-name {
+      font-family: 'Manrope', sans-serif;
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+    }
+
+    .brand-sub {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 1px;
+    }
+
+    /* ── Heading ── */
+    .login-heading {
+      font-family: 'Manrope', sans-serif;
+      font-size: 1.55rem;
+      font-weight: 800;
+      color: var(--text-primary);
+      letter-spacing: -0.02em;
+      margin-bottom: 0.35rem;
+    }
+
+    .login-subheading {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 1.75rem;
+    }
+
+    /* ── Form ── */
+    .form-group {
+      margin-bottom: 1.1rem;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-label);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+
+    .input-wrap {
+      position: relative;
+    }
+
+    .input-icon {
+      position: absolute;
+      left: 0.9rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 1rem;
+      pointer-events: none;
+      transition: color 0.2s;
+    }
+
+    .form-input {
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.72rem 0.9rem 0.72rem 2.5rem;
+      font-size: 0.92rem;
+      font-family: 'Inter', sans-serif;
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      -webkit-appearance: none;
+    }
+
+    .form-input::placeholder { color: var(--text-muted); }
+
+    .form-input:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .form-input:focus + .focus-ring { opacity: 1; }
+
+    /* Password toggle */
+    .pass-toggle {
+      position: absolute;
+      right: 0.9rem;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0;
+      transition: color 0.2s;
+    }
+    .pass-toggle:hover { color: var(--text-label); }
+
+    /* ── Error banner ── */
+    .error-banner {
+      display: none;
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
+      border-radius: 8px;
+      padding: 0.65rem 0.9rem;
+      font-size: 0.83rem;
+      color: var(--error);
+      margin-bottom: 1.1rem;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .error-banner.visible { display: flex; }
+
+    /* ── Submit button ── */
+    .btn-login {
+      width: 100%;
+      padding: 0.8rem 1.5rem;
+      background: linear-gradient(135deg, var(--accent) 0%, #6366f1 100%);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+      box-shadow: 0 4px 20px rgba(59,130,246,0.35);
+      margin-top: 0.4rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn-login::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .btn-login:hover:not(:disabled) {
+      opacity: 0.92;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 30px rgba(59,130,246,0.45);
+    }
+
+    .btn-login:active:not(:disabled) { transform: translateY(0); }
+
+    .btn-login:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-login .spinner {
+      display: none;
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 8px;
+    }
+
+    .btn-login.loading .spinner { display: inline-block; }
+    .btn-login.loading .btn-text { opacity: 0.8; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Divider & footer ── */
+    .card-footer {
+      margin-top: 1.5rem;
+      padding-top: 1.2rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .secure-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .secure-dot {
+      width: 6px; height: 6px;
+      background: var(--success);
+      border-radius: 50%;
+      box-shadow: 0 0 6px var(--success);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.6; transform: scale(0.85); }
+    }
+
+    .version-tag {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      font-family: 'DM Mono', monospace;
+    }
+
+    /* ── Outer platform tag ── */
+    .platform-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: rgba(59,130,246,0.08);
+      border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 999px;
+      padding: 0.3rem 0.8rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: #93c5fd;
+      text-transform: uppercase;
+      margin-bottom: 1.8rem;
+    }
+
+    .platform-pill-dot {
+      width: 6px; height: 6px;
+      background: #3b82f6;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #3b82f6;
+    }
+  </style>
+</head>
+<body>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <div class="login-wrapper">
+    <div class="login-card" role="main">
+
+      <!-- Brand Row -->
+      <div class="brand-row">
+        <div class="brand-mark">CST</div>
+        <div class="brand-text">
+          <div class="brand-name">Customer Service Twin</div>
+          <div class="brand-sub">Multi-Tenant Admin Console</div>
+        </div>
+      </div>
+
+      <!-- Platform pill -->
+      <div class="platform-pill">
+        <span class="platform-pill-dot"></span>
+        Secure Admin Access
+      </div>
+
+      <!-- Heading -->
+      <h1 class="login-heading">Sign in to Admin</h1>
+      <p class="login-subheading">Enter your admin credentials to continue</p>
+
+      <!-- Error Banner -->
+      <div id="error-banner" class="error-banner" role="alert">
+        <span>⚠</span>
+        <span id="error-msg">Invalid email or password.</span>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" novalidate autocomplete="on">
+        <div class="form-group">
+          <label class="form-label" for="email">Email Address</label>
+          <div class="input-wrap">
+            <span class="input-icon">✉</span>
+            <input
+              id="email"
+              class="form-input"
+              type="email"
+              name="email"
+              placeholder="admin@cst.com"
+              autocomplete="email"
+              required
+            >
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <div class="input-wrap">
+            <span class="input-icon">🔒</span>
+            <input
+              id="password"
+              class="form-input"
+              type="password"
+              name="password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+            >
+            <button type="button" class="pass-toggle" id="pass-toggle" aria-label="Toggle password visibility" title="Show/hide password">👁</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-login" id="btn-login">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="btn-text">Sign In to Admin Panel</span>
+        </button>
+      </form>
+
+      <!-- Footer -->
+      <div class="card-footer">
+        <span class="secure-badge">
+          <span class="secure-dot"></span>
+          SHA-256 · Session Auth
+        </span>
+        <span class="version-tag">CST v2.0.0</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // ── Redirect if already logged in ──
+    (function() {
+      const token = localStorage.getItem('cst_admin_token');
+      if (token) {
+        fetch('/api/v1/auth/me', { headers: { 'X-Admin-Token': token } })
+          .then(r => { if (r.ok) window.location.replace('/admin'); })
+          .catch(() => {});
+      }
+    })();
+
+    // ── Password toggle ──
+    document.getElementById('pass-toggle').addEventListener('click', function() {
+      const inp = document.getElementById('password');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+      this.textContent = inp.type === 'password' ? '👁' : '🙈';
+    });
+
+    // ── Login form submit ──
+    document.getElementById('login-form').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const email    = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const btn      = document.getElementById('btn-login');
+      const errBanner = document.getElementById('error-banner');
+      const errMsg    = document.getElementById('error-msg');
+
+      // Hide errors
+      errBanner.classList.remove('visible');
+
+      if (!email || !password) {
+        errMsg.textContent = 'Please enter your email and password.';
+        errBanner.classList.add('visible');
+        return;
+      }
+
+      // Loading state
+      btn.disabled = true;
+      btn.classList.add('loading');
+
+      try {
+        const res = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.token) {
+          localStorage.setItem('cst_admin_token', data.token);
+          localStorage.setItem('cst_admin_email', data.email || email);
+          localStorage.setItem('cst_admin_name', data.name || 'Admin');
+          // Short success animation
+          btn.querySelector('.btn-text').textContent = '✓ Authenticated';
+          setTimeout(() => { window.location.replace('/admin'); }, 400);
+        } else {
+          errMsg.textContent = data.message || 'Invalid email or password.';
+          errBanner.classList.add('visible');
+          btn.disabled = false;
+          btn.classList.remove('loading');
+          document.getElementById('password').value = '';
+          document.getElementById('password').focus();
+        }
+      } catch (err) {
+        errMsg.textContent = 'Network error. Please check your connection and try again.';
+        errBanner.classList.add('visible');
+        btn.disabled = false;
+        btn.classList.remove('loading');
+      }
+    });
+
+    // ── Auto-focus email ──
+    window.addEventListener('DOMContentLoaded', function() {
+      document.getElementById('email').focus();
+    });
+  </script>
+</body>
+</html>

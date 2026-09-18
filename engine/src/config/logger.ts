@@ -26,6 +26,12 @@ export interface InfraEvent {
 }
 
 export class Logger {
+  private static auditRingBuffer: SecurityLedgerEvent[] = [];
+
+  static getRecentAuditEvents(limit = 50): SecurityLedgerEvent[] {
+    return [...this.auditRingBuffer].slice(-limit).reverse();
+  }
+
   private static formatLog(level: string, message: string, meta?: Record<string, unknown>): string {
     return JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -87,8 +93,14 @@ export class Logger {
 
 
   static audit(event: SecurityLedgerEvent): void {
+    const timestamp = event.timestamp || new Date().toISOString();
+    this.auditRingBuffer.push({ ...event, timestamp });
+    if (this.auditRingBuffer.length > 200) {
+      this.auditRingBuffer.shift();
+    }
+
     const payload = {
-      timestamp: event.timestamp || new Date().toISOString(),
+      timestamp,
       type: 'SECURITY_LEDGER',
       tenant_id: event.tenant_id,
       actor: event.actor,

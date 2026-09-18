@@ -6,10 +6,13 @@ import { voiceRouter } from './transport/voice/voice_router.js';
 import { voiceInterfaceRouter } from './interfaces/voice/index.js';
 import { webInterfaceRouter } from './interfaces/web/index.js';
 import { adminRouter } from './admin/routes.js';
+import { authRouter, requireAdminAuth } from './admin/auth.js';
 import { DbClient } from './db/client.js';
 import { Logger } from './config/logger.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './docs/swagger.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function createApp(): Express {
   const app = express();
@@ -70,20 +73,32 @@ export function createApp(): Express {
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);
-  app.use('/api/v1/admin', adminRouter);
+  app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1/admin', requireAdminAuth, adminRouter);
   app.use(voiceRouter);
   app.use(voiceInterfaceRouter);
   app.use(webInterfaceRouter);
+  const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
   app.get('/', (_req: Request, res: Response) => {
     res.redirect('/api-docs');
+  });
+  app.get('/web', (_req: Request, res: Response) => {
+    res.sendFile(path.join(webRoot, 'index.html'));
+  });
+  app.get('/admin/login', (_req: Request, res: Response) => {
+    res.sendFile(path.join(webRoot, 'login.html'));
+  });
+  app.get('/admin', (_req: Request, res: Response) => {
+    res.sendFile(path.join(webRoot, 'admin.html'));
   });
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
   app.get('/api-docs.json', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'application/json');
     res.json(swaggerSpec);
   });
+  app.use(express.static(webRoot));
 
   // ── Health Check ────────────────────────────────────────────────────────────
   // Render / AWS ALB hit this endpoint to determine if the instance is live.

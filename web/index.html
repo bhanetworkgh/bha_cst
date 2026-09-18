@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102a43">
+  <title>CST | Customer Service Twin</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app" class="app-shell">
+    <section id="login-view" class="login-view" aria-labelledby="login-title">
+      <div class="login-art">
+        <p class="eyebrow">BHA NETWORK / CST</p>
+        <h1>Support that knows the right ground.</h1>
+        <p class="login-copy">A focused workspace for tenant-scoped customer conversations, farm context, and fast answers.</p>
+        <div class="signal-list"><span>01 / Verified identity</span><span>02 / Project-scoped context</span><span>03 / Farm-safe responses</span></div>
+      </div>
+      <form id="login-form" class="login-card">
+        <div class="brand-mark">CST<span>•</span></div>
+        <p class="eyebrow">Development workspace</p>
+        <h2 id="login-title">Enter your support desk</h2>
+        <p class="muted">Production authentication is not configured yet. Use a seeded development identity.</p>
+        <label for="user-select">Identity</label>
+        <select id="user-select"><option value="demo-owner">Test Owner</option><option value="demo-manager">John Doe</option></select>
+        <label for="project-select">Project</label>
+        <select id="project-select"></select>
+        <button class="primary-button" type="submit">Open workspace <span aria-hidden="true">↗</span></button>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="chat-view" class="chat-view hidden" aria-label="CST web chat">
+      <aside class="sidebar">
+        <div class="sidebar-top"><div class="brand-mark">CST<span>•</span></div><button id="logout-button" class="icon-button" title="Sign out" aria-label="Sign out">↪</button></div>
+        <div class="workspace-chip"><span class="status-dot"></span><div><strong id="tenant-name">vFarm Global</strong><small id="project-name">Project</small></div></div>
+        <div class="sidebar-section"><span class="section-label">WORKSPACE</span><button id="overview-nav" class="conversation-item active"><span class="conversation-icon">▦</span><span><strong>Overview</strong><small>Project pulse</small></span></button><button id="chat-nav" class="conversation-item"><span class="conversation-icon">✦</span><span><strong>Support desk</strong><small>Current conversation</small></span></button><button id="activity-nav" class="conversation-item"><span class="conversation-icon">↗</span><span><strong>Activity</strong><small>Recent requests</small></span></button></div>
+        <div class="sidebar-footer"><div class="user-badge"><div id="user-initials" class="avatar">TO</div><div><strong id="user-name">Test Owner</strong><small id="user-role">Owner</small></div></div></div>
+      </aside>
+      <section class="conversation-panel">
+        <header class="conversation-header"><div><p class="eyebrow">PROJECT WORKSPACE / <span id="scope-label">1 farm in scope</span></p><h1 id="page-title">Project overview</h1></div><div class="header-actions"><span class="secure-pill">⌁ Scoped session</span><button id="mobile-menu" class="icon-button" title="Open navigation" aria-label="Open navigation">☰</button></div></header>
+        <section id="overview-view" class="workspace-view">
+          <div class="welcome-row"><div><p class="eyebrow">GOOD MORNING, <span id="welcome-name">OWNER</span></p><h2>Your project, at a glance.</h2><p class="muted">A live view of the support context available to your authenticated session.</p></div><button id="overview-chat-button" class="primary-button compact-button">Ask CST <span>↗</span></button></div>
+          <div class="metric-grid"><article class="metric-card"><span class="metric-label">FARMS IN SCOPE</span><strong id="farm-count">1</strong><small>Verified for this session</small></article><article class="metric-card mint-card"><span class="metric-label">SESSION STATUS</span><strong>Active</strong><small>Identity and project verified</small></article><article class="metric-card coral-card"><span class="metric-label">SUPPORT CHANNEL</span><strong>Web chat</strong><small>Responses stay project-scoped</small></article></div>
+          <div class="overview-grid"><section class="panel-block"><div class="panel-heading"><div><span class="section-label">RESOURCE SCOPE</span><h3>Accessible farms</h3></div><span class="count-badge" id="farm-count-badge">1</span></div><div id="farm-list" class="farm-list"></div></section><section class="panel-block"><div class="panel-heading"><div><span class="section-label">QUICK START</span><h3>Common requests</h3></div></div><div class="quick-actions"><button data-prompt="What is the status of my farm?">Farm status <span>↗</span></button><button data-prompt="How do I clean the filter?">Maintenance guidance <span>↗</span></button><button data-prompt="I need help with an issue">Report an issue <span>↗</span></button></div></section></div>
+        </section>
+        <section id="activity-view" class="workspace-view hidden"><div class="welcome-row"><div><p class="eyebrow">SESSION ACTIVITY</p><h2>Recent requests.</h2><p class="muted">The current conversation is retained inside this authenticated project context.</p></div></div><section class="panel-block activity-block"><div id="activity-list" class="activity-list"></div></section></section>
+        <section id="chat-view-panel" class="chat-panel hidden"><div id="message-list" class="message-list" aria-live="polite"></div><div id="typing-state" class="typing-state hidden"><span></span><span></span><span></span> CST is thinking</div><form id="message-form" class="composer"><textarea id="message-input" rows="1" placeholder="Ask about your farm operations..." aria-label="Message"></textarea><button id="send-button" class="send-button" type="submit" title="Send message" aria-label="Send message">↑</button><p class="composer-note">Responses stay inside your authenticated project and farm scope.</p></form></section>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

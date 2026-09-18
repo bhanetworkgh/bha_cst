@@ -47,6 +47,31 @@ adminRouter.post('/tenants', (req: Request, res: Response) => {
   }
 });
 
+adminRouter.patch('/tenants/:tenantId', async (req: Request, res: Response) => {
+  try {
+    const { tenantId } = req.params;
+    const existing = CoreRegistry.getTenant(tenantId);
+    if (!existing) {
+      res.status(404).json({ error: 'NOT_FOUND', message: `Tenant ${tenantId} not found` });
+      return;
+    }
+
+    const { name, status, adapter_type, adapter_config } = req.body;
+    if (name) existing.name = name;
+    if (status) existing.status = status;
+    if (adapter_type) existing.adapter_type = adapter_type;
+    if (adapter_config !== undefined) existing.adapter_config = adapter_config;
+
+    await DbClient.updateTenant(tenantId, { name, status, adapter_type, adapter_config });
+    CoreRegistry.registerTenant(existing, CoreRegistry.getAdapter(tenantId) || undefined);
+    Logger.info(`Admin: Updated tenant ${tenantId}`);
+    res.status(200).json({ status: 'updated', tenant: existing });
+  } catch (err: any) {
+    Logger.error(`Admin update tenant error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
 // ── 2. Project Management (/api/v1/admin/projects) ─────────────────────────────
 
 adminRouter.get('/projects', (req: Request, res: Response) => {
@@ -385,5 +410,224 @@ adminRouter.post('/speakers/invalidate', async (req: Request, res: Response) => 
   } catch (err: any) {
     Logger.error(`Admin speakers/invalidate error: ${err.message}`);
     res.status(500).json({ error: 'INVALIDATION_FAILED', message: err.message });
+  }
+});
+
+// ── List all users / speakers with filters & search (/api/v1/admin/speakers) ─
+adminRouter.get('/speakers', async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.query.tenant_id as string | undefined;
+    const projectId = req.query.project_id as string | undefined;
+    const role = req.query.role as string | undefined;
+    const search = req.query.search as string | undefined;
+
+    const customers = await DbClient.getAllCustomers(tenantId, projectId, role, search);
+    const now = Date.now();
+
+    const speakers = customers.map((c) => {
+      const expiresAtMs = c.speaker_cache_expires_at ? new Date(c.speaker_cache_expires_at).getTime() : null;
+      const is_cache_active = expiresAtMs ? expiresAtMs > now : true;
+      return {
+        phone_e164: c.phone_e164,
+        customer_ref: c.customer_ref,
+        person_id: c.customer_ref,
+        tenant_id: c.tenant_id,
+        project_id: c.project_id || '',
+        role: c.role || 'manager',
+        farm_ids: c.farm_ids || (c.farm_id ? [c.farm_id] : []),
+        farm_count: (c.farm_ids || (c.farm_id ? [c.farm_id] : [])).length,
+        speaker_cache_expires_at: c.speaker_cache_expires_at,
+        is_cache_active,
+        created_at: c.created_at,
+      };
+    });
+
+    res.status(200).json({ status: 'ok', count: speakers.length, speakers });
+  } catch (err: any) {
+    Logger.error(`Admin GET speakers error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── Manually onboard or seed a speaker/user (/api/v1/admin/speakers) ─────────
+adminRouter.post('/speakers', async (req: Request, res: Response) => {
+  try {
+    const { phone_e164, customer_ref, tenant_id, project_id, role, farm_ids, ttl_hours } = req.body;
+    if (!phone_e164 || !customer_ref || !tenant_id || !project_id) {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: 'Missing required fields: phone_e164, customer_ref, tenant_id, project_id',
+      });
+      return;
+    }
+
+    const cleanPhone = phone_e164.trim();
+    if (!cleanPhone.startsWith('+') || cleanPhone.length < 8) {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: 'phone_e164 must be in valid E.164 format (e.g. +15551234567)',
+      });
+      return;
+    }
+
+    const project = CoreRegistry.getProject(project_id);
+    if (!project || project.tenant_id !== tenant_id) {
+      res.status(404).json({
+        error: 'NOT_FOUND',
+        message: `Project ${project_id} not found for tenant ${tenant_id}`,
+      });
+      return;
+    }
+
+    const cleanRole = role && ['owner', 'manager', 'tech'].includes(role) ? role : 'owner';
+    const cleanFarms = Array.isArray(farm_ids) ? farm_ids.map(String) : [];
+    const hours = typeof ttl_hours === 'number' && ttl_hours > 0 ? ttl_hours : 24;
+    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+    const pool = DbClient.getPool();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO customers
+           (tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, farm_ids, speaker_cache_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+         ON CONFLICT (tenant_id, project_id, phone_e164) DO UPDATE SET
+           customer_ref             = EXCLUDED.customer_ref,
+           role                     = EXCLUDED.role,
+           farm_ids                 = EXCLUDED.farm_ids,
+           speaker_cache_expires_at = EXCLUDED.speaker_cache_expires_at`,
+        [
+          tenant_id,
+          project_id,
+          tenant_id,
+          '',
+          cleanPhone,
+          customer_ref.trim(),
+          cleanRole,
+          JSON.stringify(cleanFarms),
+          expiresAt,
+        ]
+      );
+    } else {
+      DbClient.seedCustomer({
+        tenant_id,
+        project_id,
+        phone_e164: cleanPhone,
+        customer_ref: customer_ref.trim(),
+        role: cleanRole as any,
+        farm_ids: cleanFarms,
+        speaker_cache_expires_at: expiresAt,
+      });
+    }
+
+    CoreRegistry.invalidateSpeakerCache(tenant_id, project_id, cleanPhone);
+
+    const speaker = {
+      phone_e164: cleanPhone,
+      customer_ref: customer_ref.trim(),
+      person_id: customer_ref.trim(),
+      tenant_id,
+      project_id,
+      role: cleanRole,
+      farm_ids: cleanFarms,
+      farm_count: cleanFarms.length,
+      speaker_cache_expires_at: expiresAt,
+      is_cache_active: true,
+    };
+
+    Logger.info(`Admin: Manually onboarded speaker ${cleanPhone} (${customer_ref}) in ${tenant_id}/${project_id}`);
+    res.status(201).json({ status: 'created', speaker });
+  } catch (err: any) {
+    Logger.error(`Admin POST speaker error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── Update speaker configuration / resource scope (/api/v1/admin/speakers/:phoneE164) ──
+adminRouter.patch('/speakers/:phoneE164', async (req: Request, res: Response) => {
+  try {
+    const { phoneE164 } = req.params;
+    const { tenant_id, project_id, customer_ref, role, farm_ids, ttl_hours } = req.body;
+
+    if (!tenant_id) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'Missing tenant_id in request body' });
+      return;
+    }
+
+    const updates: any = {};
+    if (role) {
+      if (!['owner', 'manager', 'tech'].includes(role)) {
+        res.status(400).json({ error: 'BAD_REQUEST', message: 'role must be owner, manager, or tech' });
+        return;
+      }
+      updates.role = role;
+    }
+    if (farm_ids !== undefined) {
+      updates.farm_ids = Array.isArray(farm_ids) ? farm_ids.map(String) : [];
+    }
+    if (customer_ref !== undefined) {
+      updates.customer_ref = customer_ref.trim();
+    }
+    if (project_id !== undefined) {
+      updates.project_id = project_id;
+    }
+    if (ttl_hours !== undefined) {
+      const hours = Number(ttl_hours);
+      if (hours > 0) {
+        updates.speaker_cache_expires_at = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+      }
+    }
+
+    const updated = await DbClient.updateCustomer(phoneE164, tenant_id, project_id, updates);
+    if (!updated) {
+      res.status(404).json({ error: 'NOT_FOUND', message: `Speaker with phone ${phoneE164} not found` });
+      return;
+    }
+
+    CoreRegistry.invalidateSpeakerCache(tenant_id, project_id || updated.project_id || '', phoneE164);
+    Logger.info(`Admin: Updated configuration for speaker ${phoneE164}`);
+    res.status(200).json({ status: 'updated', speaker: updated });
+  } catch (err: any) {
+    Logger.error(`Admin PATCH speaker error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── Delete / Revoke a speaker (/api/v1/admin/speakers/:phoneE164) ────────────
+adminRouter.delete('/speakers/:phoneE164', async (req: Request, res: Response) => {
+  try {
+    const { phoneE164 } = req.params;
+    const tenantId = (req.query.tenant_id as string) || (req.body?.tenant_id as string);
+    const projectId = (req.query.project_id as string) || (req.body?.project_id as string);
+
+    if (!tenantId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'Missing tenant_id parameter' });
+      return;
+    }
+
+    const deleted = await DbClient.deleteCustomer(phoneE164, tenantId, projectId);
+    CoreRegistry.invalidateSpeakerCache(tenantId, projectId || '', phoneE164);
+    Logger.info(`Admin: Revoked/deleted speaker ${phoneE164} for tenant ${tenantId}`);
+    res.status(200).json({ status: deleted ? 'deleted' : 'not_found', phone_e164: phoneE164 });
+  } catch (err: any) {
+    Logger.error(`Admin DELETE speaker error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── 6. Audit & Security Ledger (/api/v1/admin/audit/logs) ────────────────────
+adminRouter.get('/audit/logs', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const securityEvents = Logger.getRecentAuditEvents(limit);
+    const alertAudits = await DbClient.getRecentAlertAuditLogs(limit);
+
+    res.status(200).json({
+      status: 'ok',
+      security_events: securityEvents,
+      alert_audits: alertAudits,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET audit logs error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });

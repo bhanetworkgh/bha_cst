@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>CST Platform Admin | Tenancy, Projects &amp; Users Directory</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <main class="admin-shell">
+    <!-- Top Platform Header -->
+    <header class="admin-header">
+      <div class="admin-brand">
+        <div class="brand-logo">CST<span>•</span></div>
+        <div class="admin-header-text">
+          <div class="header-badges">
+            <span class="platform-badge">CST MULTI-TENANT PLATFORM</span>
+            <span id="env-pill" class="secure-pill">● live dev</span>
+          </div>
+          <h1>Tenancy, Users &amp; Project Console</h1>
+        </div>
+      </div>
+      <div class="admin-header-actions">
+        <!-- Logged-in user info -->
+        <div class="admin-user-info" id="admin-user-info">
+          <div class="user-avatar" aria-hidden="true">👤</div>
+          <div class="user-details">
+            <span class="user-name" id="admin-user-name">Admin</span>
+            <span class="user-email" id="admin-user-email">admin@cst.com</span>
+          </div>
+        </div>
+        <button id="btn-quick-onboard" class="primary-button compact-button">+ Onboard User</button>
+        <button id="refresh-all" class="ghost-button" title="Refresh all data">↻ Refresh</button>
+        <button id="btn-logout" class="ghost-button logout-btn" title="Sign out">⎋ Logout</button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="admin-tabs" id="admin-tabs" role="tablist">
+      <button class="admin-tab active" data-tab="overview" role="tab">1 · Overview &amp; Architecture</button>
+      <button class="admin-tab" data-tab="speakers" role="tab">2 · Users &amp; Speakers <span class="tab-pill" id="badge-users-count">0</span></button>
+      <button class="admin-tab" data-tab="tenants" role="tab">3 · Tenants <span class="tab-pill" id="badge-tenants-count">0</span></button>
+      <button class="admin-tab" data-tab="projects" role="tab">4 · Projects &amp; Capabilities</button>
+      <button class="admin-tab" data-tab="numbers" role="tab">5 · Numbers &amp; DIDs</button>
+      <button class="admin-tab" data-tab="audit" role="tab">6 · Fail-Closed Audit &amp; Activity</button>
+    </nav>
+
+    <!-- Alert / Banner Container -->
+    <div id="admin-error" class="admin-error hidden" role="alert"></div>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 1. OVERVIEW & ARCHITECTURE TREE -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-overview" class="admin-panel">
+      <!-- High-Level Metrics -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">PLATFORM METRICS</span>
+            <h3>Real-time Tenancy &amp; System Health</h3>
+          </div>
+          <button id="reload-health" class="ghost-button small">↻ Reload</button>
+        </div>
+        <div id="health-summary" class="metric-grid admin-metric-grid"></div>
+      </div>
+
+      <!-- Section 2 Architecture Tree Visualization -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">SYSTEM ARCHITECTURE (SECTION 2 REQUIREMENTS)</span>
+            <h3>Platform Tenancy &amp; Authorization Hierarchy</h3>
+          </div>
+        </div>
+        <div class="arch-visualizer">
+          <div class="arch-level arch-platform">
+            <div class="arch-card platform-card">
+              <span class="arch-tag">CORE PLATFORM</span>
+              <h4>Customer Service Twin (CST)</h4>
+              <p>Top boundary. Isolated conversations, bindings, queues &amp; audit ledger.</p>
+            </div>
+          </div>
+          <div class="arch-connector-line"></div>
+          <div class="arch-row" id="arch-tree-tenants">
+            <!-- Rendered dynamically by admin.js -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Verification Readiness Table -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">TENANT READINESS</span>
+            <h3>Tenant Status &amp; Adapter Connectivity</h3>
+          </div>
+        </div>
+        <div id="health-tenants" class="admin-table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 2. USERS & SPEAKERS DIRECTORY (CORE USER REQUEST) -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-speakers" class="admin-panel hidden">
+      <!-- Directory Control Center -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">DIRECTORY</span>
+            <h3>All Registered Users, Farm Owners &amp; Speakers</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-open-add-user" class="primary-button small-btn">+ Onboard User</button>
+            <button id="btn-quick-sync-speakers" class="ghost-button small">↻ Sync from Tenant Adapter</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Phone numbers never authenticate on CST (Section 1). They select a candidate identity.
+          The tenant adapter grants roles (<strong>owner</strong>, <strong>manager</strong>, <strong>tech</strong>)
+          and bound <strong>resource scopes</strong> (e.g. farms). Queries execute strictly against these scopes.
+        </p>
+
+        <!-- Filters & Search Toolbar -->
+        <div class="filter-toolbar">
+          <div class="filter-group filter-search">
+            <label for="speaker-search-input">Search directory</label>
+            <input id="speaker-search-input" type="search" placeholder="Search phone (+1...), person ID, or name...">
+          </div>
+          <div class="filter-group">
+            <label for="speaker-filter-tenant">Tenant</label>
+            <select id="speaker-filter-tenant"><option value="">All tenants</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="speaker-filter-project">Project</label>
+            <select id="speaker-filter-project"><option value="">All projects</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="speaker-filter-role">Role</label>
+            <select id="speaker-filter-role">
+              <option value="">All roles</option>
+              <option value="owner">owner</option>
+              <option value="manager">manager</option>
+              <option value="tech">tech</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="speaker-filter-cache">Cache validity</label>
+            <select id="speaker-filter-cache">
+              <option value="">All cache states</option>
+              <option value="active">Active (TTL valid)</option>
+              <option value="expired">Expired (Re-resolve)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Users Table -->
+        <div id="speakers-table-container" class="admin-table-wrap"></div>
+      </div>
+
+      <!-- Sync Speakers from Tenant Adapter -->
+      <div class="panel-grid-2col">
+        <div class="panel-block">
+          <div class="panel-heading">
+            <div>
+              <span class="section-label">STEP 5 IN SPEC (§10)</span>
+              <h3>Sync speakers from adapter</h3>
+            </div>
+          </div>
+          <p class="admin-note">Pull all eligible speakers (phones, roles, and farm grants) from the tenant adapter into CST's projection cache.</p>
+          <form id="speaker-sync-form" class="admin-form">
+            <div class="field">
+              <label for="speaker-sync-tenant">Tenant</label>
+              <select id="speaker-sync-tenant" required></select>
+            </div>
+            <div class="field">
+              <label for="speaker-sync-project">Project</label>
+              <select id="speaker-sync-project" required></select>
+            </div>
+            <button class="primary-button compact-button" type="submit">Sync speakers <span>↗</span></button>
+          </form>
+          <div id="speaker-sync-result" class="admin-table-wrap mt-10"></div>
+        </div>
+
+        <!-- Invalidate Speaker Cache -->
+        <div class="panel-block">
+          <div class="panel-heading">
+            <div>
+              <span class="section-label">ACCESS REVOCATION (R-NUM-P5)</span>
+              <h3>Instant Cache Invalidation</h3>
+            </div>
+          </div>
+          <p class="admin-note">
+            The moment a person is removed or a farm grant is revoked in the tenant, invalidate their cache entry
+            so the very next inbound SMS re-resolves live with zero stale farm telemetry leakage.
+          </p>
+          <form id="speaker-invalidate-form" class="admin-form">
+            <div class="field">
+              <label for="invalidate-tenant">Tenant</label>
+              <select id="invalidate-tenant" required></select>
+            </div>
+            <div class="field">
+              <label for="invalidate-project">Project (optional)</label>
+              <select id="invalidate-project"><option value="">— any project —</option></select>
+            </div>
+            <div class="field">
+              <label for="invalidate-phone">Phone (E.164 format)</label>
+              <input id="invalidate-phone" placeholder="+15551234567" required>
+            </div>
+            <button class="primary-button compact-button danger-button" type="submit">Invalidate Cache <span>↗</span></button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 3. TENANTS MANAGEMENT -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-tenants" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">STEP 1 IN SPEC (§10)</span>
+            <h3>Register a new tenant</h3>
+          </div>
+        </div>
+        <form id="tenant-form" class="admin-form">
+          <div class="field">
+            <label for="tenant-id-input">Tenant ID</label>
+            <input id="tenant-id-input" placeholder="tenant-agri-02" required>
+          </div>
+          <div class="field">
+            <label for="tenant-name-input">Display Name</label>
+            <input id="tenant-name-input" placeholder="AgriTech Corp" required>
+          </div>
+          <div class="field">
+            <label for="tenant-adapter-input">Adapter type</label>
+            <input id="tenant-adapter-input" placeholder="vfarm" value="vfarm">
+          </div>
+          <div class="field field-wide">
+            <label for="tenant-config-input">Adapter configuration (JSON, optional)</label>
+            <textarea id="tenant-config-input" rows="2" placeholder='{"resolve_api_url":"https://api.tenant.com","simulate_degraded":false}'></textarea>
+          </div>
+          <button class="primary-button compact-button" type="submit">Register tenant <span>↗</span></button>
+        </form>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">ACTIVE PLATFORM TENANTS</span>
+            <h3>Registered Tenants</h3>
+          </div>
+          <span class="count-badge" id="tenant-count">0</span>
+        </div>
+        <div id="tenant-list" class="admin-table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 4. PROJECTS & CAPABILITIES -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-projects" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">STEP 2 IN SPEC (§10)</span>
+            <h3>Pull projects from a tenant adapter</h3>
+          </div>
+        </div>
+        <p class="admin-note">CST pulls projects from the tenant adapter (e.g. vFarm Orgs → CST Projects); it does not invent them.</p>
+        <form id="project-sync-form" class="admin-form">
+          <div class="field">
+            <label for="project-sync-tenant">Tenant</label>
+            <select id="project-sync-tenant" required></select>
+          </div>
+          <button class="primary-button compact-button" type="submit">Pull projects <span>↗</span></button>
+        </form>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">PROJECT DIRECTORY</span>
+            <h3>Projects</h3>
+          </div>
+          <select id="project-filter-tenant"><option value="">All tenants</option></select>
+        </div>
+        <div id="project-list" class="admin-table-wrap"></div>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">STEP 3 IN SPEC (§10)</span>
+            <h3>Configure Project Channels &amp; Speaker Policy</h3>
+          </div>
+        </div>
+        <form id="project-config-form" class="admin-form">
+          <div class="field">
+            <label for="project-config-select">Target project</label>
+            <select id="project-config-select" required></select>
+          </div>
+          <div class="field">
+            <label for="speaker-policy-select">Speaker policy (Section 5.2)</label>
+            <select id="speaker-policy-select">
+              <option value="allowlist">allowlist (Only synced project speakers)</option>
+              <option value="all_project_members">all_project_members (Any member with farm grants)</option>
+            </select>
+          </div>
+          <div class="field field-wide">
+            <label>Capability flags (Section 4 — R-CAP-1)</label>
+            <div class="checkbox-row">
+              <label class="custom-checkbox"><input type="checkbox" id="cap-sms"> <strong>sms</strong> (Inbound webhook &amp; outbound)</label>
+              <label class="custom-checkbox"><input type="checkbox" id="cap-web"> <strong>web</strong> (Web chat interface)</label>
+              <label class="custom-checkbox"><input type="checkbox" id="cap-voice"> <strong>voice</strong> (Twilio voice &amp; synthesis)</label>
+              <label class="custom-checkbox disabled"><input type="checkbox" id="cap-whatsapp" disabled> whatsapp (slot)</label>
+              <label class="custom-checkbox disabled"><input type="checkbox" id="cap-email" disabled> email (slot)</label>
+            </div>
+          </div>
+          <div class="field">
+            <label for="voice-enabled-select">Voice lane status</label>
+            <select id="voice-enabled-select">
+              <option value="false">Voice Disabled</option>
+              <option value="true">Voice Enabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="voice-id-input">ElevenLabs Voice ID</label>
+            <input id="voice-id-input" placeholder="eleven_voice_jason_vfarm">
+          </div>
+          <div class="field field-wide">
+            <label for="onboarding-reply-input">Onboarding reply copy (Shown to unknown speakers — R-ID-7)</label>
+            <textarea id="onboarding-reply-input" rows="2" placeholder="Welcome to Support! We received your message. A specialist will assist you shortly."></textarea>
+          </div>
+          <button class="primary-button compact-button" type="submit">Save project configuration <span>↗</span></button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 5. NUMBERS & TWILIO BINDING -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-numbers" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">STEP 4 IN SPEC (§10)</span>
+            <h3>Sync candidate numbers (Twilio Discovery)</h3>
+          </div>
+        </div>
+        <p class="admin-note">
+          Sync discovers service numbers from Twilio or adapter intended DIDs.
+          A synced number remains in candidate status until explicitly bound to a project (R-NUM-S2).
+        </p>
+        <form id="number-sync-form" class="admin-form">
+          <div class="field">
+            <label for="number-sync-tenant">Tenant (optional — blank pulls default Twilio candidates)</label>
+            <select id="number-sync-tenant"><option value="">— all / Twilio default —</option></select>
+          </div>
+          <button class="primary-button compact-button" type="submit">Sync candidate numbers <span>↗</span></button>
+        </form>
+        <div id="candidate-list" class="admin-table-wrap"></div>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">EXPLICIT BIND (R-NUM-S2 &amp; R-NUM-S3)</span>
+            <h3>Bind a service number to a project</h3>
+          </div>
+        </div>
+        <p class="admin-note">
+          <strong>Collision safeguard:</strong> One service number cannot bind to two projects.
+          Collisions are rejected with fail-closed security audit logging.
+        </p>
+        <form id="bind-form" class="admin-form">
+          <div class="field">
+            <label for="bind-number-select">Candidate number</label>
+            <select id="bind-number-select" required></select>
+          </div>
+          <div class="field">
+            <label for="bind-project-select">Target project</label>
+            <select id="bind-project-select" required></select>
+          </div>
+          <div class="field">
+            <label for="bind-capability-select">Capability</label>
+            <select id="bind-capability-select">
+              <option value="sms">sms</option>
+              <option value="voice">voice</option>
+              <option value="web">web</option>
+            </select>
+          </div>
+          <button class="primary-button compact-button" type="submit">Bind number <span>↗</span></button>
+        </form>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">ACTIVE SERVICE NUMBERS</span>
+            <h3>Active Service Number Bindings</h3>
+          </div>
+          <span class="count-badge" id="binding-count">0</span>
+        </div>
+        <div id="binding-list" class="admin-table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 6. FAIL-CLOSED AUDIT & ACTIVITY -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-audit" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">SECURITY LEDGER (SECTION 7 &amp; 9)</span>
+            <h3>Real-Time Fail-Closed &amp; Ingress Decisions</h3>
+          </div>
+          <button id="reload-audit" class="ghost-button small">↻ Reload logs</button>
+        </div>
+        <p class="admin-note">
+          CST strictly enforces fail-closed isolation: bad signatures, unknown service numbers, disabled capabilities,
+          unlisted speakers, or queries targeting out-of-scope farms trigger audit refusal records.
+        </p>
+        <div id="audit-security-list" class="admin-table-wrap"></div>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">OUTBOUND ALERT AUDIT LOG (018M)</span>
+            <h3>Rendered Alert Payloads &amp; Retention</h3>
+          </div>
+        </div>
+        <div id="audit-alerts-list" class="admin-table-wrap"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ──────────────────────────────────────────────────────────────────────── -->
+  <!-- MODALS -->
+  <!-- ──────────────────────────────────────────────────────────────────────── -->
+
+  <!-- Modal: Edit User / Speaker Configuration -->
+  <div id="modal-edit-user" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-label">CONFIGURATION</span>
+          <h3 id="modal-edit-user-title">Edit User Configuration</h3>
+        </div>
+        <button class="modal-close" id="btn-close-edit-user">&times;</button>
+      </div>
+      <form id="form-edit-user" class="modal-form">
+        <div class="field">
+          <label>Phone number (E.164)</label>
+          <input id="edit-user-phone" readonly class="readonly-input">
+        </div>
+        <div class="field">
+          <label for="edit-user-ref">Person ID / Customer Ref</label>
+          <input id="edit-user-ref" placeholder="usr_vfarm_001" required>
+        </div>
+        <div class="field">
+          <label>Tenant ID</label>
+          <input id="edit-user-tenant" readonly class="readonly-input">
+        </div>
+        <div class="field">
+          <label for="edit-user-project">Assigned project</label>
+          <select id="edit-user-project" required></select>
+        </div>
+        <div class="field">
+          <label for="edit-user-role">Role (Section 1 &amp; 6)</label>
+          <select id="edit-user-role">
+            <option value="owner">owner (Farm Owner — status, telemetry, images)</option>
+            <option value="manager">manager (Site Manager)</option>
+            <option value="tech">tech (Technician — read-only diagnostics)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="edit-user-ttl">Cache TTL extension (hours)</label>
+          <input id="edit-user-ttl" type="number" value="24" min="1" max="720">
+        </div>
+        <div class="field field-wide">
+          <label for="edit-user-farms">Assigned Resource Scopes / Farm IDs (JSON array or comma-separated)</label>
+          <textarea id="edit-user-farms" rows="2" placeholder='["farm_austin_main", "farm_austin_east"]'></textarea>
+          <small class="muted">Speakers can ONLY query telemetry for farms listed here (R-ID-4). Unknown/out-of-scope farm requests are refused.</small>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="btn-cancel-edit-user">Cancel</button>
+          <button type="submit" class="primary-button compact-button">Save Changes <span>↗</span></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Onboard / Add New User -->
+  <div id="modal-add-user" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-label">NEW SPEAKER</span>
+          <h3>Onboard User to Project</h3>
+        </div>
+        <button class="modal-close" id="btn-close-add-user">&times;</button>
+      </div>
+      <form id="form-add-user" class="modal-form">
+        <div class="field">
+          <label for="add-user-phone">Phone number (E.164 format)</label>
+          <input id="add-user-phone" placeholder="+15551234567" required>
+        </div>
+        <div class="field">
+          <label for="add-user-ref">Person ID / Customer Ref</label>
+          <input id="add-user-ref" placeholder="usr_jason_01" required>
+        </div>
+        <div class="field">
+          <label for="add-user-tenant">Tenant</label>
+          <select id="add-user-tenant" required></select>
+        </div>
+        <div class="field">
+          <label for="add-user-project">Project</label>
+          <select id="add-user-project" required></select>
+        </div>
+        <div class="field">
+          <label for="add-user-role">Role</label>
+          <select id="add-user-role">
+            <option value="owner">owner</option>
+            <option value="manager">manager</option>
+            <option value="tech">tech</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="add-user-ttl">Cache TTL (hours)</label>
+          <input id="add-user-ttl" type="number" value="24" min="1" max="720">
+        </div>
+        <div class="field field-wide">
+          <label for="add-user-farms">Authorized Farm IDs (comma-separated or JSON array)</label>
+          <textarea id="add-user-farms" rows="2" placeholder='farm_austin_main, farm_austin_east'></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="btn-cancel-add-user">Cancel</button>
+          <button type="submit" class="primary-button compact-button">Create User <span>↗</span></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Tenant Metadata -->
+  <div id="modal-edit-tenant" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-label">TENANT SETTINGS</span>
+          <h3 id="modal-edit-tenant-title">Edit Tenant Configuration</h3>
+        </div>
+        <button class="modal-close" id="btn-close-edit-tenant">&times;</button>
+      </div>
+      <form id="form-edit-tenant" class="modal-form">
+        <div class="field">
+          <label>Tenant ID</label>
+          <input id="edit-tenant-id" readonly class="readonly-input">
+        </div>
+        <div class="field">
+          <label for="edit-tenant-name">Display Name</label>
+          <input id="edit-tenant-name" required>
+        </div>
+        <div class="field">
+          <label for="edit-tenant-status">Status</label>
+          <select id="edit-tenant-status">
+            <option value="active">active</option>
+            <option value="disabled">disabled</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="edit-tenant-adapter">Adapter type</label>
+          <input id="edit-tenant-adapter" placeholder="vfarm">
+        </div>
+        <div class="field field-wide">
+          <label for="edit-tenant-config">Adapter config (JSON)</label>
+          <textarea id="edit-tenant-config" rows="3"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="btn-cancel-edit-tenant">Cancel</button>
+          <button type="submit" class="primary-button compact-button">Save Tenant <span>↗</span></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/admin.js"></script>
+</body>
+</html>

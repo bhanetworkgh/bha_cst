@@ -17,6 +17,8 @@ export interface CustomerRecord {
   unit_id?:         string;
   farm_id?:         string;
   farm_ids?:        string[];
+  speaker_cache_expires_at?: string;
+  created_at?:      string;
 }
 
 export interface VoiceDeliveryRecord {
@@ -52,6 +54,7 @@ export class DbClient {
   private static projectsStore:         Map<string, Project>             = new Map();
   private static bindingsStore:         Map<string, ServiceNumberBinding>= new Map();
   private static tenantsStore:          Map<string, Tenant>              = new Map();
+  private static alertAuditStore:       AlertAuditRow[]                  = [];
 
   static getPool(): pg.Pool | null {
     if (this.pool) return this.pool;
@@ -538,6 +541,7 @@ export class DbClient {
     this.transcriptsStore.clear();
     this.customersStore.clear();
     this.voiceDeliveriesStore.clear();
+    this.alertAuditStore = [];
   }
 
   static resetDurableStores(): void {
@@ -709,6 +713,211 @@ export class DbClient {
     }
 
     return null;
+  }
+
+  /**
+   * Retrieve all customers/speakers with optional tenant, project, role, and search filters.
+   */
+  static async getAllCustomers(
+    tenantId?: string,
+    projectId?: string,
+    role?: string,
+    search?: string
+  ): Promise<CustomerRecord[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const conditions: string[] = [];
+        const params: any[] = [];
+
+        if (tenantId) {
+          params.push(tenantId);
+          conditions.push(`(tenant_id = $${params.length} OR organization_id = $${params.length})`);
+        }
+        if (projectId) {
+          params.push(projectId);
+          conditions.push(`project_id = $${params.length}`);
+        }
+        if (role) {
+          params.push(role);
+          conditions.push(`role = $${params.length}`);
+        }
+        if (search) {
+          params.push(`%${search.trim().toLowerCase()}%`);
+          conditions.push(`(LOWER(phone_e164) LIKE $${params.length} OR LOWER(customer_ref) LIKE $${params.length})`);
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        const query = `
+          SELECT tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids, speaker_cache_expires_at, created_at
+          FROM customers
+          ${whereClause}
+          ORDER BY tenant_id, project_id, phone_e164
+        `;
+        const res = await pool.query(query, params);
+        return res.rows.map((row) => ({
+          phone_e164: row.phone_e164,
+          customer_ref: row.customer_ref,
+          organization_id: row.organization_id,
+          tenant_id: row.tenant_id,
+          project_id: row.project_id,
+          workspace_id: row.workspace_id,
+          role: row.role,
+          unit_id: row.unit_id,
+          farm_id: row.farm_id,
+          farm_ids: Array.isArray(row.farm_ids) ? row.farm_ids : (row.farm_ids ? JSON.parse(row.farm_ids) : []),
+          speaker_cache_expires_at: row.speaker_cache_expires_at ? new Date(row.speaker_cache_expires_at).toISOString() : undefined,
+          created_at: row.created_at ? new Date(row.created_at).toISOString() : undefined,
+        }));
+      } catch (err: any) {
+        Logger.error(`DbClient.getAllCustomers Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory fallback
+    const seen = new Set<string>();
+    const results: CustomerRecord[] = [];
+    for (const record of this.customersStore.values()) {
+      const uniqueKey = `${record.tenant_id}:${record.project_id || ''}:${record.phone_e164}`;
+      if (seen.has(uniqueKey)) continue;
+      seen.add(uniqueKey);
+
+      if (tenantId && record.tenant_id !== tenantId && record.organization_id !== tenantId) continue;
+      if (projectId && record.project_id !== projectId) continue;
+      if (role && record.role !== role) continue;
+      if (search) {
+        const s = search.trim().toLowerCase();
+        const matches = (record.phone_e164 && record.phone_e164.toLowerCase().includes(s)) ||
+                        (record.customer_ref && record.customer_ref.toLowerCase().includes(s));
+        if (!matches) continue;
+      }
+      results.push({ ...record });
+    }
+    return results;
+  }
+
+  /**
+   * Update configuration and resource scope of an existing customer/speaker.
+   */
+  static async updateCustomer(
+    phoneE164: string,
+    tenantId: string,
+    projectId: string | undefined,
+    updates: Partial<CustomerRecord>
+  ): Promise<CustomerRecord | null> {
+    const cleanPhone = phoneE164.trim();
+    const pool = this.getPool();
+    let updatedRecord: CustomerRecord | null = null;
+
+    if (pool) {
+      try {
+        const setClauses: string[] = [];
+        const params: any[] = [tenantId, cleanPhone];
+
+        if (updates.role !== undefined) {
+          params.push(updates.role);
+          setClauses.push(`role = $${params.length}`);
+        }
+        if (updates.farm_ids !== undefined) {
+          params.push(JSON.stringify(updates.farm_ids));
+          setClauses.push(`farm_ids = $${params.length}::jsonb`);
+        }
+        if (updates.customer_ref !== undefined) {
+          params.push(updates.customer_ref);
+          setClauses.push(`customer_ref = $${params.length}`);
+        }
+        if (updates.project_id !== undefined) {
+          params.push(updates.project_id);
+          setClauses.push(`project_id = $${params.length}`);
+        }
+        if (updates.speaker_cache_expires_at !== undefined) {
+          params.push(updates.speaker_cache_expires_at);
+          setClauses.push(`speaker_cache_expires_at = $${params.length}`);
+        }
+
+        if (setClauses.length > 0) {
+          let whereClause = `WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`;
+          if (projectId) {
+            params.push(projectId);
+            whereClause += ` AND (project_id = $${params.length} OR project_id IS NULL)`;
+          }
+
+          const query = `
+            UPDATE customers
+            SET ${setClauses.join(', ')}
+            ${whereClause}
+            RETURNING tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids, speaker_cache_expires_at, created_at
+          `;
+          const res = await pool.query(query, params);
+          if (res.rows.length > 0) {
+            const row = res.rows[0];
+            updatedRecord = {
+              phone_e164: row.phone_e164,
+              customer_ref: row.customer_ref,
+              organization_id: row.organization_id,
+              tenant_id: row.tenant_id,
+              project_id: row.project_id,
+              workspace_id: row.workspace_id,
+              role: row.role,
+              unit_id: row.unit_id,
+              farm_id: row.farm_id,
+              farm_ids: Array.isArray(row.farm_ids) ? row.farm_ids : (row.farm_ids ? JSON.parse(row.farm_ids) : []),
+              speaker_cache_expires_at: row.speaker_cache_expires_at ? new Date(row.speaker_cache_expires_at).toISOString() : undefined,
+              created_at: row.created_at ? new Date(row.created_at).toISOString() : undefined,
+            };
+          }
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.updateCustomer Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory update
+    const memKey = projectId ? `${tenantId}:${projectId}:${cleanPhone}` : `${tenantId}:${cleanPhone}`;
+    const existing = this.customersStore.get(memKey) || this.customersStore.get(`${tenantId}:${cleanPhone}`);
+    if (existing) {
+      if (updates.role) existing.role = updates.role;
+      if (updates.farm_ids) existing.farm_ids = updates.farm_ids;
+      if (updates.customer_ref) existing.customer_ref = updates.customer_ref;
+      if (updates.project_id) existing.project_id = updates.project_id;
+      if (updates.speaker_cache_expires_at) existing.speaker_cache_expires_at = updates.speaker_cache_expires_at;
+      if (!updatedRecord) updatedRecord = { ...existing };
+    }
+
+    return updatedRecord;
+  }
+
+  /**
+   * Delete or revoke a customer/speaker.
+   */
+  static async deleteCustomer(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<boolean> {
+    const cleanPhone = phoneE164.trim();
+    let deleted = false;
+    const pool = this.getPool();
+
+    if (pool) {
+      try {
+        const query = projectId
+          ? `DELETE FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND project_id = $2 AND phone_e164 = $3`
+          : `DELETE FROM customers WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`;
+        const params = projectId ? [tenantId, projectId, cleanPhone] : [tenantId, cleanPhone];
+        const res = await pool.query(query, params);
+        deleted = (res.rowCount ?? 0) > 0;
+      } catch (err: any) {
+        Logger.error(`DbClient.deleteCustomer Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory
+    if (projectId) {
+      deleted = this.customersStore.delete(`${tenantId}:${projectId}:${cleanPhone}`) || deleted;
+    }
+    deleted = this.customersStore.delete(`${tenantId}:${cleanPhone}`) || deleted;
+    return deleted;
   }
 
   // ── Projects Persistence (projects table) ──────────────────────────────────
@@ -923,6 +1132,37 @@ export class DbClient {
     }
   }
 
+  static async updateTenant(tenantId: string, updates: Partial<Tenant>): Promise<Tenant | null> {
+    const mem = this.tenantsStore.get(tenantId);
+    if (mem) {
+      if (updates.name) mem.name = updates.name;
+      if (updates.status) mem.status = updates.status;
+      if (updates.adapter_type) mem.adapter_type = updates.adapter_type;
+      if (updates.adapter_config) mem.adapter_config = updates.adapter_config;
+    }
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const clauses: string[] = [];
+        const params: any[] = [tenantId];
+        if (updates.name) {
+          params.push(updates.name);
+          clauses.push(`name = $${params.length}`);
+        }
+        if (updates.status) {
+          params.push(updates.status);
+          clauses.push(`status = $${params.length}`);
+        }
+        if (clauses.length > 0) {
+          await pool.query(`UPDATE organizations SET ${clauses.join(', ')} WHERE organization_id = $1`, params);
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.updateTenant Postgres Error: ${err.message}`);
+      }
+    }
+    return mem || (await this.getAllTenants()).find((t) => t.tenant_id === tenantId) || null;
+  }
+
   static async getAllTenants(): Promise<Tenant[]> {
     const pool = this.getPool();
     if (pool) {
@@ -1075,6 +1315,11 @@ export class DbClient {
    * In-memory mode (tests): logs the event and returns without DB interaction.
    */
   static async writeAlertAuditRow(row: AlertAuditRow): Promise<void> {
+    this.alertAuditStore.push(row);
+    if (this.alertAuditStore.length > 200) {
+      this.alertAuditStore.shift();
+    }
+
     const pool = this.getPool();
     if (!pool) {
       Logger.info(`DbClient.writeAlertAuditRow (in-memory): id=${row.id} outbound=${row.outbound_message_id} truncated=${row.truncated} masked=${row.masked_at !== null}`);
@@ -1105,6 +1350,39 @@ export class DbClient {
       Logger.error(`DbClient.writeAlertAuditRow Postgres Error: ${err.message}`);
       throw err;
     }
+  }
+
+  static async getRecentAlertAuditLogs(limit = 50): Promise<AlertAuditRow[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT id, outbound_message_id, tenant_id, organization_id, rendered_body, truncated,
+                  template_id, version, params, masked_at, expires_at, created_at
+           FROM alert_audit_log
+           ORDER BY created_at DESC
+           LIMIT $1`,
+          [limit]
+        );
+        return res.rows.map((row) => ({
+          id: row.id,
+          outbound_message_id: row.outbound_message_id,
+          tenant_id: row.tenant_id,
+          organization_id: row.organization_id,
+          rendered_body: row.rendered_body,
+          truncated: row.truncated,
+          template_id: row.template_id,
+          version: row.version,
+          params: typeof row.params === 'string' ? JSON.parse(row.params) : row.params,
+          masked_at: row.masked_at ? new Date(row.masked_at).toISOString() : null,
+          expires_at: row.expires_at ? new Date(row.expires_at).toISOString() : new Date().toISOString(),
+          created_at: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+        }));
+      } catch (err: any) {
+        Logger.error(`DbClient.getRecentAlertAuditLogs Postgres Error: ${err.message}`);
+      }
+    }
+    return [...this.alertAuditStore].slice(-limit).reverse();
   }
 
   // ── Voice Deliveries Ledger & Health Tracking ───────────────────────────────
