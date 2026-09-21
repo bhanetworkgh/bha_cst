@@ -3,6 +3,22 @@ import { ITenantAdapter } from '../adapters/types.js';
 import { VfarmTenantAdapter } from '../adapters/vfarm/index.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
+import type { VfarmAdapterConfig } from '../adapters/vfarm/index.js';
+
+/**
+ * Read vFarm adapter configuration from environment variables.
+ * Inlined here (not imported from adapter) to avoid circular ESM initialisation.
+ * Returns undefined when VFARM_BASE_URL is not set → local/mock mode preserved.
+ */
+function _buildVfarmConfigFromEnv(): VfarmAdapterConfig | undefined {
+  const baseUrl = process.env.VFARM_BASE_URL;
+  if (!baseUrl) return undefined;
+  return {
+    baseUrl,
+    apiKey: process.env.VFARM_API_KEY ?? '',
+    timeoutMs: process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : 5_000,
+  };
+}
 
 export interface SpeakerCacheEntry {
   identity: SpeakerIdentity;
@@ -38,7 +54,8 @@ export class CoreRegistry {
       adapter_type: 'vfarm',
       created_at: new Date().toISOString(),
     };
-    const vfarmAdapter = new VfarmTenantAdapter(vfarmTenant.tenant_id);
+    const vfarmEnvConfig = _buildVfarmConfigFromEnv();
+    const vfarmAdapter = new VfarmTenantAdapter(vfarmTenant.tenant_id, vfarmEnvConfig ?? {});
     this.registerTenant(vfarmTenant, vfarmAdapter);
 
     // Register Default Projects pulled from vFarm
@@ -111,13 +128,20 @@ export class CoreRegistry {
    * overwriting them with default bindings upon server startup/restart.
    */
   static async initFromDb(): Promise<void> {
+    // Resolve live adapter config once from env (shared across all vFarm tenants)
+    const vfarmEnvConfig = _buildVfarmConfigFromEnv();
+
     // 1. Load tenants from DB
     const dbTenants = await DbClient.getAllTenants();
     for (const t of dbTenants) {
       if (!this.tenants.has(t.tenant_id)) {
         let adapter: ITenantAdapter | undefined;
-        if (t.tenant_id === 'tenant-vfarm-01' || t.adapter_type === 'vfarm') {
-          adapter = new VfarmTenantAdapter(t.tenant_id);
+        if (t.adapter_type === 'vfarm') {
+          // Prefer env-supplied live config when VFARM_BASE_URL is set;
+          // fall back to adapter_config stored in DB for per-tenant overrides;
+          // last resort: empty config (local/mock mode).
+          const adapterConfig = vfarmEnvConfig ?? (t.adapter_config as Record<string, unknown> | undefined) ?? {};
+          adapter = new VfarmTenantAdapter(t.tenant_id, adapterConfig);
         }
         this.tenants.set(t.tenant_id, t);
         if (adapter) {

@@ -317,12 +317,47 @@
           </div>
           <div class="field field-wide">
             <label>Capability flags (Section 4 — R-CAP-1)</label>
-            <div class="checkbox-row">
-              <label class="custom-checkbox"><input type="checkbox" id="cap-sms"> <strong>sms</strong> (Inbound webhook &amp; outbound)</label>
-              <label class="custom-checkbox"><input type="checkbox" id="cap-web"> <strong>web</strong> (Web chat interface)</label>
-              <label class="custom-checkbox"><input type="checkbox" id="cap-voice"> <strong>voice</strong> (Twilio voice &amp; synthesis)</label>
-              <label class="custom-checkbox disabled"><input type="checkbox" id="cap-whatsapp" disabled> whatsapp (slot)</label>
-              <label class="custom-checkbox disabled"><input type="checkbox" id="cap-email" disabled> email (slot)</label>
+            <div class="cap-grid">
+              <label class="cap-card" for="cap-sms">
+                <div class="cap-card-top">
+                  <input type="checkbox" id="cap-sms" class="cap-checkbox">
+                  <span class="cap-status-dot" id="cap-sms-dot"></span>
+                </div>
+                <strong class="cap-name">sms</strong>
+                <span class="cap-desc">Inbound webhook &amp; outbound</span>
+              </label>
+              <label class="cap-card" for="cap-web">
+                <div class="cap-card-top">
+                  <input type="checkbox" id="cap-web" class="cap-checkbox">
+                  <span class="cap-status-dot" id="cap-web-dot"></span>
+                </div>
+                <strong class="cap-name">web</strong>
+                <span class="cap-desc">Web chat interface</span>
+              </label>
+              <label class="cap-card" for="cap-voice">
+                <div class="cap-card-top">
+                  <input type="checkbox" id="cap-voice" class="cap-checkbox">
+                  <span class="cap-status-dot" id="cap-voice-dot"></span>
+                </div>
+                <strong class="cap-name">voice</strong>
+                <span class="cap-desc">Twilio voice &amp; synthesis</span>
+              </label>
+              <label class="cap-card cap-card--disabled" for="cap-whatsapp">
+                <div class="cap-card-top">
+                  <input type="checkbox" id="cap-whatsapp" class="cap-checkbox" disabled>
+                  <span class="cap-badge-slot">coming soon</span>
+                </div>
+                <strong class="cap-name">whatsapp</strong>
+                <span class="cap-desc">Reserved slot</span>
+              </label>
+              <label class="cap-card cap-card--disabled" for="cap-email">
+                <div class="cap-card-top">
+                  <input type="checkbox" id="cap-email" class="cap-checkbox" disabled>
+                  <span class="cap-badge-slot">coming soon</span>
+                </div>
+                <strong class="cap-name">email</strong>
+                <span class="cap-desc">Reserved slot</span>
+              </label>
             </div>
           </div>
           <div class="field">
