@@ -154,6 +154,15 @@ export class CoreRegistry {
     const dbProjects = await DbClient.getAllProjects();
     for (const p of dbProjects) {
       this.projects.set(p.project_id, p);
+      // Push into the owning tenant's adapter (e.g. VfarmTenantAdapter.projectsMap)
+      // so adapter-internal lookups like _getProjectOrgId() see the DB-loaded
+      // tenant_org_id instead of only the adapter's hardcoded defaults.
+      // Do NOT go through registerProject() here — these records already
+      // came from the DB, so re-persisting them is unnecessary.
+      const adapter = this.adapters.get(p.tenant_id);
+      if (adapter?.addProject) {
+        adapter.addProject(p);
+      }
     }
 
     // 3. Load service number bindings from DB
@@ -207,6 +216,14 @@ export class CoreRegistry {
       DbClient.saveProject(project).catch((err) => {
         Logger.warn(`CoreRegistry: Failed to persist project ${project.project_id}: ${err.message}`);
       });
+    }
+    // Keep the tenant adapter's own in-memory project projection (e.g.
+    // vFarm's projectsMap, which backs _getProjectOrgId) in sync so
+    // fields like tenant_org_id set here are visible to the adapter
+    // instead of only the registry.
+    const adapter = this.adapters.get(project.tenant_id);
+    if (adapter?.addProject) {
+      adapter.addProject(project);
     }
   }
 

@@ -2,6 +2,14 @@ import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, CabinetConfig }
 
 export interface ITenantAdapter {
   readonly tenantId: string;
+  /**
+   * Push a project's current record (including tenant_org_id) into the
+   * adapter's own in-memory projection, so adapter-internal lookups
+   * (e.g. vFarm's org-id lookup for a project) reflect the latest
+   * DB/registry state rather than only the adapter's hardcoded defaults.
+   * Optional: adapters that have no per-project in-memory state can omit it.
+   */
+  addProject?(project: Project): void;
   pullProjects(tenantId: string): Promise<Project[]>;
   pullResourceScopes(tenantId: string, projectId: string): Promise<ResourceScope[]>;
   pullSpeakers(tenantId: string, projectId: string): Promise<SpeakerRecord[]>;

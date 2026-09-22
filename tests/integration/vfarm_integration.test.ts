@@ -14,17 +14,10 @@
  *               404 → null, 401/403 → null, 5xx/network → null
  */
 import { describe, it, expect } from 'vitest';
-// Import registry first to anchor the circular ESM resolution order.
-// db/client imports registry imports vfarm/index; by importing registry here
-// first, vfarm/index is already cached when our direct import below executes.
-import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { VfarmTenantAdapter, buildVfarmAdapterConfigFromEnv } from '../../engine/src/adapters/vfarm/index.js';
 import { VfarmLiveClient, VfarmHttpError, VfarmNetworkError } from '../../engine/src/adapters/vfarm/live_client.js';
 import type { FetchFn } from '../../engine/src/adapters/vfarm/live_client.js';
 import type { SpeakerIdentity } from '../../engine/src/core/types.js';
-
-// Suppress unused-import lint: CoreRegistry is imported only for side-effect ordering
-void CoreRegistry;
 
 // ── Shared test fixtures ─────────────────────────────────────────────────────
 
@@ -119,7 +112,19 @@ function makeMockFetch(routes: Record<string, { status: number; body: unknown }>
   };
 }
 
-/** Create an adapter pre-configured with a mock fetch and a registered speaker */
+/** Default farm-grants response for usr-abc-001 → FARM_ID (farm_austin_main) */
+const DEFAULT_FARM_GRANTS_BODY = {
+  grants: [{ farm_id: FARM_ID, role: 'owner', granted_by: null, granted_at: '2025-01-01T00:00:00Z' }],
+  total: 1,
+};
+
+/** Create an adapter pre-configured with a mock fetch and a registered speaker.
+ *
+ * The factory automatically provides a farm-grants route for usr-abc-001 so that
+ * resolveSpeaker (which now calls /api/v1/users/{user_id}/farm-grants in live mode)
+ * returns the expected farm_ids without 404-ing.  Caller-supplied routes take
+ * precedence over the default, allowing cabinet tests to override as needed.
+ */
 function makeAdapterWithLiveClient(
   fetchFn: FetchFn,
   opts: { orgId?: string } = {},
@@ -139,6 +144,22 @@ function makeAdapterWithLiveClient(
   });
   return adapter;
 }
+
+/**
+ * Build a mock fetchFn that always handles farm-grants for usr-abc-001,
+ * plus any extra routes supplied by the caller. This ensures speaker tests
+ * work correctly when the adapter has a live client.
+ */
+function makeMockFetchWithGrants(
+  extraRoutes: Record<string, { status: number; body: unknown }> = {},
+): FetchFn {
+  const routes: Record<string, { status: number; body: unknown }> = {
+    '/users/usr-abc-001/farm-grants': { status: 200, body: DEFAULT_FARM_GRANTS_BODY },
+    ...extraRoutes,
+  };
+  return makeMockFetch(routes);
+}
+
 
 /** Build a known SpeakerIdentity for cabinet tests */
 function makeKnownSpeaker(farmIds: string[] = [FARM_ID]): SpeakerIdentity {
@@ -163,7 +184,8 @@ describe('vFarm Integration — Speaker Identity', () => {
 
   // Test 1: Valid upstream organization member with local phone binding
   it('Test 1: resolves a known speaker that has a local phone binding', async () => {
-    const adapter = makeAdapterWithLiveClient(makeMockFetch({}));
+    // Use makeMockFetchWithGrants so the live farm-grants call returns FARM_ID
+    const adapter = makeAdapterWithLiveClient(makeMockFetchWithGrants());
 
     const identity = await adapter.resolveSpeaker({
       tenantId: TENANT_ID,
@@ -201,7 +223,8 @@ describe('vFarm Integration — Speaker Identity', () => {
 
   // Test 3: Upstream member removed/revoked → speaker resolution fails closed
   it('Test 3: removed speaker (post-revoke) returns is_known=false', async () => {
-    const adapter = makeAdapterWithLiveClient(makeMockFetch({}));
+    // Grants route present so the "before" check resolves correctly
+    const adapter = makeAdapterWithLiveClient(makeMockFetchWithGrants());
 
     // Verify the speaker is known before removal
     const before = await adapter.resolveSpeaker({
@@ -243,7 +266,8 @@ describe('vFarm Integration — Speaker Identity', () => {
 
   // Test 5: Farm-scope isolation — speaker known but only for different farm
   it('Test 5: farm-scope isolation — speaker farm_ids does not include requested farm', async () => {
-    const adapter = makeAdapterWithLiveClient(makeMockFetch({}));
+    // Grants route returns only FARM_ID (farm_austin_main); validates isolation
+    const adapter = makeAdapterWithLiveClient(makeMockFetchWithGrants());
 
     // Registered with FARM_ID = 'farm_austin_main'
     const identity = await adapter.resolveSpeaker({

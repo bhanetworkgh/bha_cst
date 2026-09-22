@@ -1,19 +1,11 @@
 import { IdentityContext, SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
-
-export function getPermissionsForRole(role: 'owner' | 'manager' | 'tech' | 'unknown'): string[] {
-  switch (role) {
-    case 'owner':
-      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate', 'write:settings'];
-    case 'manager':
-      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:control', 'write:escalate'];
-    case 'tech':
-      return ['read:telemetry', 'read:knowledge', 'read:media', 'write:escalate'];
-    default:
-      return [];
-  }
-}
+// Import from the leaf-level permissions module (no upstream deps) to avoid
+// the circular init chain: db/client → registry → vfarm/index → resolver → db/client.
+// Re-export so existing callers of identity/resolver.ts continue to work.
+import { getPermissionsForRole } from './permissions.js';
+export { getPermissionsForRole } from './permissions.js';
 
 export class IdentityResolver {
   /**
