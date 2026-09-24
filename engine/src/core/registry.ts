@@ -1,29 +1,36 @@
 import { Tenant, Project, ServiceNumberBinding, SpeakerIdentity, CapabilityType } from './types.js';
 import { ITenantAdapter } from '../adapters/types.js';
-import { VfarmTenantAdapter } from '../adapters/vfarm/index.js';
+import { VfarmTenantAdapter, VfarmAdapterConfig } from '../adapters/vfarm/index.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
-import type { VfarmAdapterConfig } from '../adapters/vfarm/index.js';
-
-/**
- * Read vFarm adapter configuration from environment variables.
- * Inlined here (not imported from adapter) to avoid circular ESM initialisation.
- * Returns undefined when VFARM_BASE_URL is not set → local/mock mode preserved.
- */
-function _buildVfarmConfigFromEnv(): VfarmAdapterConfig | undefined {
-  const baseUrl = process.env.VFARM_BASE_URL;
-  if (!baseUrl) return undefined;
-  return {
-    baseUrl,
-    apiKey: process.env.VFARM_API_KEY ?? '',
-    timeoutMs: process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : 5_000,
-  };
-}
+import { getEnv } from '../config/env.js';
 
 export interface SpeakerCacheEntry {
   identity: SpeakerIdentity;
   cachedAt: number;
   expiresAt: number;
+}
+
+/**
+ * Build the vFarm adapter config from validated env vars. Returns `{}` (local
+ * mode — no live upstream calls) whenever VFARM_BASE_URL is not configured,
+ * so existing dev/test setups that never set it keep working unchanged.
+ */
+function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
+  try {
+    const env = getEnv();
+    if (!env.VFARM_BASE_URL) return {};
+    return {
+      baseUrl: env.VFARM_BASE_URL,
+      apiKey: env.VFARM_API_KEY,
+      apiToken: env.VFARM_API_TOKEN,
+      timeoutMs: env.VFARM_TIMEOUT_MS,
+    };
+  } catch {
+    // Env not fully configured in this context (e.g. isolated unit test) —
+    // fall back to local mode rather than throwing during registry init.
+    return {};
+  }
 }
 
 export class CoreRegistry {
@@ -54,8 +61,7 @@ export class CoreRegistry {
       adapter_type: 'vfarm',
       created_at: new Date().toISOString(),
     };
-    const vfarmEnvConfig = _buildVfarmConfigFromEnv();
-    const vfarmAdapter = new VfarmTenantAdapter(vfarmTenant.tenant_id, vfarmEnvConfig ?? {});
+    const vfarmAdapter = new VfarmTenantAdapter(vfarmTenant.tenant_id, buildVfarmAdapterConfigFromEnv());
     this.registerTenant(vfarmTenant, vfarmAdapter);
 
     // Register Default Projects pulled from vFarm
@@ -128,20 +134,17 @@ export class CoreRegistry {
    * overwriting them with default bindings upon server startup/restart.
    */
   static async initFromDb(): Promise<void> {
-    // Resolve live adapter config once from env (shared across all vFarm tenants)
-    const vfarmEnvConfig = _buildVfarmConfigFromEnv();
-
     // 1. Load tenants from DB
     const dbTenants = await DbClient.getAllTenants();
     for (const t of dbTenants) {
       if (!this.tenants.has(t.tenant_id)) {
         let adapter: ITenantAdapter | undefined;
-        if (t.adapter_type === 'vfarm') {
-          // Prefer env-supplied live config when VFARM_BASE_URL is set;
-          // fall back to adapter_config stored in DB for per-tenant overrides;
-          // last resort: empty config (local/mock mode).
-          const adapterConfig = vfarmEnvConfig ?? (t.adapter_config as Record<string, unknown> | undefined) ?? {};
-          adapter = new VfarmTenantAdapter(t.tenant_id, adapterConfig);
+        if (t.tenant_id === 'tenant-vfarm-01' || t.adapter_type === 'vfarm') {
+          const config: VfarmAdapterConfig = {
+            ...buildVfarmAdapterConfigFromEnv(),
+            ...(t.adapter_config as VfarmAdapterConfig | undefined),
+          };
+          adapter = new VfarmTenantAdapter(t.tenant_id, config);
         }
         this.tenants.set(t.tenant_id, t);
         if (adapter) {
@@ -154,15 +157,6 @@ export class CoreRegistry {
     const dbProjects = await DbClient.getAllProjects();
     for (const p of dbProjects) {
       this.projects.set(p.project_id, p);
-      // Push into the owning tenant's adapter (e.g. VfarmTenantAdapter.projectsMap)
-      // so adapter-internal lookups like _getProjectOrgId() see the DB-loaded
-      // tenant_org_id instead of only the adapter's hardcoded defaults.
-      // Do NOT go through registerProject() here — these records already
-      // came from the DB, so re-persisting them is unnecessary.
-      const adapter = this.adapters.get(p.tenant_id);
-      if (adapter?.addProject) {
-        adapter.addProject(p);
-      }
     }
 
     // 3. Load service number bindings from DB
@@ -217,14 +211,6 @@ export class CoreRegistry {
         Logger.warn(`CoreRegistry: Failed to persist project ${project.project_id}: ${err.message}`);
       });
     }
-    // Keep the tenant adapter's own in-memory project projection (e.g.
-    // vFarm's projectsMap, which backs _getProjectOrgId) in sync so
-    // fields like tenant_org_id set here are visible to the adapter
-    // instead of only the registry.
-    const adapter = this.adapters.get(project.tenant_id);
-    if (adapter?.addProject) {
-      adapter.addProject(project);
-    }
   }
 
   static getProject(projectId: string): Project | null {
@@ -246,60 +232,7 @@ export class CoreRegistry {
       proj.synced_at = now;
       this.registerProject(proj);
     }
-    // Best-effort speaker warmup: populate the adapter's speakersMap from
-    // CST's existing phone→person_id bindings so the first inbound message
-    // does not require a cold adapter lookup.
-    await this.warmupSpeakers(tenantId).catch((err) => {
-      Logger.warn(`CoreRegistry.syncProjectsFromAdapter: speaker warmup failed for tenant ${tenantId}: ${err.message}`);
-    });
     return pulledProjects;
-  }
-
-  /**
-   * Warm the adapter's in-memory speaker binding map for every project
-   * belonging to `tenantId`.
-   *
-   * Architecture note: vFarm does NOT expose phone_e164 in any API response.
-   * The phone ↔ person_id mapping is owned exclusively by CST (stored in the
-   * adapter's speakersMap / persisted in the customers table). This method
-   * pulls those locally-held bindings back into the adapter's hot map so that
-   * speaker resolution on the first inbound call is served from memory rather
-   * than hitting the DB.
-   *
-   * Warm-up does NOT invent phone numbers from vFarm; it only re-loads
-   * bindings that CST already owns.
-   * Failures are logged per-project and do NOT abort warmup of other projects.
-   * Tenant/project isolation is preserved: only the owning adapter is called.
-   */
-  static async warmupSpeakers(tenantId: string): Promise<void> {
-    const adapter = this.getAdapter(tenantId);
-    if (!adapter) {
-      Logger.warn(`CoreRegistry.warmupSpeakers: no adapter for tenant ${tenantId}`);
-      return;
-    }
-    const projects = this.getProjectsForTenant(tenantId);
-    if (projects.length === 0) {
-      Logger.warn(`CoreRegistry.warmupSpeakers: no projects found for tenant ${tenantId}`);
-      return;
-    }
-    let warmedCount = 0;
-    for (const project of projects) {
-      if (project.tenant_id !== tenantId) continue; // Extra isolation guard
-      try {
-        const speakers = await adapter.pullSpeakers(tenantId, project.project_id);
-        Logger.info(
-          `CoreRegistry.warmupSpeakers: warmed ${speakers.length} speakers ` +
-          `for tenant=${tenantId} project=${project.project_id}`,
-        );
-        warmedCount += speakers.length;
-      } catch (err: any) {
-        Logger.warn(
-          `CoreRegistry.warmupSpeakers: pullSpeakers failed for ` +
-          `tenant=${tenantId} project=${project.project_id}: ${err.message}`,
-        );
-      }
-    }
-    Logger.info(`CoreRegistry.warmupSpeakers: total ${warmedCount} speaker bindings warmed for tenant=${tenantId}`);
   }
 
   // ── Candidate Numbers & Explicit Service Number Binding ──────────────────

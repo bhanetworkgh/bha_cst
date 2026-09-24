@@ -82,16 +82,22 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         expires_at: expiresAt.toISOString(),
       });
     } else {
-      // In-memory fallback (no DB): hardcoded admin creds match seed
-      const validEmail = 'admin@cst.com';
-      const validHash = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
-      if (email.toLowerCase().trim() !== validEmail || hash !== validHash) {
+      // In-memory fallback (no DB): credentials from env vars only.
+      // NEVER hardcode credentials here — set CST_ADMIN_EMAIL / CST_ADMIN_PASSWORD_HASH in .env.
+      const validEmail = process.env.CST_ADMIN_EMAIL;
+      const validHash = process.env.CST_ADMIN_PASSWORD_HASH;
+      if (!validEmail || !validHash) {
+        Logger.warn('Admin login failed — CST_ADMIN_EMAIL / CST_ADMIN_PASSWORD_HASH not set (in-memory mode)');
+        res.status(503).json({ error: 'CONFIG_MISSING', message: 'Set CST_ADMIN_EMAIL and CST_ADMIN_PASSWORD_HASH in .env for in-memory admin auth.' });
+        return;
+      }
+      if (email.toLowerCase().trim() !== validEmail.toLowerCase().trim() || hash !== validHash) {
         Logger.warn(`Admin login failed for ${email} (in-memory mode)`);
         res.status(401).json({ error: 'UNAUTHORIZED', message: 'Invalid email or password' });
         return;
       }
       adminEmail = validEmail;
-      adminName = 'CST Super Admin';
+      adminName = process.env.CST_ADMIN_NAME || 'CST Super Admin';
       const token = generateToken();
       const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 60 * 60 * 1000);
       memSessions.set(token, { email: adminEmail, expiresAt });
@@ -164,7 +170,7 @@ authRouter.get('/me', async (req: Request, res: Response) => {
         res.status(401).json({ error: 'UNAUTHORIZED', message: 'Session expired or invalid' });
         return;
       }
-      res.status(200).json({ status: 'ok', email: session.email, name: 'CST Super Admin', role: 'superadmin' });
+      res.status(200).json({ status: 'ok', email: session.email, name: process.env.CST_ADMIN_NAME || 'CST Super Admin', role: 'superadmin' });
     }
   } catch (err: any) {
     Logger.error(`Admin me error: ${err.message}`);

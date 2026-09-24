@@ -3,6 +3,28 @@ import { z, ZodError } from 'zod';
 
 dotenv.config();
 
+// Treat `KEY=` (empty) in a .env file as "not set" for optional variables.
+const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
+const optionalEnv = <T extends z.ZodTypeAny>(schema: T) => z.preprocess(emptyToUndefined, schema.optional());
+
+/**
+ * vFarm Management API (verified OpenAPI contract) — all optional.
+ * Live vFarm mode is ON iff VFARM_API_BASE_URL is set. No URL is hardcoded in code:
+ *   development → https://bhavfarm1.duckdns.org   (set in .env)
+ *   production  → https://api.vfarm.bhanetwork.org (set in the deploy environment)
+ * Credentials are the two mechanisms declared by the vFarm OpenAPI:
+ *   VFARM_API_JWT      → `Authorization: Bearer <JWT>`
+ *   VFARM_API_FARM_KEY → `X-Farm-Key: <key>`
+ * (VFARM_RESOLVE_ENDPOINT / VFARM_RESOLVE_API_KEY are the legacy phone-resolve seam; they are
+ *  a full endpoint URL + `x-api-key`, not a base URL / JWT / X-Farm-Key, so they are NOT reused.)
+ */
+const vfarmApiEnvShape = {
+  VFARM_API_BASE_URL:   optionalEnv(z.string().url()),
+  VFARM_API_JWT:        optionalEnv(z.string().min(1)),
+  VFARM_API_FARM_KEY:   optionalEnv(z.string().min(1)),
+  VFARM_API_TIMEOUT_MS: optionalEnv(z.coerce.number().int().positive()),
+};
+
 const envSchema = z.object({
   PORT: z.string().default('3000').transform((val) => parseInt(val, 10)),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -28,6 +50,9 @@ const envSchema = z.object({
   VFARM_RESOLVE_ENDPOINT: z.string().url(),
   // Service-to-service API key for CST -> vFarm resolve calls
   VFARM_RESOLVE_API_KEY:  z.string().min(1),
+
+  // ── System #1 (vFarm) Management API — verified OpenAPI contract (all optional) ─
+  ...vfarmApiEnvShape,
 
   // ── BHARAG Knowledge RAG & Incidents.v0 ───────────────────────────────────
   // Base URL of BHARAG API server, e.g. http://localhost:5000/api/v0
@@ -93,4 +118,21 @@ export function getEnv(): Env {
 /** Reset cached env (for tests that manipulate process.env) */
 export function resetEnvCache(): void {
   _cached = null;
+}
+
+const vfarmApiEnvSchema = z.object(vfarmApiEnvShape);
+export type VfarmApiEnv = z.infer<typeof vfarmApiEnvSchema>;
+
+/**
+ * Read ONLY the vFarm Management API variables from process.env (uncached, so env changes apply).
+ * Deliberately independent of getEnv(): it never requires the unrelated Twilio/BHARAG variables.
+ * Error text lists variable names + zod reasons only — never the values (JWT / key safety).
+ */
+export function getVfarmApiEnv(): VfarmApiEnv {
+  const result = vfarmApiEnvSchema.safeParse(process.env);
+  if (!result.success) {
+    const issues = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+    throw new Error(`bha-cst: invalid vFarm API configuration (${issues})`);
+  }
+  return result.data;
 }

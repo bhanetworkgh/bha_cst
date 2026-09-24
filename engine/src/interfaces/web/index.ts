@@ -30,51 +30,53 @@ function cookieValue(req: Request, name: string): string | undefined {
 }
 
 function getSession(req: Request): WebSession | null {
-  const token = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-cst-session') || cookieValue(req, 'cst_web_session');
-  if (token) return sessions.get(token) || null;
-  if (process.env.NODE_ENV === 'test') return createSessionSync('demo-owner', 'proj-vfarm-main');
-  return null;
-}
+    const token = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-cst-session') || cookieValue(req, 'cst_web_session');
+    if (token) return sessions.get(token) || null;
+    if (process.env.NODE_ENV === 'test') return createSessionSync('demo-owner', process.env.VFARM_PROJECT_ID_MAIN || 'proj-vfarm-main');
+    return null;
+  }
 
 function createSessionSync(userKey: string, projectId: string): WebSession | null {
-  const user = DEV_USERS[userKey];
-  const project = CoreRegistry.getProject(projectId);
-  if (!user || !project || project.tenant_id !== 'tenant-vfarm-01') return null;
-  if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
-  const session: WebSession = {
-    token: `web_test_${userKey}_${projectId}`,
-    tenant_id: project.tenant_id,
-    project_id: project.project_id,
-    speaker_ref: user.speaker_ref,
-    display_name: user.display_name,
-    role: 'owner',
-    farm_ids: ['farm_austin_main'],
-    created_at: new Date().toISOString(),
-  };
-  sessions.set(session.token, session);
-  return session;
-}
+    const user = DEV_USERS[userKey];
+    const project = CoreRegistry.getProject(projectId);
+    const tenantId = project?.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01';
+    if (!user || !project || project.tenant_id !== tenantId) return null;
+    if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
+    const session: WebSession = {
+      token: `web_test_${userKey}_${projectId}`,
+      tenant_id: tenantId,
+      project_id: project.project_id,
+      speaker_ref: user.speaker_ref,
+      display_name: user.display_name,
+      role: 'owner',
+      farm_ids: [],
+      created_at: new Date().toISOString(),
+    };
+    sessions.set(session.token, session);
+    return session;
+  }
 
-async function createSession(userKey: string, projectId: string): Promise<WebSession | null> {
-  const user = DEV_USERS[userKey];
-  const project = CoreRegistry.getProject(projectId);
-  if (!user || !project || project.tenant_id !== 'tenant-vfarm-01') return null;
-  if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
-  const identity = await CoreRegistry.resolveSpeaker({ tenantId: project.tenant_id, projectId: project.project_id, phoneE164: user.speaker_ref });
-  if (!identity.is_known) return null;
-  const session: WebSession = {
-    token: `web_${randomUUID()}`,
-    tenant_id: project.tenant_id,
-    project_id: project.project_id,
-    speaker_ref: identity.phone_e164,
-    display_name: user.display_name,
-    role: identity.role,
-    farm_ids: [...identity.farm_ids],
-    created_at: new Date().toISOString(),
-  };
-  sessions.set(session.token, session);
-  return session;
-}
+  async function createSession(userKey: string, projectId: string): Promise<WebSession | null> {
+    const user = DEV_USERS[userKey];
+    const project = CoreRegistry.getProject(projectId);
+    const tenantId = project?.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01';
+    if (!user || !project || project.tenant_id !== tenantId) return null;
+    if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
+    const identity = await CoreRegistry.resolveSpeaker({ tenantId, projectId: project.project_id, phoneE164: user.speaker_ref });
+    if (!identity.is_known) return null;
+    const session: WebSession = {
+      token: `web_${randomUUID()}`,
+      tenant_id: tenantId,
+      project_id: project.project_id,
+      speaker_ref: identity.phone_e164,
+      display_name: user.display_name,
+      role: identity.role,
+      farm_ids: [...identity.farm_ids],
+      created_at: new Date().toISOString(),
+    };
+    sessions.set(session.token, session);
+    return session;
+  }
 
 function sessionView(session: WebSession) {
   return {
@@ -106,8 +108,9 @@ webInterfaceRouter.get('/api/v1/web/session', (req: Request, res: Response) => {
 });
 
 webInterfaceRouter.get('/api/v1/web/projects', (_req: Request, res: Response) => {
-  res.json(CoreRegistry.getProjectsForTenant('tenant-vfarm-01').filter((project) => project.status === 'active' && (project.capabilities.web || process.env.NODE_ENV !== 'production')).map((project) => ({ project_id: project.project_id, name: project.name })));
-});
+    const tenantId = process.env.VFARM_TENANT_ID || 'tenant-vfarm-01';
+    res.json(CoreRegistry.getProjectsForTenant(tenantId).filter((project) => project.status === 'active' && (project.capabilities.web || process.env.NODE_ENV !== 'production')).map((project) => ({ project_id: project.project_id, name: project.name })));
+  });
 
 webInterfaceRouter.post('/api/v1/web/message', async (req: Request, res: Response) => {
   try {

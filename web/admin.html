@@ -94,6 +94,47 @@
         </div>
       </div>
 
+      <!-- Live Dynamic vFarm Operations & Telemetry Dashboard -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">VFARM OPERATIONS &amp; TELEMETRY</span>
+            <h3>Dynamic Farm Selection &amp; Real-Time Telemetry</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-refresh-farms" class="ghost-button small">↻ Refresh Farms &amp; Telemetry</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Farm contexts and API keys are discovered dynamically via the vFarm API using credentials
+          configured in the server's <code>.env</code> file (<code>VFARM_JWT</code> / <code>VFARM_FARM_KEY</code>).
+          Zero hardcoded UUIDs or credentials.
+        </p>
+
+        <div class="filter-toolbar" style="margin-bottom: 16px;">
+          <div class="filter-group" style="min-width: 320px;">
+            <label for="vfarm-farm-select">Active Farm Context</label>
+            <select id="vfarm-farm-select">
+              <option value="">Discovering dynamic farms...</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Farm Status</label>
+            <div id="vfarm-farm-badge" style="padding: 8px 0;"><span class="pill active">Connected</span></div>
+          </div>
+        </div>
+
+        <div id="vfarm-metrics-grid" class="metric-grid admin-metric-grid" style="margin-bottom: 20px;"></div>
+
+        <div class="panel-heading" style="margin-top: 10px;">
+          <div>
+            <span class="section-label">DEVICE DIGITAL TWINS</span>
+            <h4 id="vfarm-devices-title">Discovered Active Devices</h4>
+          </div>
+        </div>
+        <div id="vfarm-devices-container" class="admin-table-wrap"></div>
+      </div>
+
       <!-- Verification Readiness Table -->
       <div class="panel-block">
         <div class="panel-heading">

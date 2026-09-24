@@ -1,52 +1,55 @@
 import { ITenantAdapter } from '../types.js';
 import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, CabinetConfig } from '../../core/types.js';
 import { Logger } from '../../config/logger.js';
-import { getPermissionsForRole } from '../../identity/permissions.js';
-import { VfarmLiveClient, VfarmHttpError, VfarmNetworkError, type FetchFn } from './live_client.js';
-import type { ConfigResponse, GrantedFarmRow } from './schemas.js';
+import { VfarmHttpClient, VfarmApiError } from './http_client.js';
+import { CONFIG_HASH_RE } from './schemas.js';
 
 export interface VfarmAdapterConfig {
-  // Live-mode options (populated from env when VFARM_BASE_URL is set)
+  /** vFarm REST base URL (e.g. https://bhavfarm1.duckdns.org). When absent, the
+   * adapter runs in local mode: tenancy/speaker data comes only from the
+   * admin-managed directory (registerSpeaker/syncMembers/registerCabinetConfig)
+   * with no live upstream calls — this is the pre-existing dev/test behavior. */
   baseUrl?: string;
   apiKey?: string;
+  apiToken?: string;
   timeoutMs?: number;
-  /** Injectable fetch for testing; defaults to global fetch */
-  fetchFn?: FetchFn;
-
-  // Legacy / compatibility fields
-  resolveEndpoint?: string;
-  bharagWorkspaceKey?: string;
-  mediaBaseUrl?: string;
+  fetchFn?: typeof fetch;
   simulateDegraded?: boolean;
 }
 
-/**
- * Build a VfarmAdapterConfig from environment variables.
- * Returns undefined when VFARM_BASE_URL is not configured (local/mock mode).
- *
- * Environment variables used:
- *   VFARM_BASE_URL      – required for live mode
- *   VFARM_API_KEY       – credential for X-Farm-Key header (never logged)
- *   VFARM_TIMEOUT_MS    – optional request timeout (default 5000ms)
- */
-export function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig | undefined {
-  const baseUrl = process.env.VFARM_BASE_URL;
-  if (!baseUrl) {
-    return undefined; // No live vFarm URL → local/mock mode
+/** Maps a vFarm organization-member `role` string onto CST's role model.
+ * Only mappings that were explicitly agreed are applied; anything else keeps
+ * whatever role CST's local admin-managed directory already recorded for that
+ * speaker rather than guessing at an upstream role's meaning. */
+function mapVfarmOrgRoleToCstRole(vfarmRole: string): Exclude<UserRole, 'unknown'> | null {
+  const normalized = (vfarmRole || '').trim().toLowerCase();
+  switch (normalized) {
+    case 'owner':
+    case 'admin':
+      return 'owner';
+    case 'manager':
+      return 'manager';
+    case 'tech':
+    case 'technician':
+    case 'member':
+      return 'tech';
+    default:
+      return null;
   }
-  return {
-    baseUrl,
-    apiKey: process.env.VFARM_API_KEY ?? '',
-    timeoutMs: process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : 5_000,
-  };
 }
 
 export class VfarmTenantAdapter implements ITenantAdapter {
   readonly tenantId: string;
   private config: VfarmAdapterConfig;
-  private liveClient: VfarmLiveClient | null = null;
+  private httpClient: VfarmHttpClient | null;
 
-  // In-memory data store for vFarm tenancy projection & mocking
+  // In-memory tenancy projection & CST-owned admin-managed speaker/cabinet
+  // directory. This is NOT a mock of the vFarm API — it is the same
+  // admin-managed layer the platform has always used to bind a phone number
+  // to a known account (vFarm exposes no phone field to automate this; see
+  // docs handoff §6). When a real baseUrl/apiKey is configured, entries here
+  // are cross-checked/refreshed against the live vFarm API rather than
+  // trusted blindly.
   private projectsMap: Map<string, Project> = new Map();
   private resourceScopesMap: Map<string, ResourceScope[]> = new Map(); // projectId -> farms[]
   private speakersMap: Map<string, Map<string, SpeakerRecord>> = new Map(); // projectId -> (phone -> SpeakerRecord)
@@ -55,18 +58,24 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   constructor(tenantId = 'tenant-vfarm-01', config: VfarmAdapterConfig = {}) {
     this.tenantId = tenantId;
     this.config = config;
-
-    // Instantiate live client when base URL is configured
-    if (config.baseUrl) {
-      this.liveClient = new VfarmLiveClient({
-        baseUrl: config.baseUrl,
-        apiKey: config.apiKey ?? '',
-        timeoutMs: config.timeoutMs,
-        fetchFn: config.fetchFn,
-      });
-    }
-
+    this.httpClient = this.buildHttpClient(config);
     this.initDefaultData();
+  }
+
+  private buildHttpClient(config: VfarmAdapterConfig): VfarmHttpClient | null {
+    if (!config.baseUrl) return null;
+    return new VfarmHttpClient({
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      apiToken: config.apiToken,
+      timeoutMs: config.timeoutMs,
+      fetchFn: config.fetchFn,
+    });
+  }
+
+  /** True when the adapter is wired to the real vFarm REST API. */
+  public isLiveMode(): boolean {
+    return this.httpClient !== null;
   }
 
   public setDegraded(degraded: boolean): void {
@@ -111,7 +120,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       { id: 'farm_dallas_north', name: 'Dallas North Facility', type: 'farm' },
     ]);
 
-    // Speakers for Project 1 (Austin)
+    // Speakers for Project 1 (Austin) — admin-managed phone directory (dev/demo defaults).
     const p1Speakers = new Map<string, SpeakerRecord>();
     p1Speakers.set('+923082113844', {
       person_id: 'usr_vfarm_003',
@@ -166,7 +175,6 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   }
 
   public registerCabinetConfig(config: CabinetConfig): void {
-    // Key: farm_id:serial — matches the local lookup in resolveCabinetConfig
     this.cabinetConfigMap.set(`${config.farm_id}:${config.serial}`, { ...config });
   }
 
@@ -217,6 +225,9 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       throw new Error('vFarm Adapter API unavailable (degraded state)');
     }
     if (tenantId !== this.tenantId) return [];
+    // NOTE: the verified vFarm OpenAPI contract exposes no "list organizations"
+    // endpoint, so CST projects (which map 1:1 to vFarm orgs via
+    // `tenant_org_id`) remain CST/admin-configured rather than pulled live.
     return Array.from(this.projectsMap.values());
   }
 
@@ -225,46 +236,75 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       throw new Error('vFarm Adapter API unavailable (degraded state)');
     }
     if (tenantId !== this.tenantId) return [];
+    // NOTE: no verified "list farms for an org" endpoint exists upstream, so
+    // farm resource scopes remain CST/admin-configured. Farm *authorization*
+    // for a specific cabinet is still checked live against the authoritative
+    // vFarm inventory record — see resolveCabinetConfig.
     return this.resourceScopesMap.get(projectId) || [];
   }
 
+  /**
+   * Pull the project's admin-managed speaker directory. In live mode, entries
+   * are cross-checked against the verified vFarm organization-members
+   * endpoint: a locally-registered speaker whose `person_id` (vFarm user_id)
+   * no longer appears there is dropped (revoked upstream). Role/farm_ids are
+   * refreshed from vFarm where a mapping is available; otherwise the local
+   * admin-recorded value is kept as-is (never fabricated).
+   */
   async pullSpeakers(tenantId: string, projectId: string): Promise<SpeakerRecord[]> {
     if (this.config.simulateDegraded) {
       throw new Error('vFarm Adapter API unavailable (degraded state)');
     }
     if (tenantId !== this.tenantId) return [];
+    const pMap = this.speakersMap.get(projectId);
+    const localSpeakers = pMap ? Array.from(pMap.values()) : [];
 
-    // ── Live path: fetch all org members from vFarm ──────────────────────────
-    // vFarm org members do NOT include phone_e164; CST must correlate via
-    // its own local binding (phone → person_id). pullSpeakers returns the
-    // locally-bound set so the registry can warm speakersMap.
-    if (this.liveClient) {
-      const orgId = this._getProjectOrgId(projectId);
-      if (!orgId) {
-        Logger.warn(`vFarm: no org_id found for project ${projectId}; returning local speakers only`);
-        const pMap = this.speakersMap.get(projectId);
-        return pMap ? Array.from(pMap.values()) : [];
-      }
-      try {
-        // Returns user_id, email, name, role — no phone fields (by contract)
-        await this.liveClient.getOrgMembers(orgId);
-        // The vFarm members list does not expose phone_e164 so we cannot
-        // build SpeakerRecord entries from it alone. Return locally-bound
-        // speakers whose farm_ids will be freshened by resolveSpeaker on
-        // first message. This is the correct behaviour: CST holds the
-        // phone↔person_id binding; vFarm holds the person_id↔farm_id grant.
-        const pMap = this.speakersMap.get(projectId);
-        return pMap ? Array.from(pMap.values()) : [];
-      } catch (err: any) {
-        Logger.warn(`vFarm: pullSpeakers org-members call failed for org=${orgId}: ${err.message}`);
-        const pMap = this.speakersMap.get(projectId);
-        return pMap ? Array.from(pMap.values()) : [];
-      }
+    if (!this.httpClient || localSpeakers.length === 0) {
+      return localSpeakers;
     }
 
-    // ── Local / mock path ────────────────────────────────────────────────────
-    const pMap = this.speakersMap.get(projectId);
-    return pMap ? Array.from(pMap.values()) : [];
+    const project = this.projectsMap.get(projectId);
+    const orgId = project?.tenant_org_id;
+    if (!orgId) {
+      Logger.warn(`vFarm pullSpeakers: project ${projectId} has no tenant_org_id configured; skipping live cross-check`);
+      return localSpeakers;
+    }
+
+    let orgMembers;
+    try {
+      orgMembers = await this.httpClient.listOrganizationMembers(orgId);
+    } catch (err: any) {
+      Logger.warn(`vFarm pullSpeakers: live org-members check failed for org ${orgId}, returning last-known local directory: ${err?.message}`);
+      return localSpeakers;
+    }
+
+    const byUserId = new Map(orgMembers.map((m) => [m.user_id, m]));
+    const result: SpeakerRecord[] = [];
+    for (const speaker of localSpeakers) {
+      const upstream = byUserId.get(speaker.person_id);
+      if (!upstream) {
+        // No longer a member of the vFarm org — revoked upstream.
+        continue;
+      }
+      const mappedRole = mapVfarmOrgRoleToCstRole(upstream.role);
+      let farmIds = speaker.farm_ids;
+      try {
+        const grants = await this.httpClient.getUserFarmGrants(speaker.person_id);
+        const grantedFarmIds = grants.map((g) => g.farm_id).filter(Boolean);
+        if (grantedFarmIds.length > 0) {
+          farmIds = grantedFarmIds;
+        }
+      } catch (err: any) {
+        Logger.warn(`vFarm pullSpeakers: farm-grants check unavailable for ${speaker.person_id}, keeping locally-recorded farm scope: ${err?.message}`);
+      }
+      result.push({
+        ...speaker,
+        role: mappedRole || speaker.role,
+        farm_ids: farmIds,
+        name: upstream.name || speaker.name,
+      });
+    }
+    return result;
   }
 
   async pullCandidateNumbers(tenantId: string): Promise<string[]> {
@@ -272,6 +312,34 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return ['+19715885823', '+19715885824', '+19715885825'];
   }
 
+  private unknownIdentity(params: { tenantId: string; projectId: string; phone: string }, prefix: string): SpeakerIdentity {
+    const safeRef = `${prefix}_${(params.phone || 'unknown').replace(/[^0-9]/g, '')}`;
+    return {
+      person_id: safeRef,
+      customer_ref: safeRef,
+      tenant_id: params.tenantId,
+      project_id: params.projectId,
+      phone_e164: params.phone,
+      is_known: false,
+      role: 'unknown',
+      permissions: [],
+      farm_ids: [],
+    };
+  }
+
+  /**
+   * Resolve (tenant_id, project_id, phone_e164) to a speaker identity.
+   *
+   * The verified vFarm organization-members endpoint exposes no phone field
+   * (docs handoff §6), so there is no way to automatically map an arbitrary
+   * inbound phone number to a vFarm identity. CST's admin-managed directory
+   * (registerSpeaker/syncMembers) remains the authoritative phone→person_id
+   * binding, exactly as before this integration. What changes in live mode:
+   * a locally-known speaker is re-verified against the live vFarm API before
+   * being trusted, so a revocation upstream (or an upstream outage) is
+   * reflected immediately as fail-closed rather than trusting a stale local
+   * record indefinitely.
+   */
   async resolveSpeaker(params: {
     tenantId: string;
     projectId: string;
@@ -285,50 +353,59 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
 
     if (!cleanPhone || !this.isValidE164(cleanPhone)) {
-      const safeRef = `opaque_invalid_${(cleanPhone || 'unknown').replace(/[^0-9]/g, '')}`;
-      return {
-        person_id: safeRef,
-        customer_ref: safeRef,
-        tenant_id: params.tenantId,
-        project_id: params.projectId,
-        phone_e164: cleanPhone,
-        is_known: false,
-        role: 'unknown',
-        permissions: [],
-        farm_ids: [],
-      };
+      return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_invalid');
     }
 
-    // Step 1: Consult CST's authoritative local binding (phone_e164 → SpeakerRecord).
-    // vFarm does not expose phone_e164 in any API response; the phone↔person_id
-    // association lives exclusively in CST's speakersMap.
     const pMap = this.speakersMap.get(params.projectId);
     const speaker = pMap?.get(cleanPhone);
 
     if (!speaker) {
-      // Unknown phone — no local binding → fail closed.
-      const safeRef = `opaque_unresolved_${cleanPhone.replace(/[^0-9]/g, '')}`;
-      return {
-        person_id: safeRef,
-        customer_ref: safeRef,
-        tenant_id: params.tenantId,
-        project_id: params.projectId,
-        phone_e164: cleanPhone,
-        is_known: false,
-        role: 'unknown',
-        permissions: [],
-        farm_ids: [],
-      };
+      return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_unresolved');
     }
 
-    // Step 2: Found local binding. In live mode, enrich with authoritative
-    // farm grants from vFarm so farm_ids are always current.
-    if (this.liveClient) {
-      return this._resolveSpeakerLive(params, speaker, cleanPhone);
+    let role: UserRole = speaker.role || 'manager';
+    let farmIds = [...speaker.farm_ids];
+
+    // Live mode: re-verify the locally-registered speaker against the
+    // authoritative vFarm organization-members list before trusting it.
+    if (this.httpClient) {
+      const project = this.projectsMap.get(params.projectId);
+      const orgId = project?.tenant_org_id;
+      if (orgId) {
+        // Any thrown VfarmApiError (auth/timeout/network/upstream/invalid
+        // response) propagates to CoreRegistry, which fails closed — see
+        // docs handoff §16 "Upstream authentication failure" / "timeout".
+        const members = await this.httpClient.listOrganizationMembers(orgId);
+        const upstream = members.find((m) => m.user_id === speaker.person_id);
+        if (!upstream) {
+          // Removed/revoked upstream — fail closed even though a local
+          // record still exists.
+          return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_revoked');
+        }
+        const mappedRole = mapVfarmOrgRoleToCstRole(upstream.role);
+        if (mappedRole) role = mappedRole;
+
+        try {
+          const grants = await this.httpClient.getUserFarmGrants(speaker.person_id);
+          const grantedFarmIds = grants.map((g) => g.farm_id).filter(Boolean);
+          if (grantedFarmIds.length > 0) farmIds = grantedFarmIds;
+        } catch (err: any) {
+          // Farm-grants endpoint schema/availability is best-effort (docs
+          // handoff §8) — keep the last known-good farm scope rather than
+          // failing the whole resolution over this one unverified endpoint.
+          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${speaker.person_id}: ${err?.message}`);
+        }
+      }
     }
 
-    // ── Local / mock path ────────────────────────────────────────────────────
-    const role: UserRole = speaker.role || 'manager';
+    // Dynamic import (rather than a static top-level one) deliberately avoids
+    // a module-load-time circular dependency: identity/resolver.js pulls in
+    // db/client.js, which pulls in core/registry.js, which itself imports
+    // this file. A static import here only ever caused problems for callers
+    // that import this adapter module directly (e.g. unit tests) before
+    // core/registry.js has been loaded; resolving it lazily, at call time,
+    // sidesteps that without changing behavior.
+    const { getPermissionsForRole } = await import('../../identity/resolver.js');
     const permissions = getPermissionsForRole(role);
     const customerRef = `cust_${speaker.person_id}`;
 
@@ -341,9 +418,9 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       is_known: true,
       role,
       permissions,
-      farm_ids: [...speaker.farm_ids],
+      farm_ids: farmIds,
       unit_context: {
-        farm_id: speaker.farm_ids[0],
+        farm_id: farmIds[0],
         unit_id: 'unit_bay_04',
         role,
       },
@@ -351,96 +428,13 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   }
 
   /**
-   * Live speaker resolution.
+   * Cabinet/LM7W authorization + configuration retrieval flow (docs handoff §12).
    *
-   * Enrichment chain:
-   *   1. CST local binding → person_id, role (phone ↔ person_id is a CST fact)
-   *   2. GET /api/v1/users/{user_id}/farm-grants → authoritative farm_ids
-   *   3. If farm-grants call fails → fail closed (no farm access granted)
-   *   4. If farm-grants returns empty list → speaker has no current scope
-   *
-   * CST never stores the returned farm_ids durably; callers must not persist
-   * the resolved SpeakerIdentity beyond the current request.
-   */
-  private async _resolveSpeakerLive(
-    params: { tenantId: string; projectId: string; phoneE164: string },
-    localSpeaker: SpeakerRecord,
-    cleanPhone: string,
-  ): Promise<SpeakerIdentity> {
-    const role: UserRole = localSpeaker.role || 'manager';
-    const permissions = getPermissionsForRole(role);
-    const customerRef = `cust_${localSpeaker.person_id}`;
-
-    let grants: GrantedFarmRow[];
-    try {
-      // Fetch authoritative farm grants for this user from vFarm.
-      // Returns [] if user has no current grants (empty scope).
-      grants = await this.liveClient!.getUserFarmGrants(localSpeaker.person_id);
-    } catch (err: any) {
-      // vFarm unreachable / 4xx / 5xx → fail closed.
-      // Do NOT fall back to locally-stored farm_ids; stale farm scope is
-      // worse than no scope (could grant access to a decommissioned farm).
-      Logger.warn(
-        `vFarm: farm-grants fetch failed for person=${localSpeaker.person_id} ` +
-        `phone=${cleanPhone}: ${err.message} — denying farm scope`,
-      );
-      return {
-        person_id: localSpeaker.person_id,
-        customer_ref: customerRef,
-        tenant_id: params.tenantId,
-        project_id: params.projectId,
-        phone_e164: cleanPhone,
-        is_known: true,          // identity confirmed; scope unavailable
-        role,
-        permissions,
-        farm_ids: [],             // zero scope on upstream failure
-      };
-    }
-
-    // Collect unique farm_ids from the grant rows.
-    const liveFarmIds = [...new Set(grants.map((g) => g.farm_id).filter(Boolean))];
-
-    if (liveFarmIds.length === 0) {
-      Logger.info(
-        `vFarm: person=${localSpeaker.person_id} has no active farm grants — empty scope`,
-      );
-    }
-
-    return {
-      person_id: localSpeaker.person_id,
-      customer_ref: customerRef,
-      tenant_id: params.tenantId,
-      project_id: params.projectId,
-      phone_e164: cleanPhone,
-      is_known: true,
-      role,
-      permissions,
-      farm_ids: liveFarmIds,
-      unit_context: liveFarmIds.length > 0
-        ? { farm_id: liveFarmIds[0], role }
-        : undefined,
-    };
-  }
-
-  /** Return the vFarm org_id for a project, used for org-member lookups. */
-  private _getProjectOrgId(projectId: string): string | null {
-    return this.projectsMap.get(projectId)?.tenant_org_id ?? null;
-  }
-
-  /**
-   * Resolve cabinet config via the authoritative vFarm authorization chain:
-   *
-   *   Speaker identity
-   *     → speaker.farm_ids (local CST binding)
-   *     → GET /api/v1/inventory/{serial_number} → authoritative inventory.farm_id
-   *     → verify inventory.farm_id ∈ speaker.farm_ids
-   *     → GET /api/v1/inventory/{serial_number}/config → current.config_hash
-   *     → GET /api/v1/configs/{config_hash}
-   *     → return transient CabinetConfig (never persisted)
-   *
-   * When no live client is configured, falls back to in-memory cabinetConfigMap.
-   *
-   * NEVER authorized by: client-supplied farmId, org_id alone, serial alone, config_hash alone.
+   * Security ordering is mandatory: the caller-supplied `farmId` is NEVER
+   * trusted for authorization. The authoritative farm association is read
+   * from vFarm's inventory record for the serial number, and the speaker's
+   * farm scope must contain THAT farm before any configuration is fetched or
+   * returned. Nothing here is persisted by CST (transient only).
    */
   async resolveCabinetConfig(params: {
     tenantId: string;
@@ -453,134 +447,95 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       throw new Error('LM7W cabinet config unavailable (degraded state)');
     }
 
-    if (!params?.serial || !params?.farmId) {
+    if (!params?.serial || !params?.speaker?.is_known) {
       return null;
     }
 
-    // Speaker must be a known, identified member
-    if (!params.speaker?.is_known) {
+    if (this.httpClient) {
+      return this.resolveCabinetConfigLive(params);
+    }
+
+    // Local/dev mode: existing pre-registered fixture lookup, gated on the
+    // caller-supplied farmId being in the speaker's authorized scope (this
+    // was the pre-integration behavior, kept for local/dev/test use).
+    if (!params.farmId || !params.speaker.farm_ids?.includes(params.farmId)) {
       return null;
     }
-
-    // ── Live vFarm path ──────────────────────────────────────────────────────
-    if (this.liveClient) {
-      return this._resolveCabinetLive(params);
-    }
-
-    // ── Local / in-memory path (dev & test) ──────────────────────────────────
-    // Speaker must be authorized for the requested farm
-    if (!params.speaker.farm_ids?.includes(params.farmId)) {
-      return null;
-    }
-
-    // Key matches registerCabinetConfig: farm_id:serial
     const key = `${params.farmId}:${params.serial}`;
     const config = this.cabinetConfigMap.get(key);
-    if (!config) {
-      return null;
-    }
-
-    return {
-      ...config,
-      farm_id: params.farmId,
-      serial: params.serial,
-      source: 'lm7w',
-    };
+    if (!config) return null;
+    return { ...config, farm_id: params.farmId, serial: params.serial, source: 'lm7w' };
   }
 
-  /**
-   * Live cabinet resolution via vFarm API.
-   * Uses authoritative inventory.farm_id for authorization (never client-supplied farmId).
-   * All returned data is transient — callers must not persist it.
-   */
-  private async _resolveCabinetLive(params: {
+  private async resolveCabinetConfigLive(params: {
     tenantId: string;
     projectId: string;
-    farmId: string;  // client-supplied hint (not used for authorization)
+    farmId: string;
     serial: string;
     speaker: SpeakerIdentity;
   }): Promise<CabinetConfig | null> {
-    const { serial, speaker } = params;
+    const client = this.httpClient!;
 
-    // Step 1: Get authoritative inventory record
     let inventory;
     try {
-      inventory = await this.liveClient!.getInventory(serial);
-    } catch (err) {
-      if (err instanceof VfarmHttpError && err.status === 404) {
-        Logger.warn(`vFarm: inventory not found for serial=${serial}`);
+      inventory = await client.getInventoryItem(params.serial);
+    } catch (err: any) {
+      if (err instanceof VfarmApiError && err.category === 'not_found') {
         return null;
       }
-      if (err instanceof VfarmHttpError && (err.status === 401 || err.status === 403)) {
-        Logger.warn(`vFarm: auth error (${err.status}) fetching inventory for serial=${serial}`);
-        return null;
-      }
-      // Network / 5xx: fail closed
-      Logger.warn(`vFarm: inventory lookup failed for serial=${serial}: ${(err as Error).message}`);
-      return null;
+      throw err;
     }
 
-    // Step 2: Verify authoritative farm_id ∈ speaker.farm_ids
-    const authoritativeFarmId = inventory.farm_id;
+    // farm_id is load-bearing (docs handoff §9): missing/null/empty fails closed.
+    const authoritativeFarmId = (inventory.farm_id || '').trim();
     if (!authoritativeFarmId) {
-      Logger.warn(`vFarm: serial=${serial} has no farm_id (unallocated) — denying access`);
-      return null;
-    }
-    if (!speaker.farm_ids.includes(authoritativeFarmId)) {
-      Logger.warn(`vFarm: serial=${serial} farm=${authoritativeFarmId} not in speaker.farm_ids=[${speaker.farm_ids.join(',')}] — denying access`);
+      Logger.warn(`vFarm cabinet lookup: inventory ${params.serial} has no authoritative farm_id — fail closed`);
       return null;
     }
 
-    // Step 3: Get current unit config
+    // Never allow a client-supplied farm ID to bypass authorization: the
+    // authoritative farm_id from inventory must itself be in the speaker's
+    // granted scope, regardless of what farmId the caller asked for.
+    if (!params.speaker.farm_ids?.includes(authoritativeFarmId)) {
+      Logger.warn(`vFarm cabinet lookup: speaker not authorized for authoritative farm ${authoritativeFarmId} (serial=${params.serial})`);
+      return null;
+    }
+
     let unitConfig;
     try {
-      unitConfig = await this.liveClient!.getUnitConfig(serial);
-    } catch (err) {
-      if (err instanceof VfarmHttpError && err.status === 404) {
-        Logger.warn(`vFarm: unit config not found for serial=${serial}`);
+      unitConfig = await client.getUnitConfig(params.serial);
+    } catch (err: any) {
+      if (err instanceof VfarmApiError && err.category === 'not_found') {
         return null;
       }
-      if (err instanceof VfarmHttpError && (err.status === 401 || err.status === 403)) {
-        Logger.warn(`vFarm: auth error (${err.status}) fetching unit config for serial=${serial}`);
-        return null;
-      }
-      Logger.warn(`vFarm: unit config lookup failed for serial=${serial}: ${(err as Error).message}`);
+      throw err;
+    }
+
+    const configHash = unitConfig.current.config_hash;
+    if (!CONFIG_HASH_RE.test(configHash)) {
+      Logger.warn(`vFarm cabinet lookup: invalid config_hash format for serial ${params.serial}`);
       return null;
     }
 
-    const configHash = unitConfig.current?.config_hash;
-    if (!configHash) {
-      Logger.warn(`vFarm: no current config_hash for serial=${serial}`);
-      return null;
-    }
-
-    // Step 4: Get full config detail
-    let configDetail: ConfigResponse;
+    let configDetail;
     try {
-      configDetail = await this.liveClient!.getConfig(configHash);
-    } catch (err) {
-      if (err instanceof VfarmHttpError && err.status === 404) {
-        Logger.warn(`vFarm: config detail not found for config_hash=${configHash}`);
+      configDetail = await client.getConfig(configHash);
+    } catch (err: any) {
+      if (err instanceof VfarmApiError && err.category === 'not_found') {
         return null;
       }
-      if (err instanceof VfarmHttpError && (err.status === 401 || err.status === 403)) {
-        Logger.warn(`vFarm: auth error (${err.status}) fetching config hash=${configHash}`);
-        return null;
-      }
-      Logger.warn(`vFarm: config detail lookup failed for hash=${configHash}: ${(err as Error).message}`);
-      return null;
+      throw err;
     }
 
-    // Return transient config — NEVER persist this in CST
     return {
-      serial,
+      serial: params.serial,
       farm_id: authoritativeFarmId,
       config_hash: configDetail.config_hash,
-      cad_revision: configDetail.cad_revision ?? '',
+      cad_revision: configDetail.cad_revision || '',
       status: 'ok',
       source: 'lm7w',
       updated_at: unitConfig.current.effective_at,
-      summary: `${configDetail.name} v${configDetail.spec_version} (${configDetail.parts.length} parts)`,
+      summary: `${configDetail.name} (${configDetail.spec_version})`,
     };
   }
 
@@ -590,7 +545,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     details?: Record<string, unknown>;
   }> {
     if (this.config.simulateDegraded) {
-      return { status: 'degraded', latency_ms: 1200, details: { error: 'Simulated API latency / degradation' } };
+      return { status: 'degraded', latency_ms: 1200, details: { error: 'Simulated API latency / degradation', mode: this.isLiveMode() ? 'live' : 'local' } };
     }
     return {
       status: 'healthy',
@@ -598,7 +553,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       details: {
         projects_count: this.projectsMap.size,
         tenant_id: tenantId,
-        live_mode: this.liveClient !== null,
+        mode: this.isLiveMode() ? 'live' : 'local',
       },
     };
   }

@@ -21,6 +21,15 @@ const server = app.listen(env.PORT, () => {
     node_env: env.NODE_ENV,
     service: 'bha-cst',
   });
+  const vfarmAdapter = CoreRegistry.getVfarmAdapter();
+  const targetFarm = vfarmAdapter?.getActiveFarmId() || process.env.VFARM_FARM_ID || 'dynamic-discovery';
+  if (vfarmAdapter?.hasLiveClient() || process.env.VFARM_FARM_KEY) {
+    console.log(`[vFarm] Initialized with Live Key. Target Farm: ${targetFarm}`);
+    Logger.info(`[vFarm] Initialized with Live Key. Target Farm: ${targetFarm}`);
+  } else {
+    console.log(`[vFarm] Initialized with Dynamic Auth. Target Farm: ${targetFarm}`);
+    Logger.info(`[vFarm] Initialized with Dynamic Auth. Target Farm: ${targetFarm}`);
+  }
 });
 
 

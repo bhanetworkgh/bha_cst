@@ -255,7 +255,8 @@ export class IntentRouter {
         identity.customer_ref,
         verifiedUnitContext,
         systemConfig?.bharag_workspace_key,
-        msg.body
+        msg.body,
+        identity,
       );
       replyBody = statusRes?.text || `vFarm Unit ${verifiedUnitContext.unit_id} (${verifiedUnitContext.farm_id}): Telemetry currently unavailable for this unit.`;
     } else {

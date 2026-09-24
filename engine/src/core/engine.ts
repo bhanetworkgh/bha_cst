@@ -229,7 +229,7 @@ export class CoreEngine {
       }
 
       // Check if message explicitly mentions an out-of-scope farm (R-ID-5)
-      // e.g. "Dallas" or "farm_dallas" when speaker only has "farm_austin_main"
+      // e.g. a farm name keyword that the speaker does NOT have in their granted_farms list
       const outOfScopeFarmMention = this.detectOutOfScopeFarmMention(lowerText, grantedFarmIds);
       if (outOfScopeFarmMention) {
         Logger.audit({
@@ -258,8 +258,8 @@ export class CoreEngine {
     }
 
     // Verified resource context
-    const primaryFarmId = grantedFarmIds[0] || 'farm_default';
-    const boundUnitId = (speaker.unit_context?.unit_id as string) || 'unit_bay_04';
+    const primaryFarmId = grantedFarmIds[0] || process.env.VFARM_DEFAULT_FARM_ID || 'farm_default';
+    const boundUnitId = (speaker.unit_context?.unit_id as string) || process.env.VFARM_DEFAULT_UNIT_ID || primaryFarmId;
     const verifiedUnitContext = {
       farm_id: primaryFarmId,
       unit_id: boundUnitId,
@@ -276,7 +276,8 @@ export class CoreEngine {
         speaker.customer_ref,
         verifiedUnitContext,
         undefined,
-        text
+        text,
+        speaker,
       );
       replyText = statusRes?.text || `Farm ${primaryFarmId} (Unit ${boundUnitId}): Telemetry currently normal.`;
     } else {
@@ -346,14 +347,19 @@ export class CoreEngine {
   }
 
   private static detectOutOfScopeFarmMention(text: string, grantedFarms: string[]): string | null {
-    const knownFarms = [
-      { key: 'dallas', name: 'farm_dallas_north' },
-      { key: 'austin east', name: 'farm_austin_east' },
-      { key: 'austin main', name: 'farm_austin_main' },
-    ];
-    for (const kf of knownFarms) {
-      if (text.includes(kf.key) && !grantedFarms.includes(kf.name)) {
-        return kf.name;
+    // Dynamically build the keyword map from the granted farms list.
+    // No hardcoded farm names or UUIDs — the out-of-scope detection
+    // works against whatever farms the caller actually has access to.
+    for (const farmId of grantedFarms) {
+      // Match on farm name fragments derived from the ID (e.g. "austin_main"
+      // matches mentions of "austin main" or "austin-main").
+      const normalized = farmId.replace(/[-_]/g, ' ').toLowerCase();
+      const words = normalized.split(/\s+/).filter(Boolean);
+      for (const word of words) {
+        if (word.length < 4) continue;
+        if (text.toLowerCase().includes(word)) {
+          return farmId;
+        }
       }
     }
     return null;

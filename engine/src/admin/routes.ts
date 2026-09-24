@@ -631,3 +631,145 @@ adminRouter.get('/audit/logs', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });
+
+// ── 7. Dynamic vFarm Operations & Dashboard (/api/v1/admin/vfarm/...) ─────────
+// JWT / credentials are sourced EXCLUSIVELY from environment variables.
+// (VFARM_JWT, VFARM_ADMIN_EMAIL, VFARM_ADMIN_PASSWORD, VFARM_FARM_KEY)
+// The browser client NEVER passes auth tokens to these endpoints.
+
+/**
+ * POST /api/v1/admin/vfarm/login
+ * Triggers a server-side login using VFARM_ADMIN_EMAIL + VFARM_ADMIN_PASSWORD from env.
+ * The resulting JWT is stored in the adapter's in-memory state only — never returned.
+ */
+adminRouter.post('/vfarm/login', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const adminEmail = process.env.VFARM_ADMIN_EMAIL;
+    const adminPassword = process.env.VFARM_ADMIN_PASSWORD;
+    if (!adminEmail || !adminPassword) {
+      res.status(503).json({
+        error: 'CONFIG_MISSING',
+        message: 'Set VFARM_ADMIN_EMAIL and VFARM_ADMIN_PASSWORD in .env to enable dynamic login.',
+      });
+      return;
+    }
+    await adapter.authenticateAdmin(adminEmail, adminPassword);
+    res.status(200).json({ status: 'authenticated' });
+  } catch (err: any) {
+    Logger.error(`Admin vFarm login error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'LOGIN_FAILED', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/farms
+ * Discovers all accessible farms. JWT is resolved server-side:
+ * adapter in-memory → VFARM_JWT env var → VFARM_FARM_KEY env var.
+ */
+adminRouter.get('/vfarm/farms', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    // discoverFarms() resolves its own token from env — no client JWT needed
+    const farms = await adapter.discoverFarms();
+    res.status(200).json({
+      farms,
+      total: farms.length,
+      active_farm_id: adapter.getActiveFarmId(),
+    });
+  } catch (err: any) {
+    Logger.error(`Admin vFarm list farms error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'DISCOVERY_FAILED', message: err.message });
+  }
+});
+
+/**
+ * POST /api/v1/admin/vfarm/tokens
+ * Issues a farm-scoped API key. JWT is resolved server-side from env.
+ * The raw_key is stored in the adapter only — never returned to the client.
+ */
+adminRouter.post('/vfarm/tokens', async (req: Request, res: Response) => {
+  try {
+    const { farm_id, name } = req.body || {};
+    if (!farm_id) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    // JWT from env only — client passes no credentials
+    await adapter.issueFarmToken(farm_id, undefined, name);
+    res.status(201).json({ status: 'issued', farm_id });
+  } catch (err: any) {
+    Logger.error(`Admin vFarm issue token error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'TOKEN_ISSUANCE_FAILED', message: err.message });
+  }
+});
+
+/**
+ * POST /api/v1/admin/vfarm/select
+ * Switches the active farm context. JWT resolved server-side from env.
+ */
+adminRouter.post('/vfarm/select', async (req: Request, res: Response) => {
+  try {
+    const { farm_id } = req.body || {};
+    if (!farm_id) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    // No JWT from client — adapter resolves from its env-backed state
+    const result = await adapter.switchActiveFarm(farm_id);
+    res.status(200).json({ status: 'active', active_farm_id: result.farmId });
+  } catch (err: any) {
+    Logger.error(`Admin vFarm select farm error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'FARM_SELECTION_FAILED', message: err.message });
+  }
+});
+
+adminRouter.get('/dashboard', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
+    const data = await adapter.getDashboardData(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`Admin dashboard error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
+  }
+});
+
+adminRouter.get('/vfarm/dashboard', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
+    const data = await adapter.getDashboardData(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`Admin vFarm dashboard error: ${err.message}`);
+    res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
+  }
+});

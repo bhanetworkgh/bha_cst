@@ -904,6 +904,215 @@ async function loadAuditLogs() {
 
 $('#reload-audit')?.addEventListener('click', () => guarded(loadAuditLogs));
 
+// ── 7. Dynamic vFarm Operations & Telemetry Dashboard ────────────────────────
+// All authentication (VFARM_JWT / VFARM_FARM_KEY / VFARM_ADMIN_EMAIL+PASSWORD)
+// is handled server-side via environment variables.
+// The browser sends ZERO credentials to these endpoints.
+
+const vfarmState = {
+  farms: [],          // FarmResponse[] from GET /api/v1/admin/vfarm/farms
+  activeFarmId: null, // currently selected farm UUID
+  dashboardData: null,
+};
+
+/**
+ * Discover all farms accessible to this server.
+ * No credentials are sent from the browser — the server reads them from env.
+ * Populates #vfarm-farm-select with all discovered farms and their device counts.
+ */
+async function loadVfarmFarms() {
+  try {
+    // Plain call — no Authorization header, no query token
+    const data = await api('/api/v1/admin/vfarm/farms');
+    vfarmState.farms = data.farms || [];
+    vfarmState.activeFarmId = data.active_farm_id || (vfarmState.farms[0]?.id ?? null);
+
+    const select = $('#vfarm-farm-select');
+    if (select) {
+      const current = select.value;
+      select.replaceChildren(
+        ...vfarmState.farms.map((f) => {
+          const label = `${f.name || f.id}  ·  ${(f.device_count ?? 0)} device(s)`;
+          return new Option(label, f.id);
+        })
+      );
+      // Keep the previously selected farm, or default to the server's active farm
+      const toSelect = current && vfarmState.farms.find((f) => f.id === current)
+        ? current
+        : vfarmState.activeFarmId;
+      if (toSelect) select.value = toSelect;
+    }
+
+    const badge = $('#vfarm-farm-badge');
+    if (badge) {
+      badge.innerHTML = vfarmState.farms.length > 0
+        ? `<span class="pill active">● ${vfarmState.farms.length} farm(s) discovered</span>`
+        : `<span class="pill warn">No farms found — check VFARM_JWT in .env</span>`;
+    }
+
+    return vfarmState.farms;
+  } catch (err) {
+    const badge = $('#vfarm-farm-badge');
+    if (badge) badge.innerHTML = `<span class="pill off">Discovery failed</span>`;
+    showError(`Farm discovery failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Fetch live telemetry for the currently selected farm and render the dashboard.
+ * farm_id is the only thing sent — the server resolves its own key from env.
+ */
+async function loadVfarmDashboard() {
+  const farmId = $('#vfarm-farm-select')?.value || vfarmState.activeFarmId;
+  const queryParams = farmId ? `?farm_id=${encodeURIComponent(farmId)}` : '';
+  try {
+    const data = await api(`/api/v1/admin/vfarm/dashboard${queryParams}`);
+    vfarmState.dashboardData = data;
+    renderVfarmDashboard(data);
+  } catch (err) {
+    const container = $('#vfarm-devices-container');
+    if (container) {
+      container.innerHTML = `<p class="muted" style="padding:16px;">Failed to load telemetry: ${err.message}</p>`;
+    }
+  }
+}
+
+/**
+ * Render the 4-card metrics grid and device digital-twin table
+ * from the data returned by GET /api/v1/admin/vfarm/dashboard.
+ */
+function renderVfarmDashboard(data) {
+  if (!data) return;
+
+  const { farm, device_count, devices = [], health = {} } = data;
+
+  // ── Metrics grid ──
+  const metricsGrid = $('#vfarm-metrics-grid');
+  if (metricsGrid) {
+    const healthScore = health.health_score ?? health.score ?? '—';
+    const healthStatus = health.status || 'unknown';
+
+    metricsGrid.innerHTML = `
+      <article class="metric-card blue-card">
+        <span class="metric-label">ACTIVE FARM</span>
+        <strong style="font-size:14px;">${farm?.name || data.farm_id || '—'}</strong>
+        <small class="muted">${data.farm_id || ''}</small>
+      </article>
+      <article class="metric-card mint-card">
+        <span class="metric-label">DEVICE DIGITAL TWINS</span>
+        <strong>${device_count ?? devices.length}</strong>
+        <small>Live device instances</small>
+      </article>
+      <article class="metric-card purple-card">
+        <span class="metric-label">FARM HEALTH SCORE</span>
+        <strong>${healthScore}${typeof healthScore === 'number' ? '%' : ''}</strong>
+        <small>Status: ${healthStatus}</small>
+      </article>
+      <article class="metric-card coral-card">
+        <span class="metric-label">FARM ACTIVE</span>
+        <strong>${farm?.is_active !== false ? 'Yes' : 'No'}</strong>
+        <small>${farm?.is_active !== false ? 'Operational' : 'Offline'}</small>
+      </article>`;
+  }
+
+  // ── Devices heading ──
+  const title = $('#vfarm-devices-title');
+  if (title) {
+    title.textContent = `Discovered Active Devices — ${farm?.name || data.farm_id || 'Farm'}`;
+  }
+
+  // ── Device table ──
+  const container = $('#vfarm-devices-container');
+  if (!container) return;
+
+  if (!devices || devices.length === 0) {
+    container.innerHTML = `
+      <table class="admin-table">
+        <thead><tr><th>Device ID</th><th>Name</th><th>Status</th><th>Last Seen</th><th>Readings</th></tr></thead>
+        <tbody>${emptyRow(5, 'No active devices found on this farm.')}</tbody>
+      </table>`;
+    return;
+  }
+
+  const rows = devices.map((dev) => {
+    const statusPill = dev.status === 'active' || dev.is_active
+      ? `<span class="pill active">● active</span>`
+      : `<span class="pill warn">${dev.status || 'unknown'}</span>`;
+
+    const lastSeen = dev.last_seen_at || dev.updated_at
+      ? new Date(dev.last_seen_at || dev.updated_at).toLocaleString()
+      : '—';
+
+    const readingCount = dev.reading_count ?? dev.readings_count ?? '—';
+
+    return `
+      <tr>
+        <td><code>${dev.id || dev.device_id || '—'}</code></td>
+        <td><strong>${dev.name || dev.label || dev.device_name || '—'}</strong></td>
+        <td>${statusPill}</td>
+        <td><small class="muted">${lastSeen}</small></td>
+        <td>${readingCount}</td>
+      </tr>`;
+  }).join('');
+
+  container.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Device ID</th>
+          <th>Name / Label</th>
+          <th>Status</th>
+          <th>Last Seen</th>
+          <th>Readings</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+/**
+ * Switch the active farm: tell the server which farm_id to use,
+ * then reload the dashboard. No credentials flow to the browser.
+ */
+async function switchVfarmFarm(farmId) {
+  if (!farmId) return;
+  try {
+    const result = await api('/api/v1/admin/vfarm/select', {
+      method: 'POST',
+      body: JSON.stringify({ farm_id: farmId }),
+    });
+    vfarmState.activeFarmId = result.active_farm_id || farmId;
+    showToast(`Active farm: ${farmId.slice(0, 8)}…`, 'success');
+    await loadVfarmDashboard();
+  } catch (err) {
+    showError(`Farm switch failed: ${err.message}`);
+  }
+}
+
+// ── Event Listeners: farm selector & refresh button ──────────────────────────
+
+$('#vfarm-farm-select')?.addEventListener('change', (e) => {
+  guarded(() => switchVfarmFarm(e.target.value));
+});
+
+$('#btn-refresh-farms')?.addEventListener('click', () => {
+  guarded(async () => {
+    showToast('Refreshing farms & telemetry…', 'info');
+    await loadVfarmFarms();
+    await loadVfarmDashboard();
+    showToast('vFarm data refreshed.', 'success');
+  });
+});
+
+/**
+ * Combined entrypoint: discover farms, then load the dashboard for the active one.
+ */
+async function loadVfarmPanel() {
+  await loadVfarmFarms();
+  await loadVfarmDashboard();
+}
+
 // ── Boot & Refresh ───────────────────────────────────────────────────────────
 
 $('#refresh-all')?.addEventListener('click', () => guarded(refreshAll));
@@ -934,7 +1143,9 @@ async function refreshAll() {
   await loadNumbers();
   await loadSpeakers();
   await loadHealth();
+  await loadVfarmPanel();
   showToast('All platform data refreshed.', 'info');
 }
 
 guarded(refreshAll);
+

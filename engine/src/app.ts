@@ -14,6 +14,8 @@ import { swaggerSpec } from './docs/swagger.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CoreRegistry } from './core/registry.js';
+
 export function createApp(): Express {
   const app = express();
 
@@ -79,6 +81,115 @@ export function createApp(): Express {
   app.use(voiceInterfaceRouter);
   app.use(webInterfaceRouter);
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
+
+  // ── vFarm Public & Dashboard Endpoints ─────────────────────────────────────
+  app.get(['/api/v1/dashboard', '/api/dashboard'], async (req: Request, res: Response) => {
+    try {
+      const adapter = CoreRegistry.getVfarmAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+        return;
+      }
+      const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
+      const data = await adapter.getDashboardData(farmId);
+      res.status(200).json(data);
+    } catch (err: any) {
+      Logger.error(`Dashboard API error: ${err.message}`);
+      res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
+    }
+  });
+
+  app.get(['/api/devices', '/api/v1/devices'], async (req: Request, res: Response) => {
+    try {
+      const adapter = CoreRegistry.getVfarmAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+        return;
+      }
+      let farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+      if (!farmId) {
+        await adapter.discoverFarms();
+        farmId = adapter.getActiveFarmId();
+      }
+      if (!farmId) {
+        res.status(503).json({ error: 'NO_FARM_AVAILABLE', message: 'No farms discovered. Check vFarm credentials.' });
+        return;
+      }
+      const speaker = {
+        person_id: 'api_caller',
+        customer_ref: 'api_caller',
+        tenant_id: process.env.VFARM_TENANT_ID || 'tenant-vfarm-01',
+        project_id: process.env.VFARM_PROJECT_ID_MAIN || 'proj-vfarm-main',
+        phone_e164: process.env.VFARM_ADMIN_PHONE || '+15551234567',
+        is_known: true,
+        role: 'owner' as const,
+        permissions: ['*'],
+        farm_ids: [farmId, ...adapter.getDiscoveredFarmIds()],
+      };
+      const result = await adapter.listFarmDevices({ farmId, speaker });
+      res.status(200).json({
+        farm_id: farmId,
+        total: result.total,
+        count: result.devices.length,
+        devices: result.devices,
+      });
+    } catch (err: any) {
+      Logger.error(`Devices API error: ${err.message}`);
+      res.status(err.status || 500).json({ error: 'DEVICES_ERROR', message: err.message });
+    }
+  });
+
+  app.get('/api/health', async (_req: Request, res: Response) => {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    const vfarmHealth = adapter ? await adapter.getHealth(process.env.VFARM_TENANT_ID || 'tenant-vfarm-01') : null;
+    res.status(200).json({
+      status: 'ok',
+      service: process.env.SERVICE_NAME || 'bha-cst-engine',
+      timestamp: new Date().toISOString(),
+      vfarm: vfarmHealth,
+    });
+  });
+
+  app.get(['/api/v1/farms', '/api/farms'], async (req: Request, res: Response) => {
+    try {
+      const adapter = CoreRegistry.getVfarmAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+        return;
+      }
+      const jwt = req.header('authorization')?.replace(/^Bearer\s+/i, '') || (req.query.token as string);
+      const farms = await adapter.discoverFarms(jwt);
+      res.status(200).json({
+        farms,
+        total: farms.length,
+        active_farm_id: adapter.getActiveFarmId(),
+      });
+    } catch (err: any) {
+      Logger.error(`Farms API error: ${err.message}`);
+      res.status(err.status || 500).json({ error: 'DISCOVERY_ERROR', message: err.message });
+    }
+  });
+
+  app.post(['/api/v1/tokens', '/api/tokens'], async (req: Request, res: Response) => {
+    try {
+      const { farm_id, name } = req.body || {};
+      if (!farm_id) {
+        res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+        return;
+      }
+      const adapter = CoreRegistry.getVfarmAdapter();
+      if (!adapter) {
+        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+        return;
+      }
+      const jwt = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.body?.token;
+      const rawKey = await adapter.issueFarmToken(farm_id, jwt, name);
+      res.status(201).json({ status: 'issued', farm_id, raw_key: rawKey });
+    } catch (err: any) {
+      Logger.error(`Token issuance API error: ${err.message}`);
+      res.status(err.status || 500).json({ error: 'TOKEN_ERROR', message: err.message });
+    }
+  });
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
   app.get('/', (_req: Request, res: Response) => {
