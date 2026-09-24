@@ -75,6 +75,40 @@ export class DbClient {
   }
 
   /**
+   * Close the PostgreSQL connection pool and release all connections.
+   * Idempotent — safe to call multiple times or when no pool exists.
+   * Called during graceful shutdown (SIGTERM/SIGINT) and test teardown.
+   */
+  static async disconnect(): Promise<void> {
+    const pool = this.pool;
+    if (!pool) return;
+    this.pool = null; // Prevent new queries from using the closing pool
+    try {
+      await pool.end();
+      Logger.info('DbClient: PostgreSQL connection pool closed');
+    } catch (err: any) {
+      Logger.warn(`DbClient: Error closing PostgreSQL pool: ${err.message}`);
+    }
+  }
+
+  /**
+   * Reset all in-memory stores (for test teardown).
+   * Does NOT touch the database pool.
+   */
+  static clearInMemory(): void {
+    this.messagesInStore.clear();
+    this.messagesOutStore.clear();
+    this.conversationsStore.clear();
+    this.transcriptsStore.clear();
+    this.customersStore.clear();
+    this.voiceDeliveriesStore.clear();
+    this.projectsStore.clear();
+    this.bindingsStore.clear();
+    this.tenantsStore.clear();
+    this.alertAuditStore.splice(0);
+  }
+
+  /**
    * Save inbound message and handle MessageSid deduplication.
    * Return isDuplicate: true if message_id was already present.
    */

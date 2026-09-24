@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { getEnv } from './config/env.js';
 import { Logger } from './config/logger.js';
 import { processOutboundQueue } from './transport/twilio/outbound.js';
+import { DbClient } from './db/client.js';
 
 import { CoreRegistry } from './core/registry.js';
 
@@ -37,17 +38,20 @@ const workerTimer = setInterval(async () => {
 
 // ── Graceful Shutdown ─────────────────────────────────────────────────────────
 // Render and AWS send SIGTERM before killing the process.
-// We close the HTTP server to stop accepting new requests, then exit cleanly.
+// We close the HTTP server, drain inflight requests, then release the DB pool.
 function shutdown(signal: string): void {
   Logger.info(`Received ${signal} — starting graceful shutdown`);
   clearInterval(workerTimer);
-  server.close((err) => {
+  server.close(async (err) => {
     if (err) {
       Logger.error(`Error during server shutdown: ${err.message}`);
-      process.exit(1);
     }
-    Logger.info('HTTP server closed. Exiting.');
-    process.exit(0);
+    Logger.info('HTTP server closed. Closing database pool...');
+    await DbClient.disconnect().catch((e: Error) =>
+      Logger.warn(`DbClient.disconnect error: ${e.message}`)
+    );
+    Logger.info('Shutdown complete. Exiting.');
+    process.exit(err ? 1 : 0);
   });
 
   // Force exit after 10 seconds if shutdown hangs

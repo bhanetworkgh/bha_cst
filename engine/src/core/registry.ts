@@ -246,7 +246,60 @@ export class CoreRegistry {
       proj.synced_at = now;
       this.registerProject(proj);
     }
+    // Best-effort speaker warmup: populate the adapter's speakersMap from
+    // CST's existing phone→person_id bindings so the first inbound message
+    // does not require a cold adapter lookup.
+    await this.warmupSpeakers(tenantId).catch((err) => {
+      Logger.warn(`CoreRegistry.syncProjectsFromAdapter: speaker warmup failed for tenant ${tenantId}: ${err.message}`);
+    });
     return pulledProjects;
+  }
+
+  /**
+   * Warm the adapter's in-memory speaker binding map for every project
+   * belonging to `tenantId`.
+   *
+   * Architecture note: vFarm does NOT expose phone_e164 in any API response.
+   * The phone ↔ person_id mapping is owned exclusively by CST (stored in the
+   * adapter's speakersMap / persisted in the customers table). This method
+   * pulls those locally-held bindings back into the adapter's hot map so that
+   * speaker resolution on the first inbound call is served from memory rather
+   * than hitting the DB.
+   *
+   * Warm-up does NOT invent phone numbers from vFarm; it only re-loads
+   * bindings that CST already owns.
+   * Failures are logged per-project and do NOT abort warmup of other projects.
+   * Tenant/project isolation is preserved: only the owning adapter is called.
+   */
+  static async warmupSpeakers(tenantId: string): Promise<void> {
+    const adapter = this.getAdapter(tenantId);
+    if (!adapter) {
+      Logger.warn(`CoreRegistry.warmupSpeakers: no adapter for tenant ${tenantId}`);
+      return;
+    }
+    const projects = this.getProjectsForTenant(tenantId);
+    if (projects.length === 0) {
+      Logger.warn(`CoreRegistry.warmupSpeakers: no projects found for tenant ${tenantId}`);
+      return;
+    }
+    let warmedCount = 0;
+    for (const project of projects) {
+      if (project.tenant_id !== tenantId) continue; // Extra isolation guard
+      try {
+        const speakers = await adapter.pullSpeakers(tenantId, project.project_id);
+        Logger.info(
+          `CoreRegistry.warmupSpeakers: warmed ${speakers.length} speakers ` +
+          `for tenant=${tenantId} project=${project.project_id}`,
+        );
+        warmedCount += speakers.length;
+      } catch (err: any) {
+        Logger.warn(
+          `CoreRegistry.warmupSpeakers: pullSpeakers failed for ` +
+          `tenant=${tenantId} project=${project.project_id}: ${err.message}`,
+        );
+      }
+    }
+    Logger.info(`CoreRegistry.warmupSpeakers: total ${warmedCount} speaker bindings warmed for tenant=${tenantId}`);
   }
 
   // ── Candidate Numbers & Explicit Service Number Binding ──────────────────
