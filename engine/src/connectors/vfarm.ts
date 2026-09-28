@@ -121,7 +121,7 @@ export class VfarmConnector {
             `vFarm Telemetry Connector: live reading for unit ${unitId} (${farmId}) actor ${customerRef}`,
           );
           return { text: formatTelemetryText(telemetry), telemetry };
-        } catch (err) {
+        } catch (err: any) {
           if (err instanceof VfarmAuthorizationError) {
             Logger.warn(`vFarm telemetry refused for ${customerRef}: ${err.message}`);
             return {

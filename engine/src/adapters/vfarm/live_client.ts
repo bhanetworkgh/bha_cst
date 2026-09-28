@@ -19,13 +19,24 @@ import {
   FarmListResponseSchema,
   LoginResponseSchema,
   TokenCreatedResponseSchema,
-  TokenResponseSchema,
   FarmHealthResponseSchema,
   DeviceListResponseSchema,
   LatestReadingResponseSchema,
   ReadingsListResponseSchema,
   StatsResponseSchema,
   CONFIG_HASH_PATTERN,
+  // New OpenAPI-aligned schemas
+  healthResponseSchema,
+  orgListResponseSchema,
+  orgResponseSchema,
+  layoutResponseSchema,
+  zoneResponseSchema,
+  deviceResponseSchema,
+  deviceRollupResponseSchema,
+  openAlertListResponseSchema,
+  placeCountListResponseSchema,
+  alertHistoryListResponseSchema,
+  imageAnalysisSchema,
   type OrgMemberResponse,
   type GrantedFarmRow,
   type InventoryResponse,
@@ -38,9 +49,20 @@ import {
   type TokenResponse,
   type FarmHealthResponse,
   type DeviceListResponse,
+  type DeviceResponse,
+  type DeviceRollupResponse,
   type LatestReadingResponse,
   type ReadingsListResponse,
   type StatsResponse,
+  type HealthResponse,
+  type OrgListResponse,
+  type OrgResponse,
+  type LayoutResponse,
+  type ZoneResponse,
+  type OpenAlertListResponse,
+  type PlaceCountListResponse,
+  type AlertHistoryListResponse,
+  type ImageAnalysis,
 } from './schemas.js';
 
 export const VFARM_DEFAULT_BASE_URL = 'https://bhavfarm1.duckdns.org';
@@ -376,5 +398,298 @@ export class VfarmLiveClient {
     }
     const path = `/api/v1/configs/${encodeURIComponent(configHash)}`;
     return this.request(path, ConfigResponseSchema);
+  }
+
+  // ── Dashboard & System ──────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/dashboard/summary
+   * Returns a cross-farm summary object. Schema is inline ({}) in OpenAPI —
+   * we passthrough all fields.
+   */
+  async getDashboardSummary(farmId?: string): Promise<Record<string, unknown>> {
+    const qs = farmId ? `?farm_id=${encodeURIComponent(farmId)}` : '';
+    return this.requestPassthrough(`/api/v1/dashboard/summary${qs}`);
+  }
+
+  /**
+   * GET /api/v1/system/stats
+   * Returns platform-wide stats. Schema inline ({}) — passthrough.
+   */
+  async getSystemStats(): Promise<Record<string, unknown>> {
+    return this.requestPassthrough('/api/v1/system/stats');
+  }
+
+  /**
+   * GET /api/v1/health
+   * Returns { status, db, version }.
+   */
+  async getApiHealth(): Promise<HealthResponse> {
+    return this.request('/api/v1/health', healthResponseSchema);
+  }
+
+  // ── Organizations ───────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/organizations
+   * Returns OrgListResponse { organizations[], total }.
+   * Requires Bearer JWT (org routes use JWT, not X-Farm-Key).
+   */
+  async listOrganizations(jwt?: string): Promise<OrgListResponse> {
+    const url = `${this.baseUrl}/api/v1/organizations?limit=100`;
+    return this.requestWithJwt(url, orgListResponseSchema, jwt);
+  }
+
+  /**
+   * GET /api/v1/organizations/{org_id}
+   */
+  async getOrganization(orgId: string, jwt?: string): Promise<OrgResponse> {
+    const url = `${this.baseUrl}/api/v1/organizations/${encodeURIComponent(orgId)}`;
+    return this.requestWithJwt(url, orgResponseSchema, jwt);
+  }
+
+  /**
+   * GET /api/v1/farms?org_id={org_id}
+   * Returns farms scoped to a specific organization.
+   */
+  async listOrgFarms(orgId: string, jwt?: string): Promise<FarmListResponse> {
+    const url = `${this.baseUrl}/api/v1/farms?org_id=${encodeURIComponent(orgId)}&limit=1000`;
+    return this.requestWithJwt(url, FarmListResponseSchema, jwt);
+  }
+
+  // ── Farm Hierarchy ───────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/farms/{farm_id}/layout
+   * Returns full physical farm layout: zones → locations → sublocations.
+   */
+  async getFarmLayout(farmId: string): Promise<LayoutResponse> {
+    return this.request(
+      `/api/v1/farms/${encodeURIComponent(farmId)}/layout`,
+      layoutResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/farms/{farm_id}/zones
+   */
+  async listFarmZones(farmId: string): Promise<ZoneResponse[]> {
+    const schema = {
+      parse: (d: unknown) => {
+        if (!Array.isArray(d)) throw new Error('Expected array from zones endpoint');
+        return d.map((item) => zoneResponseSchema.parse(item));
+      },
+    };
+    return this.request(
+      `/api/v1/farms/${encodeURIComponent(farmId)}/zones`,
+      schema,
+    );
+  }
+
+  // ── Devices (extended) ───────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/devices?farm_id={farm_id}&limit=500
+   * All devices for a farm — full DeviceListResponse.
+   */
+  async listAllDevices(farmId: string, limit = 500): Promise<DeviceListResponse> {
+    return this.request(
+      `/api/v1/devices?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
+      DeviceListResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/devices/offline?farm_id={farm_id}
+   */
+  async listOfflineDevices(farmId: string): Promise<DeviceListResponse> {
+    return this.request(
+      `/api/v1/devices/offline?farm_id=${encodeURIComponent(farmId)}`,
+      DeviceListResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/devices/unhealthy?farm_id={farm_id}
+   */
+  async listUnhealthyDevices(farmId: string): Promise<DeviceListResponse> {
+    return this.request(
+      `/api/v1/devices/unhealthy?farm_id=${encodeURIComponent(farmId)}`,
+      DeviceListResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/devices/{device_id}
+   */
+  async getDevice(deviceId: string): Promise<DeviceResponse> {
+    return this.request(
+      `/api/v1/devices/${encodeURIComponent(deviceId)}`,
+      deviceResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/devices/{device_id}/rollup
+   */
+  async getDeviceRollup(deviceId: string): Promise<DeviceRollupResponse> {
+    return this.request(
+      `/api/v1/devices/${encodeURIComponent(deviceId)}/rollup`,
+      deviceRollupResponseSchema,
+    );
+  }
+
+  // ── Readings (extended) ──────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/readings/latest?farm_id={farm_id}&limit=100
+   * Latest readings across all sensors in a farm.
+   */
+  async listLatestReadings(farmId: string, limit = 100): Promise<LatestReadingResponse[]> {
+    const schema = {
+      parse: (d: unknown) => {
+        // API may return array or wrapper object
+        const arr = Array.isArray(d) ? d : ((d as Record<string, unknown>)?.readings ?? [d]);
+        return (arr as unknown[]).map((item) => LatestReadingResponseSchema.parse(item));
+      },
+    };
+    return this.request(
+      `/api/v1/readings/latest?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
+      schema,
+    );
+  }
+
+  // ── Alerts ───────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/alerts/threshold/counts?farm_id={farm_id}
+   * PlaceCountListResponse { counts[] }.
+   */
+  async getAlertCounts(farmId: string): Promise<PlaceCountListResponse> {
+    return this.request(
+      `/api/v1/alerts/threshold/counts?farm_id=${encodeURIComponent(farmId)}`,
+      placeCountListResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/alerts/threshold/open?farm_id={farm_id}
+   * OpenAlertListResponse { alerts[], total }.
+   */
+  async listOpenAlerts(farmId: string, limit = 100): Promise<OpenAlertListResponse> {
+    return this.request(
+      `/api/v1/alerts/threshold/open?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
+      openAlertListResponseSchema,
+    );
+  }
+
+  /**
+   * GET /api/v1/alerts/history?farm_id={farm_id}
+   * AlertHistoryListResponse { alerts[], total }.
+   */
+  async listAlertHistory(farmId: string, limit = 50): Promise<AlertHistoryListResponse> {
+    return this.request(
+      `/api/v1/alerts/history?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
+      alertHistoryListResponseSchema,
+    );
+  }
+
+  // ── Vision ───────────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/vision/images/latest?farm_id={farm_id}
+   * Returns the latest ImageAnalysis for the farm.
+   */
+  async getLatestVisionImage(farmId: string): Promise<ImageAnalysis> {
+    return this.request(
+      `/api/v1/vision/images/latest?farm_id=${encodeURIComponent(farmId)}`,
+      imageAnalysisSchema,
+    );
+  }
+
+  // ── Internal helpers ────────────────────────────────────────────────────
+
+  /**
+   * Like request() but skips Zod parsing — used for inline-schema ({}) endpoints
+   * where the response shape is not enumerated in the OpenAPI spec.
+   */
+  private async requestPassthrough(path: string): Promise<Record<string, unknown>> {
+    if (!this.apiKey) {
+      throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
+    }
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      'X-Farm-Key': this.apiKey,
+      'Accept': 'application/json',
+    };
+    let res: Response;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        res = await this.fetchFn(url, { headers, signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err: any) {
+      const msg = err?.name === 'AbortError'
+        ? `vFarm request timed out after ${this.timeoutMs}ms: ${path}`
+        : `vFarm network error: ${err?.message ?? String(err)}`;
+      Logger.warn(msg);
+      throw new VfarmNetworkError(msg);
+    }
+    if (!res.ok) {
+      const msg = `vFarm HTTP ${res.status} from ${path}`;
+      Logger.warn(msg);
+      throw new VfarmHttpError(res.status, msg);
+    }
+    try {
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      throw new VfarmNetworkError(`vFarm returned non-JSON body from ${path}`);
+    }
+  }
+
+  /**
+   * Make a request with Bearer JWT instead of X-Farm-Key.
+   * Used for org-scoped endpoints that require JWT auth.
+   */
+  private async requestWithJwt<T>(
+    url: string,
+    parseSchema: { parse: (data: unknown) => T },
+    jwt?: string,
+  ): Promise<T> {
+    const token = jwt || '';
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    } else if (this.apiKey) {
+      headers['X-Farm-Key'] = this.apiKey;
+    }
+    let res: Response;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        res = await this.fetchFn(url, { headers, signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err: any) {
+      throw new VfarmNetworkError(`vFarm network error: ${err?.message ?? String(err)}`);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new VfarmHttpError(res.status, `vFarm HTTP ${res.status}: ${text}`);
+    }
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new VfarmNetworkError(`vFarm returned non-JSON body from ${url}`);
+    }
+    return parseSchema.parse(body);
   }
 }

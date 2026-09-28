@@ -17,19 +17,32 @@ export interface SpeakerCacheEntry {
  * so existing dev/test setups that never set it keep working unchanged.
  */
 function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
+  if (process.env.NODE_ENV === 'test' && process.env.VFARM_LIVE_TEST !== 'true') {
+    return {};
+  }
   try {
     const env = getEnv();
-    if (!env.VFARM_BASE_URL) return {};
+    const baseUrl = env.VFARM_API_BASE_URL || process.env.VFARM_BASE_URL;
+    if (!baseUrl) return {};
     return {
-      baseUrl: env.VFARM_BASE_URL,
-      apiKey: env.VFARM_API_KEY,
-      apiToken: env.VFARM_API_TOKEN,
-      timeoutMs: env.VFARM_TIMEOUT_MS,
+      baseUrl,
+      apiKey: env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      apiToken: env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
+      timeoutMs: env.VFARM_API_TIMEOUT_MS || (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
     };
   } catch {
     // Env not fully configured in this context (e.g. isolated unit test) —
-    // fall back to local mode rather than throwing during registry init.
-    return {};
+    // fall back to process.env
+    const baseUrl = process.env.VFARM_API_BASE_URL || process.env.VFARM_BASE_URL;
+    if (!baseUrl) return {};
+    return {
+      baseUrl,
+      apiKey: process.env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      apiToken: process.env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
+      timeoutMs: process.env.VFARM_API_TIMEOUT_MS
+        ? Number(process.env.VFARM_API_TIMEOUT_MS)
+        : (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
+    };
   }
 }
 
@@ -200,6 +213,11 @@ export class CoreRegistry {
 
   static getAdapter(tenantId: string): ITenantAdapter | null {
     return this.adapters.get(tenantId) || null;
+  }
+
+  static getVfarmAdapter(): VfarmTenantAdapter | null {
+    const adapter = this.adapters.get('tenant-vfarm-01');
+    return (adapter instanceof VfarmTenantAdapter) ? adapter : null;
   }
 
   // ── Project Management ────────────────────────────────────────────────────

@@ -773,3 +773,357 @@ adminRouter.get('/vfarm/dashboard', async (req: Request, res: Response) => {
     res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
   }
 });
+
+// ── 8. vFarm OpenAPI Proxy Routes (/api/v1/admin/vfarm/proxy/...) ─────────────
+// These are direct pass-through proxy routes to the live vFarm API.
+// All auth is server-side (X-Farm-Key from env). The browser client never
+// handles credentials. All responses are passed through verbatim.
+
+/** Helper to get the live client or return 503 */
+function getLiveClient(res: Response): import('../adapters/vfarm/live_client.js').VfarmLiveClient | null {
+  const adapter = CoreRegistry.getVfarmAdapter();
+  if (!adapter) {
+    res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+    return null;
+  }
+  const client = adapter.getLiveClient();
+  if (!client) {
+    res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client is not configured. Set VFARM_BASE_URL and VFARM_FARM_KEY in .env.' });
+    return null;
+  }
+  return client;
+}
+
+/**
+ * GET /api/v1/admin/vfarm/health
+ * Proxies GET /api/v1/health — returns { status, db, version }.
+ */
+adminRouter.get('/vfarm/health', async (_req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const data = await client.getApiHealth();
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm health proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/summary?farm_id=...
+ * Proxies GET /api/v1/dashboard/summary.
+ */
+adminRouter.get('/vfarm/summary', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
+    const data = await client.getDashboardSummary(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm summary proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/system-stats
+ * Proxies GET /api/v1/system/stats.
+ */
+adminRouter.get('/vfarm/system-stats', async (_req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const data = await client.getSystemStats();
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm system stats proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/organizations
+ * Proxies GET /api/v1/organizations using env JWT.
+ */
+adminRouter.get('/vfarm/organizations', async (_req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const jwt = adapter.getAdminJwt() || process.env.VFARM_JWT;
+    const data = await client.listOrganizations(jwt || undefined);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm organizations proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/layout?farm_id=...
+ * Proxies GET /api/v1/farms/{farm_id}/layout — full zone/location tree.
+ */
+adminRouter.get('/vfarm/layout', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required (or set an active farm)' });
+      return;
+    }
+    const data = await client.getFarmLayout(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm layout proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/zones?farm_id=...
+ * Proxies GET /api/v1/farms/{farm_id}/zones.
+ */
+adminRouter.get('/vfarm/zones', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const zones = await client.listFarmZones(farmId);
+    res.status(200).json({ zones, total: zones.length });
+  } catch (err: any) {
+    Logger.error(`vFarm zones proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/devices?farm_id=...&filter=all|offline|unhealthy
+ * Proxies GET /api/v1/devices, /api/v1/devices/offline, or /api/v1/devices/unhealthy.
+ */
+adminRouter.get('/vfarm/devices', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const filter = (req.query.filter as string) || 'all';
+    let data;
+    if (filter === 'offline') {
+      data = await client.listOfflineDevices(farmId);
+    } else if (filter === 'unhealthy') {
+      data = await client.listUnhealthyDevices(farmId);
+    } else {
+      data = await client.listAllDevices(farmId);
+    }
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm devices proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/devices/:device_id
+ * Proxies GET /api/v1/devices/{device_id}.
+ */
+adminRouter.get('/vfarm/devices/:device_id', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const { device_id } = req.params;
+    const data = await client.getDevice(device_id);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm device detail proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/devices/:device_id/rollup
+ * Proxies GET /api/v1/devices/{device_id}/rollup.
+ */
+adminRouter.get('/vfarm/devices/:device_id/rollup', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const { device_id } = req.params;
+    const data = await client.getDeviceRollup(device_id);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm device rollup proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/readings/latest?farm_id=...
+ * Proxies GET /api/v1/readings/latest — latest readings across the farm.
+ */
+adminRouter.get('/vfarm/readings/latest', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const readings = await client.listLatestReadings(farmId, limit);
+    res.status(200).json({ readings, total: readings.length });
+  } catch (err: any) {
+    Logger.error(`vFarm readings/latest proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/readings?sensor_id=...&limit=...
+ * Proxies GET /api/v1/readings — historical readings for a sensor.
+ */
+adminRouter.get('/vfarm/readings', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const sensorId = req.query.sensor_id as string;
+    if (!sensorId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'sensor_id is required' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const data = await client.getReadings(sensorId, limit);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm readings proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/readings/stats?sensor_id=...&window=...
+ * Proxies GET /api/v1/readings/stats.
+ */
+adminRouter.get('/vfarm/readings/stats', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const sensorId = req.query.sensor_id as string;
+    if (!sensorId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'sensor_id is required' });
+      return;
+    }
+    const window = (req.query.window as string) || '24h';
+    const data = await client.getReadingStats(sensorId, window);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm readings/stats proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/alerts/counts?farm_id=...
+ * Proxies GET /api/v1/alerts/threshold/counts.
+ */
+adminRouter.get('/vfarm/alerts/counts', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const data = await client.getAlertCounts(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm alert counts proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/alerts/open?farm_id=...
+ * Proxies GET /api/v1/alerts/threshold/open.
+ */
+adminRouter.get('/vfarm/alerts/open', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const data = await client.listOpenAlerts(farmId, limit);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm open alerts proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/alerts/history?farm_id=...
+ * Proxies GET /api/v1/alerts/history.
+ */
+adminRouter.get('/vfarm/alerts/history', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const data = await client.listAlertHistory(farmId, limit);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm alert history proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/vision/latest?farm_id=...
+ * Proxies GET /api/v1/vision/images/latest.
+ */
+adminRouter.get('/vfarm/vision/latest', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const adapter = CoreRegistry.getVfarmAdapter()!;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const data = await client.getLatestVisionImage(farmId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm vision proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+

@@ -990,8 +990,10 @@ function renderVfarmDashboard(data) {
   // ── Metrics grid ──
   const metricsGrid = $('#vfarm-metrics-grid');
   if (metricsGrid) {
-    const healthScore = health.health_score ?? health.score ?? '—';
+    const healthScore = health.health_score ?? health.score ?? null;
     const healthStatus = health.status || 'unknown';
+    const onlineCount = health.online_count ?? null;
+    const offlineCount = health.offline_count ?? null;
 
     metricsGrid.innerHTML = `
       <article class="metric-card blue-card">
@@ -1005,9 +1007,9 @@ function renderVfarmDashboard(data) {
         <small>Live device instances</small>
       </article>
       <article class="metric-card purple-card">
-        <span class="metric-label">FARM HEALTH SCORE</span>
-        <strong>${healthScore}${typeof healthScore === 'number' ? '%' : ''}</strong>
-        <small>Status: ${healthStatus}</small>
+        <span class="metric-label">FARM HEALTH</span>
+        <strong>${healthScore !== null ? healthScore + '%' : healthStatus}</strong>
+        <small>${onlineCount !== null ? `${onlineCount} online · ${offlineCount ?? 0} offline` : `Status: ${healthStatus}`}</small>
       </article>
       <article class="metric-card coral-card">
         <span class="metric-label">FARM ACTIVE</span>
@@ -1036,20 +1038,32 @@ function renderVfarmDashboard(data) {
   }
 
   const rows = devices.map((dev) => {
-    const statusPill = dev.status === 'active' || dev.is_active
+    // vFarm devices use 'status' with values like 'active', 'offline', 'unknown'
+    // and may also have a 'connected' boolean
+    const isOnline = dev.status === 'active' || dev.connected === true;
+    const statusPill = isOnline
       ? `<span class="pill active">● active</span>`
       : `<span class="pill warn">${dev.status || 'unknown'}</span>`;
 
-    const lastSeen = dev.last_seen_at || dev.updated_at
-      ? new Date(dev.last_seen_at || dev.updated_at).toLocaleString()
+    const lastSeen = dev.last_seen_at || dev.last_reading_at || dev.updated_at
+      ? new Date(dev.last_seen_at || dev.last_reading_at || dev.updated_at).toLocaleString()
       : '—';
 
-    const readingCount = dev.reading_count ?? dev.readings_count ?? '—';
+    // Name resolution: vFarm uses device_type_label or device_model_name as the display name
+    const displayName = dev.name || dev.label || dev.device_name
+      || dev.device_type_label || dev.device_model_name || '—';
+
+    // Show type as a small tag for context
+    const typeTag = dev.device_type
+      ? `<br><small class="muted">${dev.device_type}</small>`
+      : '';
+
+    const readingCount = dev.reading_count ?? dev.readings_count ?? dev.child_device_count ?? '—';
 
     return `
       <tr>
         <td><code>${dev.id || dev.device_id || '—'}</code></td>
-        <td><strong>${dev.name || dev.label || dev.device_name || '—'}</strong></td>
+        <td><strong>${displayName}</strong>${typeTag}</td>
         <td>${statusPill}</td>
         <td><small class="muted">${lastSeen}</small></td>
         <td>${readingCount}</td>

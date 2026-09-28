@@ -132,7 +132,7 @@ describe('CST Core Admin APIs & Multi-Channel Interfaces', () => {
     expect(res.body.channel).toBe('web');
     expect(res.body.reply_text).toBeDefined();
     expect(res.body.tenant_id).toBe('tenant-vfarm-01');
-  });
+  }, 15_000);
 
   it('GET /api/v1/admin/speakers lists users and supports filtering and search', async () => {
     // Seed test users

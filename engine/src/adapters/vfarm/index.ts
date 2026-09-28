@@ -2,7 +2,11 @@ import { ITenantAdapter } from '../types.js';
 import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, CabinetConfig } from '../../core/types.js';
 import { Logger } from '../../config/logger.js';
 import { VfarmHttpClient, VfarmApiError } from './http_client.js';
-import { CONFIG_HASH_RE } from './schemas.js';
+import { VfarmLiveClient } from './live_client.js';
+import { assertSpeakerFarmAccess, VfarmAuthorizationError } from './authorization.js';
+import { CONFIG_HASH_RE, type FarmResponse } from './schemas.js';
+
+export { VfarmAuthorizationError, assertSpeakerFarmAccess } from './authorization.js';
 
 export interface VfarmAdapterConfig {
   /** vFarm REST base URL (e.g. https://bhavfarm1.duckdns.org). When absent, the
@@ -42,6 +46,10 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   readonly tenantId: string;
   private config: VfarmAdapterConfig;
   private httpClient: VfarmHttpClient | null;
+  private liveClient: VfarmLiveClient | null = null;
+  private activeFarmId: string | null = null;
+  private adminJwt: string | null = null;
+  private discoveredFarms: FarmResponse[] = [];
 
   // In-memory tenancy projection & CST-owned admin-managed speaker/cabinet
   // directory. This is NOT a mock of the vFarm API — it is the same
@@ -59,6 +67,9 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     this.tenantId = tenantId;
     this.config = config;
     this.httpClient = this.buildHttpClient(config);
+    this.liveClient = this.buildLiveClient(config);
+    this.activeFarmId = process.env.VFARM_FARM_ID || null;
+    this.adminJwt = config.apiToken || process.env.VFARM_API_JWT || process.env.VFARM_JWT || null;
     this.initDefaultData();
   }
 
@@ -73,9 +84,166 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     });
   }
 
+  private buildLiveClient(config: VfarmAdapterConfig): VfarmLiveClient | null {
+    if (!config.baseUrl) return null;
+    return new VfarmLiveClient({
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      timeoutMs: config.timeoutMs,
+      fetchFn: config.fetchFn as any,
+    });
+  }
+
   /** True when the adapter is wired to the real vFarm REST API. */
   public isLiveMode(): boolean {
-    return this.httpClient !== null;
+    return this.httpClient !== null || this.liveClient !== null;
+  }
+
+  public getLiveClient(): VfarmLiveClient | null {
+    return this.liveClient;
+  }
+
+  public hasLiveClient(): boolean {
+    return this.liveClient !== null;
+  }
+
+  public getActiveFarmId(): string | null {
+    const first = this.discoveredFarms[0];
+    const firstId = first ? ((first as any).farm_id || first.id) : null;
+    return this.activeFarmId || process.env.VFARM_FARM_ID || firstId || null;
+  }
+
+  public getDiscoveredFarmIds(): string[] {
+    return this.discoveredFarms.map((f: any) => String(f.farm_id || f.id || ''));
+  }
+
+  public getAdminJwt(): string | null {
+    return this.adminJwt || process.env.VFARM_API_JWT || process.env.VFARM_JWT || null;
+  }
+
+  public async authenticateAdmin(email: string, password: string): Promise<string> {
+    if (!this.liveClient) {
+      throw new Error('vFarm live client not configured');
+    }
+    const res = await this.liveClient.login(email, password);
+    this.adminJwt = res.token;
+    return res.token;
+  }
+
+  public async discoverFarms(jwt?: string): Promise<FarmResponse[]> {
+    const token = jwt || this.getAdminJwt() || undefined;
+    if (this.liveClient) {
+      const list = await this.liveClient.listFarms(token);
+      this.discoveredFarms = list.farms || [];
+      if (!this.activeFarmId && this.discoveredFarms.length > 0) {
+        const first = this.discoveredFarms[0];
+        this.activeFarmId = (first as any).farm_id || first.id || null;
+      }
+      return this.discoveredFarms;
+    }
+    return [];
+  }
+
+  public async issueFarmToken(farmId: string, jwt?: string, name?: string): Promise<string> {
+    if (!this.liveClient) {
+      throw new Error('vFarm live client not configured');
+    }
+    const token = jwt || this.getAdminJwt();
+    if (!token) {
+      throw new Error('JWT token is required to issue farm token');
+    }
+    const res = await this.liveClient.issueFarmToken({ farmId, name }, token);
+    const rawKey = res.raw_key || '';
+    if (rawKey) {
+      this.config.apiKey = rawKey;
+      this.liveClient = this.buildLiveClient(this.config);
+      this.httpClient = this.buildHttpClient(this.config);
+    }
+    return rawKey;
+  }
+
+  public async switchActiveFarm(farmId: string): Promise<{ farmId: string }> {
+    this.activeFarmId = farmId;
+    return { farmId };
+  }
+
+  public async getDashboardData(farmId?: string): Promise<any> {
+    const targetFarmId = farmId || this.getActiveFarmId();
+    if (!this.liveClient) {
+      return {
+        farm_id: targetFarmId || 'local-mock',
+        farm: null,
+        device_count: 0,
+        devices: [],
+        health: { status: 'local', health_score: null },
+        mode: 'local',
+      };
+    }
+
+    // Fetch farm info, devices, and health in parallel for a composite view.
+    // We never pass errors up raw — instead we degrade gracefully so the UI
+    // can still render whatever data is available.
+    const farmListPromise = this.liveClient.listFarms(this.getAdminJwt() || undefined)
+      .catch(() => ({ farms: [] as import('./schemas.js').FarmResponse[], total: 0 }));
+
+    const devicesPromise = targetFarmId
+      ? this.liveClient.listAllDevices(targetFarmId).catch(() => ({ devices: [], total: 0 }))
+      : Promise.resolve({ devices: [], total: 0 });
+
+    const healthPromise = targetFarmId
+      ? this.liveClient.getFarmHealth(targetFarmId).catch(() => ({ status: 'unknown', health_score: null }))
+      : Promise.resolve({ status: 'unknown', health_score: null });
+
+    const [farmList, devicesRes, healthRes] = await Promise.all([
+      farmListPromise,
+      devicesPromise,
+      healthPromise,
+    ]);
+
+    // Find the specific farm object from the discovered list
+    const farm = targetFarmId
+      ? farmList.farms.find((f: any) => (f.farm_id || f.id) === targetFarmId) ?? null
+      : (farmList.farms[0] ?? null);
+
+    const devices: any[] = (devicesRes as any).devices ?? [];
+    const deviceCount: number = (devicesRes as any).total ?? devices.length;
+
+    return {
+      farm_id: targetFarmId ?? (farm ? ((farm as any).farm_id || (farm as any).id) : null),
+      farm,
+      device_count: deviceCount,
+      devices,
+      health: healthRes,
+    };
+  }
+
+  public async listFarmDevices(params: { farmId: string; speaker?: SpeakerIdentity }): Promise<{ total: number; devices: any[] }> {
+    if (params.speaker) {
+      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    }
+    if (!this.liveClient) {
+      return { total: 0, devices: [] };
+    }
+    const res = await this.liveClient.listAllDevices(params.farmId);
+    return {
+      total: res.total ?? res.devices?.length ?? 0,
+      devices: res.devices ?? [],
+    };
+  }
+
+  public async getLatestDeviceReading(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<any> {
+    if (params.speaker) {
+      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    }
+    if (!this.liveClient) {
+      return {
+        sensor_id: params.deviceId,
+        reading_ts: new Date().toISOString(),
+        temperature_c: 22.5,
+        humidity_rh: 65,
+      };
+    }
+    return await this.liveClient.getLatestReading(params.deviceId);
   }
 
   public setDegraded(degraded: boolean): void {

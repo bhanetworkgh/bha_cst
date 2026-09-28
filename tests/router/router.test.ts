@@ -86,7 +86,8 @@ describe('IntentRouter & Intent Detection Tests', () => {
         unit_id: 'unit_bay_04',
       }),
       expect.any(String),
-      'Bay 4 status check'
+      'Bay 4 status check',
+      expect.anything(),
     );
     expect(capturedBody).toMatchObject({
       query: 'Bay 4 status check',
@@ -133,7 +134,8 @@ describe('IntentRouter & Intent Detection Tests', () => {
         unit_id: 'unit_bay_04',
       }),
       expect.any(String),
-      maliciousMsg.body
+      maliciousMsg.body,
+      expect.anything(),
     );
     expect(capturedBody.farm_id).toBe('farm_austin_main');
     expect(capturedBody.unit_id).toBe('unit_bay_04');

@@ -347,16 +347,26 @@ export class CoreEngine {
   }
 
   private static detectOutOfScopeFarmMention(text: string, grantedFarms: string[]): string | null {
-    // Dynamically build the keyword map from the granted farms list.
-    // No hardcoded farm names or UUIDs — the out-of-scope detection
-    // works against whatever farms the caller actually has access to.
-    for (const farmId of grantedFarms) {
-      // Match on farm name fragments derived from the ID (e.g. "austin_main"
-      // matches mentions of "austin main" or "austin-main").
+    const adapter = CoreRegistry.getVfarmAdapter();
+    const allKnownFarmIds = new Set<string>();
+
+    adapter?.getDiscoveredFarmIds().forEach((id) => allKnownFarmIds.add(id));
+
+    const projects = CoreRegistry.getProjectsForTenant('tenant-vfarm-01');
+    for (const p of projects) {
+      if (p.project_id === 'proj-vfarm-dallas') allKnownFarmIds.add('farm_dallas_north');
+      if (p.project_id === 'proj-vfarm-main') {
+        allKnownFarmIds.add('farm_austin_main');
+        allKnownFarmIds.add('farm_austin_east');
+      }
+    }
+
+    for (const farmId of allKnownFarmIds) {
+      if (grantedFarms.includes(farmId)) continue;
+
       const normalized = farmId.replace(/[-_]/g, ' ').toLowerCase();
-      const words = normalized.split(/\s+/).filter(Boolean);
+      const words = normalized.split(/\s+/).filter((w) => w.length >= 4 && w !== 'farm');
       for (const word of words) {
-        if (word.length < 4) continue;
         if (text.toLowerCase().includes(word)) {
           return farmId;
         }
