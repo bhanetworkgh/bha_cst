@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "setup": "integrated",
+  "languages": [
+    "JavaScript/TypeScript",
+    "TypeScript"
+  ],
+  "stacks": [
+    "Node.js",
+    "TypeScript",
+    "HTTP API"
+  ],
+  "markers": [
+    "package.json",
+    "tsconfig.json"
+  ],
+  "packageName": "bha-cst",
+  "suggestedRun": "npm run dev",
+  "suggestedTest": "npm test",
+  "createdAt": "2026-09-29T13:17:11.710Z",
+  "tool": "xgrok"
+}

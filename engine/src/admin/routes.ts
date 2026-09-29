@@ -994,6 +994,27 @@ adminRouter.get('/vfarm/readings/latest', async (req: Request, res: Response) =>
 });
 
 /**
+ * GET /api/v1/admin/vfarm/readings/sensor-latest?sensor_id=...
+ * Proxies GET /api/v1/readings/latest?sensor_id=...
+ */
+adminRouter.get('/vfarm/readings/sensor-latest', async (req: Request, res: Response) => {
+  try {
+    const client = getLiveClient(res);
+    if (!client) return;
+    const sensorId = req.query.sensor_id as string;
+    if (!sensorId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'sensor_id is required' });
+      return;
+    }
+    const data = await client.getLatestReading(sensorId);
+    res.status(200).json(data);
+  } catch (err: any) {
+    Logger.error(`vFarm sensor-latest proxy: ${err.message}`);
+    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+/**
  * GET /api/v1/admin/vfarm/readings?sensor_id=...&limit=...
  * Proxies GET /api/v1/readings — historical readings for a sensor.
  */

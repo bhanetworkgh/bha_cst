@@ -1208,3 +1208,53 @@ body {
   border-color: rgba(239,68,68,0.45) !important;
   color: #fca5a5 !important;
 }
+
+/* vFarm Live E2E grid */
+.vfarm-e2e-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.vfarm-e2e-card .panel-heading {
+  margin-bottom: 8px;
+}
+
+.vfarm-e2e-card h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.vfarm-e2e-status {
+  margin: 8px 0;
+}
+
+.vfarm-e2e-json {
+  margin: 0;
+  padding: 12px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--surface-hover);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Tab 7 – Run All button variant */
+.primary-button.small-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  height: 34px;
+}
+
+.vfarm-e2e-card {
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease;
+}
+.vfarm-e2e-card:hover {
+  box-shadow: var(--shadow-md);
+}

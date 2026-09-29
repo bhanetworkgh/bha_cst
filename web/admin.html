@@ -50,6 +50,7 @@
       <button class="admin-tab" data-tab="projects" role="tab">4 · Projects &amp; Capabilities</button>
       <button class="admin-tab" data-tab="numbers" role="tab">5 · Numbers &amp; DIDs</button>
       <button class="admin-tab" data-tab="audit" role="tab">6 · Fail-Closed Audit &amp; Activity</button>
+      <button class="admin-tab" data-tab="vfarm-live" role="tab">7 · vFarm Live E2E</button>
     </nav>
 
     <!-- Alert / Banner Container -->
@@ -487,6 +488,124 @@
           <span class="count-badge" id="binding-count">0</span>
         </div>
         <div id="binding-list" class="admin-table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 7. VFARM LIVE E2E (Admin proxy → live vFarm API) -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-vfarm-live" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">LIVE INTEGRATION</span>
+            <h3>vFarm Admin Proxy — Section-by-Section Verification</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-vfarm-live-run-all" class="primary-button small-btn">▶ Run All Checks</button>
+            <button id="btn-vfarm-live-refresh-farms" class="ghost-button small">↻ Refresh Farms</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Each check calls CST admin routes under <code>/api/v1/admin/vfarm/*</code>.
+          Credentials stay on the server (<code>VFARM_FARM_KEY</code> / optional <code>VFARM_JWT</code>).
+          Run sections individually or use <strong>Run All Checks</strong> for a full pass/fail report.
+        </p>
+        <div class="filter-toolbar" style="margin-bottom: 16px;">
+          <div class="filter-group" style="min-width: 360px;">
+            <label for="vfarm-live-farm-select">Farm context for scoped checks</label>
+            <select id="vfarm-live-farm-select">
+              <option value="">Loading farms…</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Last run</label>
+            <div id="vfarm-live-last-run" class="muted" style="padding: 8px 0;">—</div>
+          </div>
+        </div>
+        <div id="vfarm-live-summary" class="metric-grid admin-metric-grid" style="margin-bottom: 20px;"></div>
+      </div>
+
+      <div class="vfarm-e2e-grid">
+        <div class="panel-block vfarm-e2e-card" data-section="dashboard">
+          <div class="panel-heading">
+            <h4>Dashboard</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="dashboard">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/dashboard</code> — composite farm, devices, health.</p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-dashboard"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-dashboard">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="farms">
+          <div class="panel-heading">
+            <h4>Farms</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="farms">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/farms</code> — dynamic farm discovery.</p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-farms"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-farms">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="devices">
+          <div class="panel-heading">
+            <h4>Devices</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="devices">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/devices?farm_id=…</code></p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-devices"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-devices">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="telemetry">
+          <div class="panel-heading">
+            <h4>Telemetry</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="telemetry">Test</button>
+          </div>
+          <p class="admin-note">Latest, history, and 24h stats for first device on farm.</p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-telemetry"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-telemetry">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="alerts">
+          <div class="panel-heading">
+            <h4>Alerts</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="alerts">Test</button>
+          </div>
+          <p class="admin-note">Counts, open, and history threshold alerts.</p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-alerts"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-alerts">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="layout">
+          <div class="panel-heading">
+            <h4>Layout</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="layout">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/layout?farm_id=…</code></p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-layout"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-layout">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="organizations">
+          <div class="panel-heading">
+            <h4>Organizations</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="organizations">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/organizations</code> (may require <code>VFARM_JWT</code>).</p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-organizations"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-organizations">—</pre>
+        </div>
+
+        <div class="panel-block vfarm-e2e-card" data-section="vision">
+          <div class="panel-heading">
+            <h4>Vision</h4>
+            <button type="button" class="ghost-button small btn-vfarm-live-section" data-section="vision">Test</button>
+          </div>
+          <p class="admin-note"><code>GET /vfarm/vision/latest?farm_id=…</code></p>
+          <div class="vfarm-e2e-status" id="vfarm-e2e-status-vision"><span class="pill off">Not run</span></div>
+          <pre class="vfarm-e2e-json" id="vfarm-e2e-json-vision">—</pre>
+        </div>
       </div>
     </section>
 

@@ -118,7 +118,11 @@ function activateTab(tab) {
   // Tab-specific lazy refreshes
   if (tab === 'speakers') loadSpeakers();
   if (tab === 'audit') loadAuditLogs();
-  if (tab === 'overview') loadHealth();
+  if (tab === 'overview') {
+    loadHealth();
+    loadVfarmPanel();
+  }
+  if (tab === 'vfarm-live') loadVfarmLiveTab();
 }
 
 $('#admin-tabs').addEventListener('click', (event) => {
@@ -1126,6 +1130,188 @@ async function loadVfarmPanel() {
   await loadVfarmFarms();
   await loadVfarmDashboard();
 }
+
+// ── 8. vFarm Live E2E Console (admin proxy → live API) ───────────────────────
+
+const vfarmLiveState = {
+  deviceId: null,
+  results: {},
+};
+
+function getVfarmLiveFarmId() {
+  return $('#vfarm-live-farm-select')?.value
+    || $('#vfarm-farm-select')?.value
+    || vfarmState.activeFarmId
+    || '';
+}
+
+function setVfarmLiveSectionResult(section, ok, payload, errorMessage) {
+  const statusEl = $(`#vfarm-e2e-status-${section}`);
+  const jsonEl = $(`#vfarm-e2e-json-${section}`);
+  vfarmLiveState.results[section] = ok ? 'pass' : 'fail';
+
+  if (statusEl) {
+    statusEl.innerHTML = ok
+      ? '<span class="pill active">● PASS</span>'
+      : `<span class="pill off">✗ FAIL${errorMessage ? `: ${errorMessage}` : ''}</span>`;
+  }
+  if (jsonEl) {
+    jsonEl.textContent = payload != null
+      ? JSON.stringify(payload, null, 2)
+      : (errorMessage || '—');
+  }
+}
+
+function renderVfarmLiveSummary() {
+  const summary = $('#vfarm-live-summary');
+  if (!summary) return;
+  const sections = ['dashboard', 'farms', 'devices', 'telemetry', 'alerts', 'layout', 'organizations', 'vision'];
+  const passed = sections.filter((s) => vfarmLiveState.results[s] === 'pass').length;
+  const failed = sections.filter((s) => vfarmLiveState.results[s] === 'fail').length;
+  const pending = sections.length - passed - failed;
+
+  summary.innerHTML = `
+    <article class="metric-card mint-card">
+      <span class="metric-label">PASSED</span>
+      <strong>${passed}</strong>
+    </article>
+    <article class="metric-card coral-card">
+      <span class="metric-label">FAILED</span>
+      <strong>${failed}</strong>
+    </article>
+    <article class="metric-card blue-card">
+      <span class="metric-label">PENDING</span>
+      <strong>${pending}</strong>
+    </article>
+    <article class="metric-card purple-card">
+      <span class="metric-label">ACTIVE FARM</span>
+      <strong style="font-size:12px;">${getVfarmLiveFarmId().slice(0, 8) || '—'}…</strong>
+    </article>`;
+}
+
+async function syncVfarmLiveFarmSelect() {
+  await loadVfarmFarms();
+  const liveSelect = $('#vfarm-live-farm-select');
+  if (!liveSelect) return;
+  const current = liveSelect.value;
+  liveSelect.replaceChildren(
+    ...vfarmState.farms.map((f) => {
+      const label = `${f.name || f.id} · ${f.device_count ?? 0} device(s)`;
+      return new Option(label, f.id);
+    }),
+  );
+  const toSelect = current && vfarmState.farms.find((f) => f.id === current)
+    ? current
+    : vfarmState.activeFarmId;
+  if (toSelect) liveSelect.value = toSelect;
+}
+
+async function runVfarmLiveSection(section) {
+  const farmId = getVfarmLiveFarmId();
+  const q = farmId ? `?farm_id=${encodeURIComponent(farmId)}` : '';
+
+  try {
+    if (section === 'dashboard') {
+      const data = await api(`/api/v1/admin/vfarm/dashboard${q}`);
+      setVfarmLiveSectionResult('dashboard', true, data);
+      return;
+    }
+    if (section === 'farms') {
+      const data = await api('/api/v1/admin/vfarm/farms');
+      setVfarmLiveSectionResult('farms', true, data);
+      return;
+    }
+    if (section === 'devices') {
+      if (!farmId) throw new Error('Select a farm first');
+      const data = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
+      vfarmLiveState.deviceId = data?.devices?.[0]?.id || null;
+      setVfarmLiveSectionResult('devices', true, data);
+      return;
+    }
+    if (section === 'telemetry') {
+      if (!farmId) throw new Error('Select a farm first');
+      let deviceId = vfarmLiveState.deviceId;
+      if (!deviceId) {
+        const devRes = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
+        deviceId = devRes?.devices?.[0]?.id;
+        vfarmLiveState.deviceId = deviceId;
+      }
+      // Latest readings across the whole farm (up to 5)
+      const latestFarm = await api(`/api/v1/admin/vfarm/readings/latest?farm_id=${encodeURIComponent(farmId)}&limit=5`);
+      const payload = { farm_latest: latestFarm };
+      if (deviceId) {
+        payload.sensor_id = deviceId;
+        // Per-sensor: latest reading, history, and 24h rolling stats
+        payload.latest = await api(`/api/v1/admin/vfarm/readings/sensor-latest?sensor_id=${encodeURIComponent(deviceId)}`)
+          .catch((e) => ({ note: `Sensor-latest unavailable: ${e.message}` }));
+        payload.history = await api(`/api/v1/admin/vfarm/readings?sensor_id=${encodeURIComponent(deviceId)}&limit=5`)
+          .catch((e) => ({ note: `History unavailable: ${e.message}` }));
+        payload.stats = await api(`/api/v1/admin/vfarm/readings/stats?sensor_id=${encodeURIComponent(deviceId)}&window=24h`)
+          .catch((e) => ({ note: `Stats unavailable: ${e.message}` }));
+      } else {
+        payload.note = 'No devices on farm — skipped per-sensor telemetry';
+      }
+      setVfarmLiveSectionResult('telemetry', true, payload);
+      return;
+    }
+    if (section === 'alerts') {
+      if (!farmId) throw new Error('Select a farm first');
+      const counts = await api(`/api/v1/admin/vfarm/alerts/counts?farm_id=${encodeURIComponent(farmId)}`);
+      const open = await api(`/api/v1/admin/vfarm/alerts/open?farm_id=${encodeURIComponent(farmId)}&limit=10`);
+      const history = await api(`/api/v1/admin/vfarm/alerts/history?farm_id=${encodeURIComponent(farmId)}&limit=10`);
+      setVfarmLiveSectionResult('alerts', true, { counts, open, history });
+      return;
+    }
+    if (section === 'layout') {
+      if (!farmId) throw new Error('Select a farm first');
+      const data = await api(`/api/v1/admin/vfarm/layout?farm_id=${encodeURIComponent(farmId)}`);
+      setVfarmLiveSectionResult('layout', true, data);
+      return;
+    }
+    if (section === 'organizations') {
+      const data = await api('/api/v1/admin/vfarm/organizations');
+      setVfarmLiveSectionResult('organizations', true, data);
+      return;
+    }
+    if (section === 'vision') {
+      if (!farmId) throw new Error('Select a farm first');
+      const data = await api(`/api/v1/admin/vfarm/vision/latest?farm_id=${encodeURIComponent(farmId)}`);
+      setVfarmLiveSectionResult('vision', true, data);
+      return;
+    }
+    throw new Error(`Unknown section: ${section}`);
+  } catch (err) {
+    setVfarmLiveSectionResult(section, false, null, err.message);
+  } finally {
+    renderVfarmLiveSummary();
+    const lastRun = $('#vfarm-live-last-run');
+    if (lastRun) lastRun.textContent = new Date().toLocaleString();
+  }
+}
+
+async function runAllVfarmLiveChecks() {
+  const order = ['farms', 'dashboard', 'devices', 'telemetry', 'alerts', 'layout', 'organizations', 'vision'];
+  showToast('Running vFarm live E2E checks…', 'info');
+  for (const section of order) {
+    await runVfarmLiveSection(section);
+  }
+  const failed = Object.values(vfarmLiveState.results).filter((r) => r === 'fail').length;
+  showToast(failed === 0 ? 'All vFarm E2E checks passed.' : `${failed} check(s) failed — see section cards.`, failed === 0 ? 'success' : 'error');
+}
+
+async function loadVfarmLiveTab() {
+  await syncVfarmLiveFarmSelect();
+  renderVfarmLiveSummary();
+}
+
+$$('.btn-vfarm-live-section').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    guarded(() => runVfarmLiveSection(btn.dataset.section));
+  });
+});
+
+$('#btn-vfarm-live-run-all')?.addEventListener('click', () => guarded(runAllVfarmLiveChecks));
+$('#btn-vfarm-live-refresh-farms')?.addEventListener('click', () => guarded(syncVfarmLiveFarmSelect));
 
 // ── Boot & Refresh ───────────────────────────────────────────────────────────
 
