@@ -13,6 +13,7 @@ export interface MessageEnvelope {
 
 export interface EnvelopeResponse {
   reply_text: string;
+  reply?: string;
   media_url?: string;
   correlation_id: string;
   channel: CapabilityType;
@@ -21,5 +22,9 @@ export interface EnvelopeResponse {
   speaker_ref: string;
   conversation_id?: string;
   status?: string;
+  intent?: string;
+  reason?: string;
+  incident_id?: string;
+  duration_ms?: number;
   metadata?: Record<string, unknown>;
 }

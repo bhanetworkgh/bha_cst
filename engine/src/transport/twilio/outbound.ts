@@ -6,6 +6,7 @@ import { Logger } from '../../config/logger.js';
 import { verifyTwilioSignature } from './signature.js';
 import { Router, Request, Response } from 'express';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
+import { publishDelivery } from '../../publishers/delivery.js';
 
 
 export const outboundRouter = Router();
@@ -117,6 +118,20 @@ export async function processOutboundQueue(): Promise<void> {
       continue;
     }
 
+    // Publish initial queued event
+    publishDelivery({
+      providerSid: msg.provider_sid || msg.id!,
+      messageId: msg.id,
+      turnId: msg.turn_id,
+      channel: 'sms',
+      to: msg.to_e164,
+      from: msg.from_e164,
+      status: 'queued',
+      tenantId: msg.tenant_id,
+      projectId: msg.project_id || '',
+      correlationId: msg.correlation_id,
+    });
+
     // Step 2: Calculate SMS segmentation
     const charCount = msg.body.length;
     const segmentCount = charCount <= 160 ? 1 : Math.ceil(charCount / 153);
@@ -134,6 +149,21 @@ export async function processOutboundQueue(): Promise<void> {
     while (attempt < maxRetries && !success) {
       try {
         attempt++;
+
+        // Publish sending status at each attempt
+        publishDelivery({
+          providerSid: msg.provider_sid || msg.id!,
+          messageId: msg.id,
+          turnId: msg.turn_id,
+          channel: 'sms',
+          to: msg.to_e164,
+          from: msg.from_e164,
+          status: 'sending',
+          tenantId: msg.tenant_id,
+          projectId: msg.project_id || '',
+          correlationId: msg.correlation_id,
+          retryCount: attempt - 1,
+        });
         const system = SystemsRegistry.getSystemByTenantId(msg.tenant_id);
         const fromNumber = system?.phone_numbers[0];
 
@@ -151,6 +181,22 @@ export async function processOutboundQueue(): Promise<void> {
         }
         await DbClient.updateOutboundStatus(msg.id, 'sent', undefined, attempt);
         success = true;
+
+        // Publish sent status (Twilio accepted the message)
+        publishDelivery({
+          providerSid: res.sid || msg.provider_sid || msg.id!,
+          messageId: msg.id,
+          turnId: msg.turn_id,
+          channel: 'sms',
+          to: msg.to_e164,
+          from: fromNumber,
+          status: 'sent',
+          tenantId: msg.tenant_id,
+          projectId: msg.project_id || '',
+          correlationId: msg.correlation_id,
+          segments: segmentCount,
+          retryCount: attempt,
+        });
 
         // 018M: Immutable Alert Audit Log with write-time masking & size cap
         await AlertAuditLog.write(
@@ -207,7 +253,23 @@ export async function processOutboundQueue(): Promise<void> {
       const finalStatus = isRetriable ? 'queued' : 'failed';
       await DbClient.updateOutboundStatus(msg.id, finalStatus, lastError, attempt, nextRetryAt);
 
+      // Publish failed delivery event (non-retriable exhaustion)
       if (finalStatus === 'failed') {
+        publishDelivery({
+          providerSid: msg.provider_sid || msg.id!,
+          messageId: msg.id,
+          turnId: msg.turn_id,
+          channel: 'sms',
+          to: msg.to_e164,
+          from: msg.from_e164,
+          status: 'failed',
+          tenantId: msg.tenant_id,
+          projectId: msg.project_id || '',
+          correlationId: msg.correlation_id,
+          errorMessage: lastError,
+          retryCount: attempt,
+        });
+
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: msg.tenant_id,
@@ -288,6 +350,22 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     reason: `Twilio delivery status update: ${mappedStatus}${ErrorCode ? ` (${errorDetails})` : ''}`,
     correlation_id: MessageSid,
   });
+
+  // Publish cst.delivery event for webhook-driven status transitions
+  // (delivered / undelivered / sent callbacks from Twilio)
+  if (tenantId) {
+    publishDelivery({
+      providerSid: MessageSid,
+      channel: 'sms',
+      to: To || '',
+      status: mappedStatus,
+      tenantId,
+      projectId: '',
+      correlationId: MessageSid,
+      errorCode: ErrorCode || undefined,
+      errorMessage: errorDetails,
+    });
+  }
 
   res.status(204).send();
 });

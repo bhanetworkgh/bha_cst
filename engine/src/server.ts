@@ -5,6 +5,7 @@ import { processOutboundQueue } from './transport/twilio/outbound.js';
 import { DbClient } from './db/client.js';
 
 import { CoreRegistry } from './core/registry.js';
+import { CstDashboardPublisher } from './publishers/dashboard.js';
 
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
@@ -30,6 +31,7 @@ const server = app.listen(env.PORT, () => {
     console.log(`[vFarm] Initialized with Dynamic Auth. Target Farm: ${targetFarm}`);
     Logger.info(`[vFarm] Initialized with Dynamic Auth. Target Farm: ${targetFarm}`);
   }
+  CstDashboardPublisher.checkBootConfig();
 });
 
 

@@ -1,11 +1,54 @@
 import { Router, Request, Response } from 'express';
 import { CoreRegistry } from '../core/registry.js';
-import { Tenant, Project, ServiceNumberBinding } from '../core/types.js';
+import { Tenant, Project, ServiceNumberBinding, SpeakerRecord } from '../core/types.js';
 import { VfarmTenantAdapter } from '../adapters/vfarm/index.js';
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 
 export const adminRouter = Router();
+
+// ── Shared: keep the runtime speaker directory in step with the DB projection ──
+// Runtime identity resolution goes CoreRegistry.resolveSpeaker → adapter
+// .resolveSpeaker → adapter in-memory speaker directory. The Admin Panel writes
+// to the `customers` table. Without this mirror the two describe different users,
+// so admin onboarding/revocation would not be visible to inbound traffic (and a
+// revoked speaker would keep resolving). This is a mirror of the same record,
+// not a second user system: the adapter directory is a cache of the DB rows and
+// is still re-verified against vFarm on every live resolve.
+function mirrorSpeakerToAdapter(projectId: string, record: {
+  phone_e164: string;
+  customer_ref: string;
+  role?: string;
+  farm_ids?: string[];
+  farm_id?: string;
+}): void {
+  const adapter = CoreRegistry.getAdapter(
+    CoreRegistry.getProject(projectId)?.tenant_id || ''
+  );
+  if (!adapter?.registerSpeaker) return;
+  const speaker: SpeakerRecord = {
+    person_id: record.customer_ref,
+    phone_e164: record.phone_e164,
+    role: (record.role || 'manager') as SpeakerRecord['role'],
+    farm_ids: record.farm_ids || (record.farm_id ? [record.farm_id] : []),
+  };
+  try {
+    adapter.registerSpeaker(projectId, speaker);
+  } catch (err: any) {
+    Logger.warn(`Admin: could not mirror speaker ${record.phone_e164} into adapter directory: ${err.message}`);
+  }
+}
+
+function unmirrorSpeakerFromAdapter(projectId: string, phoneE164: string): void {
+  const adapter = CoreRegistry.getAdapter(
+    CoreRegistry.getProject(projectId)?.tenant_id || ''
+  );
+  try {
+    adapter?.removeSpeaker?.(projectId, phoneE164);
+  } catch (err: any) {
+    Logger.warn(`Admin: could not evict speaker ${phoneE164} from adapter directory: ${err.message}`);
+  }
+}
 
 // ── 1. Tenant Management (/api/v1/admin/tenants) ──────────────────────────────
 
@@ -351,18 +394,30 @@ adminRouter.post('/speakers/sync', async (req: Request, res: Response) => {
           ]
         );
       } else {
-        // In-memory fallback (test / no-DB mode)
+        // In-memory fallback (test / no-DB mode). Must carry the same scope as
+        // the Postgres branch — dropping project_id or collapsing farm_ids to
+        // the first entry would make the Admin Panel under-report the user's
+        // real project and farm access.
         DbClient.seedCustomer({
           tenant_id,
+          project_id,
           phone_e164: speaker.phone_e164.trim(),
           customer_ref: speaker.person_id,
           role: speaker.role as 'owner' | 'manager' | 'tech',
-          farm_id: speaker.farm_ids[0],
+          farm_ids: [...speaker.farm_ids],
+          speaker_cache_expires_at: expiresAt,
         });
       }
 
-      // Invalidate speaker cache so next inbound resolves fresh
+      // Invalidate speaker cache so next inbound resolves fresh, and mirror the
+      // projected row into the adapter directory the runtime resolves against.
       CoreRegistry.invalidateSpeakerCache(tenant_id, project_id, speaker.phone_e164);
+      mirrorSpeakerToAdapter(project_id, {
+        phone_e164: speaker.phone_e164.trim(),
+        customer_ref: speaker.person_id,
+        role: speaker.role,
+        farm_ids: speaker.farm_ids,
+      });
 
       synced.push({
         person_id: speaker.person_id,
@@ -372,8 +427,40 @@ adminRouter.post('/speakers/sync', async (req: Request, res: Response) => {
       });
     }
 
-    Logger.info(`Admin speakers/sync: synced ${synced.length} speakers for tenant=${tenant_id} project=${project_id}`);
-    res.status(200).json({ status: 'synced', tenant_id, project_id, count: synced.length, speakers: synced });
+    // Prune users the adapter dropped because they are no longer members of the
+    // vFarm org (pullSpeakers removes them after a live org-members check).
+    // Without this the Admin Panel keeps showing — and re-syncing would keep
+    // resurrecting — a speaker vFarm has already revoked.
+    //
+    // Guarded on live mode on purpose: when the adapter cannot verify upstream
+    // it returns its last-known directory intact, so pruning there would delete
+    // real rows on an outage. Fail-closed authorization already happens at
+    // resolve time; this only makes the projection tell the truth.
+    const verifiedLive = typeof (adapter as any).isLiveMode === 'function'
+      ? (adapter as any).isLiveMode() === true
+      : false;
+    let pruned: string[] = [];
+    if (verifiedLive) {
+      const upstreamPersonIds = new Set(speakers.map((s) => s.person_id));
+      const existing = await DbClient.getAllCustomers(tenant_id, project_id);
+      for (const row of existing) {
+        if (upstreamPersonIds.has(row.customer_ref)) continue;
+        await DbClient.deleteCustomer(row.phone_e164, tenant_id, project_id);
+        unmirrorSpeakerFromAdapter(project_id, row.phone_e164);
+        pruned.push(row.customer_ref);
+      }
+    }
+
+    Logger.info(`Admin speakers/sync: synced ${synced.length} speakers for tenant=${tenant_id} project=${project_id}${pruned.length ? ` (pruned ${pruned.length} revoked: ${pruned.join(',')})` : ''}`);
+    res.status(200).json({
+      status: 'synced',
+      tenant_id,
+      project_id,
+      count: synced.length,
+      speakers: synced,
+      pruned_count: pruned.length,
+      pruned,
+    });
   } catch (err: any) {
     Logger.error(`Admin speakers/sync error: ${err.message}`);
     res.status(500).json({ error: 'SYNC_FAILED', message: err.message });
@@ -391,6 +478,7 @@ adminRouter.post('/speakers/invalidate', async (req: Request, res: Response) => 
 
     // Expire the DB row by setting speaker_cache_expires_at to the past
     const pool = DbClient.getPool();
+    const expiredAt = new Date(Date.now() - 1000).toISOString();
     if (pool) {
       await pool.query(
         `UPDATE customers
@@ -400,6 +488,13 @@ adminRouter.post('/speakers/invalidate', async (req: Request, res: Response) => 
            AND phone_e164 = $3`,
         [tenant_id, project_id || null, phone_e164.trim()]
       );
+    } else {
+      // In-memory mode has no SQL to expire the row; write the past TTL
+      // directly so the projection reports the same expired state the Admin
+      // Panel shows (and a runtime lookup treats it as a miss).
+      await DbClient.updateCustomer(phone_e164, tenant_id, project_id || undefined, {
+        speaker_cache_expires_at: expiredAt,
+      });
     }
 
     // Evict in-memory cache entry
@@ -520,6 +615,12 @@ adminRouter.post('/speakers', async (req: Request, res: Response) => {
     }
 
     CoreRegistry.invalidateSpeakerCache(tenant_id, project_id, cleanPhone);
+    mirrorSpeakerToAdapter(project_id, {
+      phone_e164: cleanPhone,
+      customer_ref: customer_ref.trim(),
+      role: cleanRole,
+      farm_ids: cleanFarms,
+    });
 
     const speaker = {
       phone_e164: cleanPhone,
@@ -583,6 +684,16 @@ adminRouter.patch('/speakers/:phoneE164', async (req: Request, res: Response) =>
       return;
     }
 
+    const mirrorProjectId = project_id || updated.project_id;
+    if (mirrorProjectId) {
+      mirrorSpeakerToAdapter(mirrorProjectId, {
+        phone_e164: updated.phone_e164,
+        customer_ref: updated.customer_ref,
+        role: updated.role,
+        farm_ids: updated.farm_ids || (updated.farm_id ? [updated.farm_id] : []),
+      });
+    }
+
     CoreRegistry.invalidateSpeakerCache(tenant_id, project_id || updated.project_id || '', phoneE164);
     Logger.info(`Admin: Updated configuration for speaker ${phoneE164}`);
     res.status(200).json({ status: 'updated', speaker: updated });
@@ -604,7 +715,19 @@ adminRouter.delete('/speakers/:phoneE164', async (req: Request, res: Response) =
       return;
     }
 
+    // Capture the affected project scope BEFORE the row is removed, so the
+    // runtime adapter directory can be evicted too. Without this a revoked
+    // speaker keeps resolving through the adapter's in-memory directory.
+    let affectedProjects: string[] = projectId ? [projectId] : [];
+    if (!projectId) {
+      const existing = await DbClient.getAllCustomers(tenantId, undefined, undefined, phoneE164.trim());
+      affectedProjects = Array.from(new Set(existing.map((c) => c.project_id).filter(Boolean))) as string[];
+    }
+
     const deleted = await DbClient.deleteCustomer(phoneE164, tenantId, projectId);
+    for (const proj of affectedProjects) {
+      unmirrorSpeakerFromAdapter(proj, phoneE164);
+    }
     CoreRegistry.invalidateSpeakerCache(tenantId, projectId || '', phoneE164);
     Logger.info(`Admin: Revoked/deleted speaker ${phoneE164} for tenant ${tenantId}`);
     res.status(200).json({ status: deleted ? 'deleted' : 'not_found', phone_e164: phoneE164 });
@@ -1145,6 +1268,174 @@ adminRouter.get('/vfarm/vision/latest', async (req: Request, res: Response) => {
   } catch (err: any) {
     Logger.error(`vFarm vision proxy: ${err.message}`);
     res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+  }
+});
+
+// ── 9. Turn Stream & Delivery State (/api/v1/admin/turn-stream) ───────────────
+/**
+ * GET /api/v1/admin/turn-stream
+ * Returns the in-process turn + delivery journal for dashboard display.
+ * Each row joins an inbound message with its outbound reply (if any).
+ *
+ * Query params:
+ *   tenant_id  – filter by tenant
+ *   limit      – max rows (default 100, max 500)
+ */
+adminRouter.get('/turn-stream', async (req: Request, res: Response) => {
+  try {
+    const tenantFilter = req.query.tenant_id as string | undefined;
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+    const conversations = DbClient.getAllConversations();
+    const messagesIn    = DbClient.getAllMessagesIn();
+    const messagesOut   = DbClient.getAllMessagesOut();
+
+    // Index outbound messages by turn_id (= MessageSid = cst.turn.turn_id after fix)
+    const outboundByTurnId = new Map<string, typeof messagesOut[number]>();
+    for (const out of messagesOut) {
+      const key = out.turn_id || out.correlation_id;
+      if (key && !outboundByTurnId.has(key)) {
+        outboundByTurnId.set(key, out);
+      }
+    }
+
+    // Build turn stream rows — one row per inbound message
+    const rows = messagesIn
+      .filter((m) => !tenantFilter || m.tenant_id === tenantFilter)
+      .slice(0, limit)
+      .map((inbound) => {
+        const outbound = outboundByTurnId.get(inbound.message_id);
+        const conv = conversations.find((c) => c.tenant_id === inbound.tenant_id);
+        return {
+          turn_id: inbound.message_id,                      // = cst.turn.turn_id
+          conversation_id: (inbound as any).conversation_id || conv?.conversation_id,
+          tenant_id: inbound.tenant_id,
+          project_id: (inbound as any).project_id,
+          customer_phone: inbound.from_e164,
+          service_number: inbound.to_e164,
+          inbound_text: inbound.body,
+          received_at: inbound.received_at,
+          // Delivery (cst.delivery) fields
+          delivery_status: outbound?.status ?? null,
+          delivery_provider_sid: outbound?.provider_sid ?? null,
+          delivery_turn_id: outbound?.turn_id ?? null,
+          reply_body: outbound?.body ?? null,
+          delivery_error: outbound?.error_message ?? null,
+          delivery_updated_at: outbound?.updated_at ?? null,
+          // Correlation health check: turn_id matches outbound turn_id?
+          correlated: outbound
+            ? (inbound.message_id === (outbound.turn_id || outbound.correlation_id))
+            : null,
+        };
+      })
+      .sort((a, b) => (b.received_at || '').localeCompare(a.received_at || ''));
+
+    res.status(200).json({
+      status: 'ok',
+      count: rows.length,
+      turns: rows,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET turn-stream error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── 10. vFarm Users / Customer Verification (/api/v1/admin/vfarm/customers) ───
+/**
+ * GET /api/v1/admin/vfarm/customers?org_id=...
+ * Returns vFarm org members cross-referenced with local CST speaker records.
+ * Used by the admin panel Users tab to show the authoritative vFarm user list
+ * and verify each user has a matching local speaker record.
+ */
+adminRouter.get('/vfarm/customers', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const client = adapter.getLiveClient();
+    if (!client) {
+      res.status(503).json({
+        error: 'NO_LIVE_CLIENT',
+        message: 'vFarm live client not configured. Set VFARM_BASE_URL and VFARM_FARM_KEY in .env.',
+      });
+      return;
+    }
+
+    const orgId = req.query.org_id as string | undefined;
+    if (!orgId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'org_id query param is required' });
+      return;
+    }
+
+    const jwt = adapter.getAdminJwt() || process.env.VFARM_JWT;
+
+    // Fetch live vFarm org members — try both method names for safety
+    let vfarmMembers: any[] = [];
+    let sourceError: string | null = null;
+    try {
+      if (typeof (client as any).listOrganizationMembers === 'function') {
+        vfarmMembers = await (client as any).listOrganizationMembers(orgId, jwt || undefined);
+      } else if (typeof (client as any).getOrgMembers === 'function') {
+        // This endpoint rejects X-Farm-Key auth, so the bearer JWT is required.
+        vfarmMembers = await (client as any).getOrgMembers(orgId, jwt || undefined);
+      } else {
+        sourceError = 'vFarm live client exposes no organization-members method';
+      }
+    } catch (err: any) {
+      Logger.warn(`Admin vfarm/customers: org members fetch failed: ${err.message}`);
+      vfarmMembers = [];
+      // Report the failure instead of returning an empty list under status "ok":
+      // an empty array here would read to the Admin Panel as "this org has no
+      // users", which is a different — and wrong — claim.
+      sourceError = err.message;
+    }
+
+    // Cross-reference with local CST speakers.
+    // The CST↔vFarm join key is `customers.customer_ref`, which holds the vFarm
+    // `user_id` (see the ON CONFLICT upsert in POST /speakers/sync). There is no
+    // `person_id` column on the customers table.
+    const localSpeakers = await DbClient.getAllCustomers();
+    const byUserId = new Map<string, (typeof localSpeakers)[number]>();
+    for (const s of localSpeakers) {
+      if (s.customer_ref && !byUserId.has(s.customer_ref)) byUserId.set(s.customer_ref, s);
+    }
+
+    const customers = vfarmMembers.map((member: any) => {
+      const local = byUserId.get(member.user_id);
+      return {
+        user_id: member.user_id,
+        email: member.email,
+        name: member.name,
+        vfarm_role: member.role,
+        granted_at: member.granted_at,
+        // CST local record
+        cst_registered: Boolean(local),
+        cst_phone_e164: local?.phone_e164 ?? null,
+        cst_role: local?.role ?? null,
+        cst_project_id: local?.project_id ?? null,
+        cst_farm_ids: local?.farm_ids ?? null,
+        cst_cache_expires_at: local?.speaker_cache_expires_at ?? null,
+      };
+    });
+
+    res.status(200).json({
+      status: 'ok',
+      org_id: orgId,
+      count: customers.length,
+      customers,
+      // 'live'        — members were fetched from vFarm
+      // 'unavailable' — the fetch failed; `customers` is NOT a statement about
+      //                how many users the org has, and the caller must not
+      //                present it as authoritative.
+      vfarm_source: sourceError ? 'unavailable' : 'live',
+      source_error: sourceError,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET vfarm/customers error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });
 

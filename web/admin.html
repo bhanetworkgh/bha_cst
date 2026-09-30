@@ -51,6 +51,7 @@
       <button class="admin-tab" data-tab="numbers" role="tab">5 · Numbers &amp; DIDs</button>
       <button class="admin-tab" data-tab="audit" role="tab">6 · Fail-Closed Audit &amp; Activity</button>
       <button class="admin-tab" data-tab="vfarm-live" role="tab">7 · vFarm Live E2E</button>
+      <button class="admin-tab" data-tab="turn-stream" role="tab">8 · Turn Stream</button>
     </nav>
 
     <!-- Alert / Banner Container -->
@@ -205,6 +206,38 @@
 
         <!-- Users Table -->
         <div id="speakers-table-container" class="admin-table-wrap"></div>
+      </div>
+
+      <!-- vFarm Source-of-Truth Verification -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">VFARM SOURCE OF TRUTH</span>
+            <h3>vFarm Org Members &rarr; CST Speaker Mapping</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-vfarm-users-refresh" class="ghost-button small">↻ Refresh vFarm users</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Live vFarm organization members are read through the existing route
+          <code>GET /api/v1/admin/vfarm/customers?org_id=…</code> and joined to CST speaker records on
+          <code>customer_ref = vFarm user_id</code>. vFarm owns identity, name and role; CST owns the
+          phone&rarr;user mapping, because the vFarm members endpoint returns no phone number. A row marked
+          <strong>vFarm only</strong> is a real vFarm user with no phone mapped in CST yet.
+        </p>
+        <div class="filter-toolbar" style="margin-bottom: 16px;">
+          <div class="filter-group" style="min-width: 320px;">
+            <label for="vfarm-users-org">vFarm organization (from selected project)</label>
+            <select id="vfarm-users-org"><option value="">Select a project with a vFarm org…</option></select>
+          </div>
+          <div class="filter-group">
+            <label>vFarm live source</label>
+            <div id="vfarm-users-status" class="muted" style="padding: 8px 0;">—</div>
+          </div>
+        </div>
+        <div id="vfarm-users-summary" class="metric-grid admin-metric-grid" style="margin-bottom: 20px;"></div>
+        <div id="vfarm-users-list" class="admin-table-wrap"></div>
       </div>
 
       <!-- Sync Speakers from Tenant Adapter -->
@@ -606,6 +639,68 @@
           <div class="vfarm-e2e-status" id="vfarm-e2e-status-vision"><span class="pill off">Not run</span></div>
           <pre class="vfarm-e2e-json" id="vfarm-e2e-json-vision">—</pre>
         </div>
+      </div>
+    </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 8. TURN STREAM (read-only view over /api/v1/admin/turn-stream) -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-turn-stream" class="admin-panel hidden">
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">TURN STREAM</span>
+            <h3>Inbound Turns &amp; Outbound Delivery Journal</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-turn-stream-refresh" class="ghost-button small">↻ Refresh</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Read-only projection of the in-process turn journal served by the existing endpoint
+          <code>GET /api/v1/admin/turn-stream</code>. Each row joins one inbound turn with its outbound reply
+          (if any) so delivery status and correlation health can be inspected. No new backend contract is
+          introduced by this tab.
+        </p>
+        <div class="filter-toolbar" style="margin-bottom: 16px;">
+          <div class="filter-group" style="min-width: 280px;">
+            <label for="turn-stream-filter-tenant">Tenant</label>
+            <select id="turn-stream-filter-tenant"><option value="">All tenants</option></select>
+          </div>
+          <div class="filter-group">
+            <label for="turn-stream-filter-correlation">Correlation</label>
+            <select id="turn-stream-filter-correlation">
+              <option value="">All turns</option>
+              <option value="correlated">Correlated replies only</option>
+              <option value="uncorrelated">Unanswered / mismatched only</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="turn-stream-limit">Rows</label>
+            <select id="turn-stream-limit">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="250">250</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Source</label>
+            <div id="turn-stream-source" class="muted" style="padding: 8px 0;">—</div>
+          </div>
+        </div>
+        <div id="turn-stream-summary" class="metric-grid admin-metric-grid" style="margin-bottom: 20px;"></div>
+      </div>
+
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">TURN LEDGER</span>
+            <h4>Inbound Turns</h4>
+          </div>
+          <span class="count-badge" id="turn-stream-count">0</span>
+        </div>
+        <div id="turn-stream-list" class="admin-table-wrap"></div>
       </div>
     </section>
 

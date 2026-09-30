@@ -15,6 +15,15 @@ export interface ITenantAdapter {
   pullSpeakers(tenantId: string, projectId: string): Promise<SpeakerRecord[]>;
   pullCandidateNumbers?(tenantId: string): Promise<string[]>;
   syncMembers?(tenantId: string, projectId: string, members: SpeakerRecord[]): Promise<SpeakerRecord[]>;
+  /**
+   * Optional write-through hooks into the adapter's own in-memory speaker
+   * directory. Runtime identity resolution (CoreRegistry.resolveSpeaker) reads
+   * the adapter directory, so admin-projected speakers must be mirrored here
+   * for the Admin Panel and the runtime to describe the same user. Optional:
+   * adapters with no in-memory directory can omit them.
+   */
+  registerSpeaker?(projectId: string, speaker: SpeakerRecord): void;
+  removeSpeaker?(projectId: string, phoneE164: string): boolean;
   resolveSpeaker(params: {
     tenantId: string;
     projectId: string;

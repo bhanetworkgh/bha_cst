@@ -74,6 +74,11 @@ export interface VfarmLiveClientConfig {
   baseUrl: string;
   /** Value for the X-Farm-Key header. Optional when initializing for auth/discovery before key issuance. */
   apiKey?: string;
+  /**
+   * Bearer JWT used for endpoints that reject X-Farm-Key auth (e.g. the
+   * organization-members endpoint). Optional; settable later via setApiToken.
+   */
+  apiToken?: string;
   /** Request timeout in ms (default 5000) */
   timeoutMs?: number;
   /** Overrideable fetch function for testing */
@@ -100,6 +105,7 @@ export class VfarmNetworkError extends Error {
 export class VfarmLiveClient {
   private readonly baseUrl: string;
   private apiKey: string;
+  private apiToken: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: FetchFn;
 
@@ -110,8 +116,39 @@ export class VfarmLiveClient {
     // Strip trailing slash for consistent URL construction
     this.baseUrl = config.baseUrl ? config.baseUrl.replace(/\/$/, '') : VFARM_DEFAULT_BASE_URL;
     this.apiKey = (config.apiKey || '').trim();
+    this.apiToken = (config.apiToken || '').trim();
     this.timeoutMs = config.timeoutMs ?? 5_000;
     this.fetchFn = config.fetchFn ?? fetch;
+  }
+
+  /**
+   * Bearer token used for endpoints that do NOT accept X-Farm-Key auth.
+   * The organization-members endpoint is one of them: with only X-Farm-Key it
+   * answers 401 "Missing authentication", so callers must send a JWT.
+   */
+  public setApiToken(apiToken: string): void {
+    this.apiToken = (apiToken || '').trim();
+  }
+
+  public getApiToken(): string {
+    return this.apiToken;
+  }
+
+  /**
+   * Headers for endpoints that require bearer auth. Sends the Bearer token
+   * (preferred) alongside X-Farm-Key, mirroring listFarms(): vFarm accepts
+   * both, and some endpoints reject the farm key on its own.
+   */
+  private authHeaders(explicitToken?: string): Record<string, string> {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    const token = (explicitToken || this.apiToken || '').trim();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    if (this.apiKey) {
+      headers['X-Farm-Key'] = this.apiKey;
+    }
+    return headers;
   }
 
   public setApiKey(apiKey: string): void {
@@ -244,15 +281,20 @@ export class VfarmLiveClient {
 
   // ── Internal request helper ───────────────────────────────────────────────
 
-  private async request<T>(path: string, parseSchema: { parse: (data: unknown) => T }): Promise<T> {
-    if (!this.apiKey) {
+  private async request<T>(
+    path: string,
+    parseSchema: { parse: (data: unknown) => T },
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
+    if (!this.apiKey && !(extraHeaders && extraHeaders['Authorization'])) {
       throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
     }
     const url = `${this.baseUrl}${path}`;
     // Note: Authorization header carrying apiKey is intentionally not logged
     const headers: Record<string, string> = {
-      'X-Farm-Key': this.apiKey,
       'Accept': 'application/json',
+      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(extraHeaders || {}),
     };
 
     let res: Response;
@@ -294,23 +336,26 @@ export class VfarmLiveClient {
    * GET /api/v1/organizations/{org_id}/users
    * Returns user_id, email, name, role, granted_by, granted_at.
    * Does NOT return phone/phone_e164/mobile.
+   *
+   * Requires bearer auth: with only X-Farm-Key vFarm answers 401.
    */
-  async getOrgMembers(orgId: string): Promise<OrgMemberResponse[]> {
+  async getOrgMembers(orgId: string, token?: string): Promise<OrgMemberResponse[]> {
     const path = `/api/v1/organizations/${encodeURIComponent(orgId)}/users`;
     const schema = { parse: (d: unknown) => {
       if (!Array.isArray(d)) throw new Error('Expected array from org members endpoint');
       return d.map((item) => OrgMemberResponseSchema.parse(item));
     }};
-    return this.request(path, schema);
+    return this.request(path, schema, this.authHeaders(token));
   }
 
   /**
    * GET /api/v1/users/{user_id}/farm-grants
    * Returns the list of farm_id grants for a given user.
+   * Also bearer-authenticated; treated as best-effort by callers.
    */
-  async getUserFarmGrants(userId: string): Promise<GrantedFarmRow[]> {
+  async getUserFarmGrants(userId: string, token?: string): Promise<GrantedFarmRow[]> {
     const path = `/api/v1/users/${encodeURIComponent(userId)}/farm-grants`;
-    const parsed = await this.request(path, BulkGrantResponseSchema);
+    const parsed = await this.request(path, BulkGrantResponseSchema, this.authHeaders(token));
     return parsed.grants;
   }
 

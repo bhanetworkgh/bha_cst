@@ -83,6 +83,10 @@ const envSchema = z.object({
   ELEVENLABS_MODEL_ID:       z.string().optional(),
   ELEVENLABS_VOICE_ID:       z.string().optional(),
   VFARM_ELEVENLABS_VOICE_ID: z.string().optional(),
+
+  // ── Engine Dashboard Event Publisher ──────────────────────────────────────
+  ENGINE_DASHBOARD_URL:      optionalEnv(z.string().url()),
+  ENGINE_DASHBOARD_KEY:      optionalEnv(z.string().min(1)),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -171,14 +171,18 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // Process through Core Engine
         const engineResponse = await CoreEngine.processEnvelope(envelope, speaker);
 
-        // Save outbound message and process queue
+        // Save outbound message and process queue.
+        // IMPORTANT: correlation_id = envelope.correlation_id = MessageSid = cst.turn.turn_id
+        // This is the critical join key between cst.turn and cst.delivery on the dashboard.
         const outboundRecord: OutboundMessage = {
           tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
           from_e164: normalizedMsg.to_e164,
           to_e164: normalizedMsg.from_e164,
           body: engineResponse.reply_text,
           media_url: engineResponse.media_url,
-          correlation_id: normalizedMsg.correlation_id,
+          correlation_id: envelope.correlation_id,   // = MessageSid = turn_id
+          turn_id: envelope.correlation_id,           // explicit join key for cst.delivery
           status: 'pending',
         };
 

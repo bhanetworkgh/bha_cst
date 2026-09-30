@@ -19,6 +19,7 @@ export interface OutboundMessage {
   body: string;
   media_url?: string;
   correlation_id: string;
+  turn_id?: string;   // The cst.turn.turn_id this outbound is the reply to
   provider_sid?: string;
   status?: 'pending' | 'queued' | 'sending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered';
   retry_count?: number;

@@ -66,10 +66,13 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   constructor(tenantId = 'tenant-vfarm-01', config: VfarmAdapterConfig = {}) {
     this.tenantId = tenantId;
     this.config = config;
+    // Resolve the admin JWT BEFORE building either client: both need it (the
+    // org-members endpoint rejects X-Farm-Key auth), and reading it after the
+    // clients were constructed would hand them an undefined token.
+    this.adminJwt = config.apiToken || process.env.VFARM_API_JWT || process.env.VFARM_JWT || null;
     this.httpClient = this.buildHttpClient(config);
     this.liveClient = this.buildLiveClient(config);
     this.activeFarmId = process.env.VFARM_FARM_ID || null;
-    this.adminJwt = config.apiToken || process.env.VFARM_API_JWT || process.env.VFARM_JWT || null;
     this.initDefaultData();
   }
 
@@ -78,7 +81,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return new VfarmHttpClient({
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
-      apiToken: config.apiToken,
+      apiToken: this.adminJwt || config.apiToken,
       timeoutMs: config.timeoutMs,
       fetchFn: config.fetchFn,
     });
@@ -89,6 +92,9 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return new VfarmLiveClient({
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
+      // The org-members endpoint rejects X-Farm-Key auth, so the admin JWT has
+      // to reach the live client too — not just the http client.
+      apiToken: this.adminJwt || undefined,
       timeoutMs: config.timeoutMs,
       fetchFn: config.fetchFn as any,
     });
@@ -127,6 +133,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
     const res = await this.liveClient.login(email, password);
     this.adminJwt = res.token;
+    // Keep the live client's bearer token in step with the refreshed JWT.
+    this.liveClient.setApiToken(res.token);
     return res.token;
   }
 
