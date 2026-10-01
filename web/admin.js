@@ -86,17 +86,28 @@ async function api(path, options = {}) {
     },
     ...options,
   });
-  // Session expired – redirect to login
-  if (response.status === 401) {
+  // Session expired – redirect to login.
+  //
+  // Only do this when the 401 genuinely means "this CST admin session is
+  // invalid". A 401 can also arrive from a *proxied upstream* (vFarm), and
+  // treating that as a CST session expiry logs the operator out of the panel
+  // whenever an upstream credential expires. The backend now maps upstream auth
+  // failures to 502 (VFARM_AUTH_FAILED), but the response body is checked here
+  // too so any remaining proxy route cannot end an admin session.
+  const body = response.status === 204 ? null : await response.json().catch(() => null);
+  const isCstAuthFailure =
+    response.status === 401 &&
+    body?.error !== 'VFARM_AUTH_FAILED' &&
+    body?.error !== 'PROXY_ERROR';
+  if (isCstAuthFailure) {
     localStorage.removeItem('cst_admin_token');
     window.location.replace('/admin/login');
     throw new Error('Session expired. Redirecting to login...');
   }
-  const data = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(data?.message || data?.error || `Request failed (${response.status})`);
+    throw new Error(body?.message || body?.error || `Request failed (${response.status})`);
   }
-  return data;
+  return body;
 }
 
 async function guarded(fn) {
@@ -1197,8 +1208,22 @@ async function loadVfarmFarms() {
     return vfarmState.farms;
   } catch (err) {
     const badge = $('#vfarm-farm-badge');
-    if (badge) badge.innerHTML = `<span class="pill off">Discovery failed</span>`;
-    showError(`Farm discovery failed: ${err.message}`);
+    // err.message contains the upstream message; for auth failures the server
+    // returns VFARM_AUTH_FAILED (502) so we show a targeted hint.
+    const isAuthFailure = err.message && (
+      err.message.includes('VFARM_AUTH_FAILED') ||
+      err.message.includes('unauthorized') ||
+      err.message.includes('Invalid or expired token') ||
+      err.message.includes('List farms failed')
+    );
+    if (badge) {
+      badge.innerHTML = isAuthFailure
+        ? `<span class="pill off">⚠ vFarm JWT expired — set VFARM_ADMIN_PASSWORD in .env to auto-refresh</span>`
+        : `<span class="pill off">Discovery failed</span>`;
+    }
+    showError(isAuthFailure
+      ? `Farm discovery: vFarm JWT is expired or invalid. Add VFARM_ADMIN_PASSWORD to .env so the server can refresh it automatically, or paste a fresh VFARM_JWT.`
+      : `Farm discovery failed: ${err.message}`);
     return [];
   }
 }

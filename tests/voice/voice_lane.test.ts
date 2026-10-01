@@ -3,9 +3,11 @@ import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 import { DbClient } from '../../engine/src/db/client.js';
+import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { VoiceLaneService } from '../../engine/src/transport/voice/voice_lane.js';
 import { BharagRagConnector } from '../../engine/src/connectors/bharag_rag.js';
 import { AudioSynthesizer } from '../../engine/src/audio/synthesis.js';
+import type { SpeakerRecord } from '../../engine/src/core/types.js';
 
 describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
   const app = createApp();
@@ -23,33 +25,50 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
   beforeEach(() => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
+    CoreRegistry.resetToDefault();
     VoiceLaneService.setSynthesizer(mockSynthesizer);
     vi.clearAllMocks();
     vi.spyOn(BharagRagConnector, 'askKnowledge').mockResolvedValue(
       'Clean the filter mesh weekly with vinegar solution.'
     );
 
-    // Seed test customers in customer registry
-    DbClient.seedCustomer({
+    /**
+     * Onboard a speaker the way production does: a `customers` row AND a matching
+     * entry in the tenant adapter's directory.
+     *
+     * Voice identity now resolves through CoreRegistry.resolveSpeaker (the active
+     * tenant-adapter path), not the `customers` table. The admin routes write both
+     * (`mirrorSpeakerToAdapter`), so seeding only the DB would not represent any
+     * real onboarding flow — and would silently make these callers "unknown".
+     */
+    const onboard = (s: SpeakerRecord) => {
+      DbClient.seedCustomer({
+        phone_e164: s.phone_e164,
+        customer_ref: s.person_id,
+        tenant_id: 'tenant-vfarm-01',
+        organization_id: 'tenant-vfarm-01',
+        workspace_id: 'ws-vfarm-main',
+        project_id: 'proj-vfarm-main',
+        role: s.role,
+        unit_id: 'bay_04',
+        farm_id: s.farm_ids[0],
+        farm_ids: [...s.farm_ids],
+      });
+      CoreRegistry.getAdapter('tenant-vfarm-01')?.registerSpeaker?.('proj-vfarm-main', s);
+    };
+
+    onboard({
+      person_id: 'cust_manager_01',
       phone_e164: '+15551112222',
-      customer_ref: 'cust_manager_01',
-      tenant_id: 'tenant-vfarm-01',
-      organization_id: 'tenant-vfarm-01',
-      workspace_id: 'ws-vfarm-main',
       role: 'manager',
-      unit_id: 'bay_04',
-      farm_id: 'farm_austin_main',
+      farm_ids: ['farm_austin_main'],
     });
 
-    DbClient.seedCustomer({
+    onboard({
+      person_id: 'cust_tech_01',
       phone_e164: '+15553334444',
-      customer_ref: 'cust_tech_01',
-      tenant_id: 'tenant-vfarm-01',
-      organization_id: 'tenant-vfarm-01',
-      workspace_id: 'ws-vfarm-main',
       role: 'tech',
-      unit_id: 'bay_04',
-      farm_id: 'farm_austin_main',
+      farm_ids: ['farm_austin_main'],
     });
   });
 

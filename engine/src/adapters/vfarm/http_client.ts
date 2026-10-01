@@ -2,7 +2,7 @@ import { Logger } from '../../config/logger.js';
 import {
   orgMemberListSchema,
   farmUserListSchema,
-  farmGrantListSchema,
+  normalizeFarmGrants,
   inventoryItemSchema,
   unitConfigResponseSchema,
   configResponseSchema,
@@ -164,12 +164,12 @@ export class VfarmHttpClient {
    */
   async getUserFarmGrants(userId: string): Promise<FarmGrant[]> {
     const raw = await this.get(`/api/v1/users/${encodeURIComponent(userId)}/farm-grants`);
-    const parsed = farmGrantListSchema.safeParse(raw);
-    if (!parsed.success) {
+    try {
+      return normalizeFarmGrants(raw);
+    } catch {
       Logger.warn(`vFarm schema validation failed: users/${userId}/farm-grants`);
       throw new VfarmApiError('invalid_response', 'vFarm farm-grants response failed schema validation');
     }
-    return parsed.data;
   }
 
   async getInventoryItem(serialNumber: string): Promise<InventoryItem> {

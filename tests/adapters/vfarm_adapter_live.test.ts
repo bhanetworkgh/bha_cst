@@ -8,7 +8,7 @@ function jsonResponse(status: number, body: unknown): any {
 
 const PROJECT_ID = 'proj-vfarm-main';
 const TENANT_ID = 'tenant-vfarm-01';
-const ORG_ID = 'org-vfarm-austin'; // matches the adapter's default fixture project
+const ORG_ID = '122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d'; // the real vFarm org UUID (G19); matches the adapter's default project
 
 function baseFetchRouter(routes: Record<string, () => any>) {
   return vi.fn(async (url: string) => {

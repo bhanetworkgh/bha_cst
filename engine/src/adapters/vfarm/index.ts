@@ -138,18 +138,84 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return res.token;
   }
 
-  public async discoverFarms(jwt?: string): Promise<FarmResponse[]> {
-    const token = jwt || this.getAdminJwt() || undefined;
-    if (this.liveClient) {
-      const list = await this.liveClient.listFarms(token);
-      this.discoveredFarms = list.farms || [];
-      if (!this.activeFarmId && this.discoveredFarms.length > 0) {
-        const first = this.discoveredFarms[0];
-        this.activeFarmId = (first as any).farm_id || first.id || null;
-      }
-      return this.discoveredFarms;
+  /**
+   * Returns true when a JWT string is already expired (clock-based check).
+   * Does NOT validate the signature — that is the upstream server's job.
+   * Returns false for any non-JWT / unparseable value so callers can still
+   * attempt the request and let the server decide.
+   */
+  private static jwtIsExpired(token: string): boolean {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return false;
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      if (typeof payload.exp !== 'number') return false;
+      // Add a 30-second clock-skew buffer so we refresh slightly before expiry.
+      return Date.now() / 1000 >= payload.exp - 30;
+    } catch {
+      return false;
     }
-    return [];
+  }
+
+  /**
+   * Attempt to re-authenticate using VFARM_ADMIN_EMAIL / VFARM_ADMIN_PASSWORD
+   * from the environment. Returns the new token on success, null on failure or
+   * when credentials are not configured.
+   */
+  private async tryRelogin(): Promise<string | null> {
+    const email = process.env.VFARM_ADMIN_EMAIL;
+    const password = process.env.VFARM_ADMIN_PASSWORD;
+    if (!email || !password || !this.liveClient) return null;
+    try {
+      const res = await this.liveClient.login(email, password);
+      if (res.token) {
+        this.adminJwt = res.token;
+        this.liveClient.setApiToken(res.token);
+        Logger.info('VfarmTenantAdapter: JWT refreshed via auto-relogin');
+        return res.token;
+      }
+    } catch (err: any) {
+      Logger.warn(`VfarmTenantAdapter: auto-relogin failed — ${err.message}`);
+    }
+    return null;
+  }
+
+  public async discoverFarms(jwt?: string): Promise<FarmResponse[]> {
+    if (!this.liveClient) return [];
+
+    // Resolve token, refreshing proactively when it is already expired.
+    let token = jwt || this.getAdminJwt() || undefined;
+    if (token && VfarmTenantAdapter.jwtIsExpired(token)) {
+      Logger.warn('VfarmTenantAdapter: stored JWT is expired — attempting auto-relogin before farm discovery');
+      const fresh = await this.tryRelogin();
+      token = fresh || token; // fall back to expired token so the upstream can still give us a clear 401
+    }
+
+    let list;
+    try {
+      list = await this.liveClient.listFarms(token);
+    } catch (err: any) {
+      // On an upstream 401, try re-logging-in once and retry.
+      const status = (err as any)?.status ?? (err as any)?.statusCode;
+      if ((status === 401 || status === 403) && !jwt) {
+        Logger.warn(`VfarmTenantAdapter: listFarms got ${status} — attempting one-shot re-auth`);
+        const fresh = await this.tryRelogin();
+        if (fresh) {
+          list = await this.liveClient.listFarms(fresh);
+        } else {
+          throw err; // no credentials — propagate original error
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    this.discoveredFarms = list.farms || [];
+    if (!this.activeFarmId && this.discoveredFarms.length > 0) {
+      const first = this.discoveredFarms[0];
+      this.activeFarmId = (first as any).farm_id || first.id || null;
+    }
+    return this.discoveredFarms;
   }
 
   public async issueFarmToken(farmId: string, jwt?: string, name?: string): Promise<string> {
@@ -259,13 +325,19 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   }
 
   private initDefaultData(): void {
+    // tenant_org_id must be the real vFarm organization UUID, not a CST
+    // placeholder. vFarm answers HTTP 422 for placeholder ids, so a placeholder
+    // here silently disables the live membership cross-check in pullSpeakers()
+    // and resolveSpeaker() (G19). Discovered from GET /api/v1/organizations.
+    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || '122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d';
+
     // Project 1: Main vFarm Org (Austin)
     const proj1: Project = {
       project_id: 'proj-vfarm-main',
       tenant_id: this.tenantId,
       name: 'vFarm Austin HQ',
       status: 'active',
-      tenant_org_id: 'org-vfarm-austin',
+      tenant_org_id: vfarmOrgId,
       capabilities: { sms: true, voice: true },
       speaker_policy: 'allowlist',
       onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
@@ -277,7 +349,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       tenant_id: this.tenantId,
       name: 'vFarm Dallas Operations',
       status: 'active',
-      tenant_org_id: 'org-vfarm-dallas',
+      tenant_org_id: vfarmOrgId,
       capabilities: { sms: true },
       speaker_policy: 'allowlist',
       onboarding_reply: 'Welcome to vFarm Dallas Support! Contact your site manager for access.',

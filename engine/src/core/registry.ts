@@ -77,13 +77,21 @@ export class CoreRegistry {
     const vfarmAdapter = new VfarmTenantAdapter(vfarmTenant.tenant_id, buildVfarmAdapterConfigFromEnv());
     this.registerTenant(vfarmTenant, vfarmAdapter);
 
-    // Register Default Projects pulled from vFarm
+    // Register Default Projects pulled from vFarm.
+    // tenant_org_id is the real vFarm organization UUID, discovered from
+    // GET /api/v1/organizations. The previous values ('org-vfarm-austin' /
+    // 'org-vfarm-dallas') were CST placeholders that matched no vFarm org and
+    // made vFarm answer HTTP 422, so the live membership cross-check could
+    // never run (G19). Both projects roll up to the single vFarm organization;
+    // override with VFARM_TENANT_ORG_ID per environment.
+    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || '122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d';
+
     const mainProject: Project = {
       project_id: 'proj-vfarm-main',
       tenant_id: 'tenant-vfarm-01',
       name: 'vFarm Austin HQ',
       status: 'active',
-      tenant_org_id: 'org-vfarm-austin',
+      tenant_org_id: vfarmOrgId,
       capabilities: { sms: true, voice: true, web: true },
       speaker_policy: 'allowlist',
       onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
@@ -98,7 +106,7 @@ export class CoreRegistry {
       tenant_id: 'tenant-vfarm-01',
       name: 'vFarm Dallas Operations',
       status: 'active',
-      tenant_org_id: 'org-vfarm-dallas',
+      tenant_org_id: vfarmOrgId,
       capabilities: { sms: true, voice: true, web: true },
       speaker_policy: 'allowlist',
       onboarding_reply: 'Welcome to vFarm Dallas Support! Contact your site manager for access.',

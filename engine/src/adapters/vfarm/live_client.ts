@@ -11,7 +11,7 @@
 import { Logger } from '../../config/logger.js';
 import {
   OrgMemberResponseSchema,
-  BulkGrantResponseSchema,
+  normalizeFarmGrants,
   InventoryResponseSchema,
   UnitConfigResponseSchema,
   ConfigResponseSchema,
@@ -355,8 +355,8 @@ export class VfarmLiveClient {
    */
   async getUserFarmGrants(userId: string, token?: string): Promise<GrantedFarmRow[]> {
     const path = `/api/v1/users/${encodeURIComponent(userId)}/farm-grants`;
-    const parsed = await this.request(path, BulkGrantResponseSchema, this.authHeaders(token));
-    return parsed.grants;
+    const raw = await this.request(path, { parse: (d: unknown) => d }, this.authHeaders(token));
+    return normalizeFarmGrants(raw);
   }
 
   // ── Inventory (cabinet) ──────────────────────────────────────────────────

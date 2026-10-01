@@ -103,8 +103,24 @@ export class VoiceLaneService {
     const tenantId = system.tenant_id;
     const systemId = system.system_id;
 
-    // 2. Resolve caller identity
-    const identity = await IdentityResolver.resolveSenderIdentity(from_e164, system);
+    // 2. Resolve caller identity.
+    // Resolve project scope from the receiving number's service-number binding so
+    // identity goes through the same active tenant-adapter path as SMS/Web
+    // (CoreRegistry.resolveSpeaker) instead of the unscoped customers-table
+    // lookup. Twilio `To` -> binding -> tenant/project -> speaker.
+    let resolvedProjectId: string | undefined;
+    try {
+      const bindings = await DbClient.getAllServiceNumberBindings();
+      resolvedProjectId = bindings.find((b) => b.phone_e164 === to_e164)?.project_id;
+    } catch (bindErr: any) {
+      Logger.warn(`VoiceLane: could not resolve service-number binding for ${to_e164}: ${bindErr?.message}`, {
+        correlation_id, tenant_id: tenantId,
+      });
+    }
+
+    const identity = await IdentityResolver.resolveSenderIdentity(from_e164, system, {
+      projectId: resolvedProjectId,
+    });
 
     // 3. Build normalized inbound message
     const inboundMsg: InboundMessage = {

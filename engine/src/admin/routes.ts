@@ -784,8 +784,7 @@ adminRouter.post('/vfarm/login', async (req: Request, res: Response) => {
     await adapter.authenticateAdmin(adminEmail, adminPassword);
     res.status(200).json({ status: 'authenticated' });
   } catch (err: any) {
-    Logger.error(`Admin vFarm login error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'LOGIN_FAILED', message: err.message });
+    sendProxyError(res, 'login', err);
   }
 });
 
@@ -793,6 +792,10 @@ adminRouter.post('/vfarm/login', async (req: Request, res: Response) => {
  * GET /api/v1/admin/vfarm/farms
  * Discovers all accessible farms. JWT is resolved server-side:
  * adapter in-memory → VFARM_JWT env var → VFARM_FARM_KEY env var.
+ *
+ * Auto-relogin: if discoverFarms() fails with a 401/403 and
+ * VFARM_ADMIN_EMAIL + VFARM_ADMIN_PASSWORD are set, the route triggers a
+ * server-side re-authentication and retries once before giving up.
  */
 adminRouter.get('/vfarm/farms', async (req: Request, res: Response) => {
   try {
@@ -801,16 +804,40 @@ adminRouter.get('/vfarm/farms', async (req: Request, res: Response) => {
       res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
       return;
     }
-    // discoverFarms() resolves its own token from env — no client JWT needed
-    const farms = await adapter.discoverFarms();
+
+    let farms: import('../adapters/vfarm/schemas.js').FarmResponse[];
+    try {
+      // discoverFarms() already handles JWT expiry + one-shot re-auth internally.
+      farms = await adapter.discoverFarms();
+    } catch (innerErr: any) {
+      // Route-level fallback: if the adapter couldn't auto-relogin (e.g. it
+      // was the first startup and no password was cached yet), try an explicit
+      // server-side login and retry discovery once more.
+      const upstreamStatus = innerErr?.status ?? innerErr?.statusCode;
+      const adminEmail = process.env.VFARM_ADMIN_EMAIL;
+      const adminPassword = process.env.VFARM_ADMIN_PASSWORD;
+      if ((upstreamStatus === 401 || upstreamStatus === 403) && adminEmail && adminPassword) {
+        Logger.warn('Admin GET /vfarm/farms: upstream 401 — attempting server-side re-login and retry');
+        try {
+          await adapter.authenticateAdmin(adminEmail, adminPassword);
+          farms = await adapter.discoverFarms();
+        } catch (retryErr: any) {
+          Logger.error(`Admin GET /vfarm/farms re-login retry failed: ${retryErr.message}`);
+          sendProxyError(res, 'farms discovery (re-auth retry)', retryErr);
+          return;
+        }
+      } else {
+        throw innerErr; // no credentials or non-auth error — let the outer catch handle it
+      }
+    }
+
     res.status(200).json({
       farms,
       total: farms.length,
       active_farm_id: adapter.getActiveFarmId(),
     });
   } catch (err: any) {
-    Logger.error(`Admin vFarm list farms error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'DISCOVERY_FAILED', message: err.message });
+    sendProxyError(res, 'farms discovery', err);
   }
 });
 
@@ -835,8 +862,7 @@ adminRouter.post('/vfarm/tokens', async (req: Request, res: Response) => {
     await adapter.issueFarmToken(farm_id, undefined, name);
     res.status(201).json({ status: 'issued', farm_id });
   } catch (err: any) {
-    Logger.error(`Admin vFarm issue token error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'TOKEN_ISSUANCE_FAILED', message: err.message });
+    sendProxyError(res, 'token issuance', err);
   }
 });
 
@@ -860,8 +886,7 @@ adminRouter.post('/vfarm/select', async (req: Request, res: Response) => {
     const result = await adapter.switchActiveFarm(farm_id);
     res.status(200).json({ status: 'active', active_farm_id: result.farmId });
   } catch (err: any) {
-    Logger.error(`Admin vFarm select farm error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'FARM_SELECTION_FAILED', message: err.message });
+    sendProxyError(res, 'farm selection', err);
   }
 });
 
@@ -877,7 +902,7 @@ adminRouter.get('/dashboard', async (req: Request, res: Response) => {
     res.status(200).json(data);
   } catch (err: any) {
     Logger.error(`Admin dashboard error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
+    sendProxyError(res, 'dashboard', err);
   }
 });
 
@@ -892,8 +917,7 @@ adminRouter.get('/vfarm/dashboard', async (req: Request, res: Response) => {
     const data = await adapter.getDashboardData(farmId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`Admin vFarm dashboard error: ${err.message}`);
-    res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
+    sendProxyError(res, 'dashboard', err);
   }
 });
 
@@ -918,6 +942,33 @@ function getLiveClient(res: Response): import('../adapters/vfarm/live_client.js'
 }
 
 /**
+ * Send a vFarm proxy failure to the browser WITHOUT leaking the upstream status.
+ *
+ * These routes proxy third-party calls. Re-emitting vFarm's own 401/403 is wrong
+ * twice over:
+ *   - semantically, the caller's CST admin session was fine; it is the *upstream*
+ *     credential that is missing or expired;
+ *   - practically, the Admin Panel treats any 401 as "my session expired", clears
+ *     the stored token and bounces the operator to the login screen. An expired
+ *     VFARM_JWT therefore logged admins out of CST entirely (observed with an
+ *     expired JWT: GET /vfarm/organizations returned 401 and the panel lost its
+ *     session).
+ *
+ * Upstream auth failures are therefore reported as 502 with an explicit code, so
+ * the panel can show "vFarm unavailable" without touching CST admin auth.
+ */
+function sendProxyError(res: Response, label: string, err: any): void {
+  const status = err?.status;
+  const isUpstreamAuth = status === 401 || status === 403;
+  Logger.error(`vFarm ${label} proxy: ${err?.message ?? String(err)}`);
+  res.status(isUpstreamAuth ? 502 : (status || 502)).json({
+    error: isUpstreamAuth ? 'VFARM_AUTH_FAILED' : 'PROXY_ERROR',
+    upstream_status: status,
+    message: err?.message ?? String(err),
+  });
+}
+
+/**
  * GET /api/v1/admin/vfarm/health
  * Proxies GET /api/v1/health — returns { status, db, version }.
  */
@@ -928,8 +979,7 @@ adminRouter.get('/vfarm/health', async (_req: Request, res: Response) => {
     const data = await client.getApiHealth();
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm health proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'health', err);
   }
 });
 
@@ -946,8 +996,7 @@ adminRouter.get('/vfarm/summary', async (req: Request, res: Response) => {
     const data = await client.getDashboardSummary(farmId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm summary proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'summary', err);
   }
 });
 
@@ -962,8 +1011,7 @@ adminRouter.get('/vfarm/system-stats', async (_req: Request, res: Response) => {
     const data = await client.getSystemStats();
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm system stats proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'system stats', err);
   }
 });
 
@@ -980,8 +1028,7 @@ adminRouter.get('/vfarm/organizations', async (_req: Request, res: Response) => 
     const data = await client.listOrganizations(jwt || undefined);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm organizations proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'organizations', err);
   }
 });
 
@@ -1002,8 +1049,7 @@ adminRouter.get('/vfarm/layout', async (req: Request, res: Response) => {
     const data = await client.getFarmLayout(farmId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm layout proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'layout', err);
   }
 });
 
@@ -1024,8 +1070,7 @@ adminRouter.get('/vfarm/zones', async (req: Request, res: Response) => {
     const zones = await client.listFarmZones(farmId);
     res.status(200).json({ zones, total: zones.length });
   } catch (err: any) {
-    Logger.error(`vFarm zones proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'zones', err);
   }
 });
 
@@ -1054,8 +1099,7 @@ adminRouter.get('/vfarm/devices', async (req: Request, res: Response) => {
     }
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm devices proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'devices', err);
   }
 });
 
@@ -1071,8 +1115,7 @@ adminRouter.get('/vfarm/devices/:device_id', async (req: Request, res: Response)
     const data = await client.getDevice(device_id);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm device detail proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'device detail', err);
   }
 });
 
@@ -1088,8 +1131,7 @@ adminRouter.get('/vfarm/devices/:device_id/rollup', async (req: Request, res: Re
     const data = await client.getDeviceRollup(device_id);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm device rollup proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'device rollup', err);
   }
 });
 
@@ -1111,8 +1153,7 @@ adminRouter.get('/vfarm/readings/latest', async (req: Request, res: Response) =>
     const readings = await client.listLatestReadings(farmId, limit);
     res.status(200).json({ readings, total: readings.length });
   } catch (err: any) {
-    Logger.error(`vFarm readings/latest proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'readings/latest', err);
   }
 });
 
@@ -1132,8 +1173,7 @@ adminRouter.get('/vfarm/readings/sensor-latest', async (req: Request, res: Respo
     const data = await client.getLatestReading(sensorId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm sensor-latest proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'sensor-latest', err);
   }
 });
 
@@ -1154,8 +1194,7 @@ adminRouter.get('/vfarm/readings', async (req: Request, res: Response) => {
     const data = await client.getReadings(sensorId, limit);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm readings proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'readings', err);
   }
 });
 
@@ -1176,8 +1215,7 @@ adminRouter.get('/vfarm/readings/stats', async (req: Request, res: Response) => 
     const data = await client.getReadingStats(sensorId, window);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm readings/stats proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'readings/stats', err);
   }
 });
 
@@ -1198,8 +1236,7 @@ adminRouter.get('/vfarm/alerts/counts', async (req: Request, res: Response) => {
     const data = await client.getAlertCounts(farmId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm alert counts proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'alert counts', err);
   }
 });
 
@@ -1221,8 +1258,7 @@ adminRouter.get('/vfarm/alerts/open', async (req: Request, res: Response) => {
     const data = await client.listOpenAlerts(farmId, limit);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm open alerts proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'open alerts', err);
   }
 });
 
@@ -1244,8 +1280,7 @@ adminRouter.get('/vfarm/alerts/history', async (req: Request, res: Response) => 
     const data = await client.listAlertHistory(farmId, limit);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm alert history proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'alert history', err);
   }
 });
 
@@ -1266,8 +1301,7 @@ adminRouter.get('/vfarm/vision/latest', async (req: Request, res: Response) => {
     const data = await client.getLatestVisionImage(farmId);
     res.status(200).json(data);
   } catch (err: any) {
-    Logger.error(`vFarm vision proxy: ${err.message}`);
-    res.status(err.status || 502).json({ error: 'PROXY_ERROR', message: err.message });
+    sendProxyError(res, 'vision', err);
   }
 });
 

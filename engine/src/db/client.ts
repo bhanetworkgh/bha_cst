@@ -615,9 +615,8 @@ export class DbClient {
       const query = `
         INSERT INTO customers (tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, unit_id, farm_id, farm_ids)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-        ON CONFLICT (tenant_id, phone_e164) DO UPDATE SET
+        ON CONFLICT (tenant_id, project_id, phone_e164) DO UPDATE SET
           customer_ref    = EXCLUDED.customer_ref,
-          project_id      = COALESCE(EXCLUDED.project_id, customers.project_id),
           organization_id = EXCLUDED.organization_id,
           workspace_id    = EXCLUDED.workspace_id,
           role            = EXCLUDED.role,
@@ -870,10 +869,15 @@ export class DbClient {
         }
 
         if (setClauses.length > 0) {
+          // Tenant/organization scoping is the outer boundary. A supplied
+          // project narrows it STRICTLY: an admin edit scoped to project A must
+          // never mutate a row belonging to project B. Previously the predicate
+          // also matched `project_id IS NULL`, which let a project-scoped write
+          // silently land on an unscoped legacy row from another scope.
           let whereClause = `WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`;
           if (projectId) {
             params.push(projectId);
-            whereClause += ` AND (project_id = $${params.length} OR project_id IS NULL)`;
+            whereClause += ` AND project_id = $${params.length}`;
           }
 
           const query = `

@@ -36,6 +36,27 @@ export const farmGrantSchema = z.object({
 export type FarmGrant = z.infer<typeof farmGrantSchema>;
 export const farmGrantListSchema = z.array(farmGrantSchema);
 
+/**
+ * Normalize a farm-grants payload that may arrive either as a bare array or as
+ * an envelope like `{ grants: [...], total: n }`.
+ *
+ * The repository previously carried two contradictory assumptions (the http
+ * client required a bare array, the live client required the envelope). Getting
+ * this wrong is not a loud failure: `pullSpeakers` treats a farm-grants error as
+ * best-effort and keeps the last-known `farm_ids`, so farm scope would go
+ * silently stale. Accepting both shapes removes that failure mode without
+ * guessing which one vFarm actually returns.
+ */
+export function normalizeFarmGrants(raw: unknown): FarmGrant[] {
+  const direct = farmGrantListSchema.safeParse(raw);
+  if (direct.success) return direct.data;
+
+  const enveloped = BulkGrantResponseSchema.safeParse(raw);
+  if (enveloped.success) return enveloped.data.grants;
+
+  throw new Error('farm-grants response matched neither array nor { grants } shape');
+}
+
 // ── GET /api/v1/inventory/{serial_number} ───────────────────────────────────
 export const inventoryItemSchema = z.object({
   serial_number: z.string().min(1),

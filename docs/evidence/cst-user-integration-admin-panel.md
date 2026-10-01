@@ -19,6 +19,24 @@ dev server, and a direct probe of the live vFarm instance using the existing
 | 2 — engine + panel fixes | G1–G8 (join, mirroring, prune, sync scope, TTL, typecheck). New `tests/admin/admin_user_integration.test.ts`. |
 | 3 — browser validation | 23/23 Chrome checks. Found G15 (failed read shown as truth) and G16 (pre-login 401). Fixed both. |
 | 4 — live vFarm integration | Probed the real vFarm instance; found G17 (org-members needs a Bearer JWT), G18 (JWT assigned after clients built), G19 (project org ids are placeholders). All fixed or mitigated. Real vFarm users now list in the panel. New `tests/adapters/vfarm_org_members_auth.test.ts`. |
+| 5 — identity debt closed | G9 migrated (voice now resolves via the active tenant adapter), G14 dead router deleted, G10/G11 fixed against a migrated Postgres, G19 replaced with the real org UUID in code **and** migration 012. |
+| 6 — Engine pillar | Confirmed the `cst.turn` path already existed and was correct; added contract + fire-and-forget regression tests. Found and fixed an availability bug where an expired vFarm JWT logged admins out of CST. New `tests/publishers/turn_event_contract.test.ts`, `tests/identity/identity_debt.test.ts`. |
+
+---
+
+## 0. Summary of this round
+
+| Item | Outcome |
+|---|---|
+| G9 legacy identity path | **Closed** — `IdentityResolver` migrated onto the active tenant-adapter path |
+| G14 dead divergent router | **Closed** — `transport/twilio/inbound.ts` deleted, unmounted import removed |
+| G10 per-tenant uniqueness | **Closed** — stale constraint dropped via migration 012; `ON CONFLICT` corrected |
+| G11 update predicate | **Closed** — project-scoped updates now match strictly |
+| G19 placeholder org ids | **Closed** — real UUID in `registry.ts`, `adapters/vfarm/index.ts`, and migration 012 |
+| farm-grants live verification | **Partially blocked** — auth confirmed, response shape unconfirmed (expired JWT) |
+| `cst.turn` Engine path | **Verified complete**, tests added |
+| `cst.delivery` | Already present and tested; left unchanged (turn path is stable and tests are clean) |
+| Test suite | 36 files, 328 tests, green on 3 consecutive runs |
 
 ---
 
@@ -229,17 +247,17 @@ correctly show `Not in vFarm org`, because their `customer_ref` values
 | G6 | Sync did not propagate upstream removal ⇒ revoked user still listed in the Admin Panel | `adapters/vfarm/index.ts:452-455` drops it; sync only upserted | **Fixed** — prune, gated on `isLiveMode()` so an outage cannot delete rows |
 | G7 | Sync's in-memory fallback dropped `project_id` and collapsed `farm_ids` to the first entry ⇒ panel under-reported project and farm access | `routes.ts:398-404` (pre-fix) | **Fixed** |
 | G8 | Invalidate only expired the row via SQL ⇒ with no DB pool the Admin Panel kept showing “Active TTL” | `routes.ts:392-403` (pre-fix) | **Fixed** — in-memory path now writes the past TTL |
-| G9 | `IdentityResolver` uses legacy `farm_id` only, not `farm_ids` | `identity/resolver.ts:70` | **Open** — only affects the unmounted legacy router (G-path B) |
-| G10 | `DbClient.seedCustomer` upserts on `(tenant_id, phone_e164)` but migration 010 replaced that constraint with `(tenant_id, project_id, phone_e164)` | `db/client.ts:618` vs `migrations/010:155` | **Open** — latent; in-memory tests unaffected |
-| G11 | `updateCustomer` matches `AND (project_id = $3 OR project_id IS NULL)`, so a project-scoped PATCH can hit a legacy NULL-project row | `db/client.ts:876` | **Open** |
+| G9 | `IdentityResolver` read the `customers` table directly and exposed only the legacy single `farm_id` column — a **second, divergent identity source**. It was assumed dead, but it is **live on voice**: `transport/voice/voice_lane.ts:107` calls it and `voiceRouter` is mounted at `app.ts:80`. SMS/Web used the adapter path, so the two channels could disagree about who a caller is and what farms they may touch | `identity/resolver.ts:44,68-72`; `voice_lane.ts:107` | **Closed** — migrated onto `CoreRegistry.resolveSpeaker`; exposes full `farm_ids` |
+| G14 | `transport/twilio/inbound.ts` exported an `inboundRouter` that was imported at `app.ts:2` but never mounted — a duplicate SMS handler resolving tenancy from `SystemsRegistry` rather than service-number bindings, and (before this change) through the legacy resolver | `app.ts:2`, `inbound.ts:12` | **Closed** — file deleted, import removed |
+| G10 | `DbClient.seedCustomer` upserted on `(tenant_id, phone_e164)` while migration 010's constraint is `(tenant_id, project_id, phone_e164)`. Worse: migration 010 kept the old per-tenant constraint "for backwards compat", so the **same phone could not exist in two projects of one tenant** — silently, since the in-memory tests allow it | `db/client.ts:618`, `migrations/010:152-156`; verified: DB held BOTH `customers_tenant_id_phone_e164_key` and `unq_customers_tenant_project_phone` | **Closed** — migration 012 drops the stale constraint and adds a partial unique index for NULL-project rows; `ON CONFLICT` corrected. Proven against real Postgres (see §12.1) |
+| G11 | `updateCustomer` matched `AND (project_id = $3 OR project_id IS NULL)`, so an admin edit scoped to project A could mutate a row belonging to no project / another scope | `db/client.ts:876` | **Closed** — project-scoped updates match strictly (`AND project_id = $n`). Proven: a project-scoped UPDATE affected exactly 1 of 2 same-phone rows (§12.1) |
 | G12 | New vFarm org members with no phone cannot be auto-imported (upstream exposes no phone) | `schemas.ts:12-20`, `adapters/vfarm/index.ts:498-510` | **By design** — surfaced in the UI as `vFarm only` |
 | G13 | `pullSpeakers` needs `projects.tenant_org_id`; without it the live cross-check is skipped | `adapters/vfarm/index.ts:435-438` | **By design** — warns |
-| G14 | Dead router: `inboundRouter` imported in `app.ts:2`, never mounted | `app.ts:76-82` | **Open** — deliberate refactor deferred |
 | G15 | `/vfarm/customers` swallowed a failed org-members fetch and returned `status:"ok"` with an empty list, so the Admin Panel displayed "0 member(s) · live" and "CST only 3" — a failed read presented as authoritative truth | found by live browser run (real vFarm returned HTTP 422) | **Fixed** — response now carries `vfarm_source: 'live'\|'unavailable'` + `source_error`; the panel renders the failure and leaves CST provenance badges unasserted |
 | G16 | `admin.js` fired `guarded(refreshAll)` on load before the auth guard redirected an anonymous visitor, logging a 401 for `/api/v1/admin/tenants` | found by live browser run | **Fixed** — boot refresh only runs when a token is present |
 | G17 | The vFarm **organization-members endpoint rejects `X-Farm-Key` auth** and requires a Bearer JWT, but `VfarmLiveClient.getOrgMembers` never sent one ⇒ 401 for every org | proved live: farm key alone → `401 {"error":"unauthorized","detail":"Missing authentication — provide X-Farm-Key or Authorization: Bearer <token>"}`; farm key + `VFARM_JWT` → `200` | **Fixed** — `VfarmLiveClient` gained `apiToken` + `authHeaders()`; `getOrgMembers`/`getUserFarmGrants` accept a token; the adapter passes its admin JWT to the live client and keeps it fresh after `authenticateAdmin` |
 | G18 | The adapter assigned `this.adminJwt` **after** building both clients, so the token never reached them | `adapters/vfarm/index.ts:66-74` (pre-fix) | **Fixed** — JWT resolved before client construction |
-| G19 | `projects[].tenant_org_id` holds CST placeholders (`org-vfarm-austin`, `org-vfarm-dallas`), not real vFarm org ids; vFarm returns **422** for them | live: `vFarm HTTP 422 from /api/v1/organizations/org-vfarm-austin/users`; real org ids are UUIDs | **Mitigated in the UI** — the org selector now also lists organizations discovered via the existing `GET /api/v1/admin/vfarm/organizations`, and flags non-UUID project org ids as placeholders. The underlying project→org mapping is **data**, not code, and still needs correcting at source |
+| G19 | `projects[].tenant_org_id` holds CST placeholders (`org-vfarm-austin`, `org-vfarm-dallas`), not real vFarm org ids; vFarm returns **422** for them | live: `vFarm HTTP 422 from /api/v1/organizations/org-vfarm-austin/users`; real org ids are UUIDs | **Mitigated in the UI** — the org selector now also lists organizations discovered via the existing `GET /api/v1/admin/vfarm/organizations`, and flags non-UUID project org ids as placeholders. **Closed** — the real UUID `122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d` now lives in `core/registry.ts`, `adapters/vfarm/index.ts` (a second G19 site, caught by a new test) and migration 012; overridable via `VFARM_TENANT_ORG_ID`. Confirmed live in the browser (§12.1) |
 
 ---
 
@@ -265,9 +283,14 @@ No schema migration. No new API route. No vFarm API or credential invented.
 
 | File | Change | Gaps |
 |---|---|---|
-| `engine/src/admin/routes.ts` | vFarm⋈CST join fixed to `customer_ref`; `speaker_cache_expires_at`; `mirrorSpeakerToAdapter` / `unmirrorSpeakerFromAdapter` on sync/create/patch/revoke; live-mode-gated sync pruning; `project_id` + full `farm_ids` in the in-memory sync path; in-memory TTL expiry on invalidate; `vfarm_source` / `source_error` on the customers route; bearer JWT passed to the org-members call | G1, G2, G4–G8, G15, G17 |
+| `engine/src/admin/routes.ts` | vFarm⋈CST join fixed to `customer_ref`; `speaker_cache_expires_at`; `mirrorSpeakerToAdapter` / `unmirrorSpeakerFromAdapter` on sync/create/patch/revoke; live-mode-gated sync pruning; `project_id` + full `farm_ids` in the in-memory sync path; in-memory TTL expiry on invalidate; `vfarm_source` / `source_error` on the customers route; bearer JWT passed to the org-members call; `sendProxyError()` maps upstream vFarm auth failures to 502 across all 17 proxy routes | G1, G2, G4–G8, G15, G17, §12.6 |
+| `engine/src/identity/resolver.ts` | delegates to `CoreRegistry.resolveSpeaker` when a `projectId` is supplied; returns full `farm_ids`; DB path kept only as a logged fallback | G9 |
+| `engine/src/transport/voice/voice_lane.ts` | resolves the project from the receiving number's service-number binding and passes it to the resolver, so voice shares the adapter identity path | G9 |
+| `engine/src/core/registry.ts` | default `tenant_org_id` is the real vFarm org UUID (env-overridable via `VFARM_TENANT_ORG_ID`) | G19 |
+| `engine/src/db/client.ts` | `ON CONFLICT (tenant_id, project_id, phone_e164)`; project-scoped updates match `project_id` strictly | G10, G11 |
+| `engine/src/adapters/vfarm/schemas.ts` | `normalizeFarmGrants()` accepts both documented farm-grants shapes and throws only on genuinely unrecognised input | §12.3 |
 | `engine/src/adapters/types.ts` | optional `registerSpeaker?` / `removeSpeaker?` write-through hooks on `ITenantAdapter` | G4 |
-| `engine/src/adapters/vfarm/index.ts` | admin JWT resolved **before** building the HTTP clients; `apiToken` passed to the live client; token refreshed on `authenticateAdmin`; `buildHttpClient` falls back to the resolved JWT | G17, G18 |
+| `engine/src/adapters/vfarm/index.ts` | admin JWT resolved **before** building the HTTP clients; `apiToken` passed to the live client; token refreshed on `authenticateAdmin`; `buildHttpClient` falls back to the resolved JWT; the adapter's own default projects use the real org UUID | G17, G18, G19 |
 | `engine/src/adapters/vfarm/live_client.ts` | `apiToken` config + `setApiToken` / `getApiToken` / `authHeaders()`; `getOrgMembers` and `getUserFarmGrants` accept and send a bearer token; `request()` accepts extra headers and no longer requires a farm key when a bearer is present | G17, G18 |
 
 ### Admin Panel
@@ -275,22 +298,44 @@ No schema migration. No new API route. No vFarm API or credential invented.
 | File | Change |
 |---|---|
 | `web/admin.html` | new “vFarm Source of Truth” block in Tab 2 (org selector, status, metrics, member table) |
-| `web/admin.js` | `escapeAdminHtml`; `state.vfarmCustomers` / `vfarmCustomersLoaded`; `fillVfarmOrgSelect`, `refreshVfarmOrgOptions` (org discovery + placeholder flagging), `loadVfarmUsers`, `loadSpeakersTab`; provenance badges in the CST speaker table; honest `vfarm_source: 'unavailable'` rendering; mutations refresh the vFarm view; boot refresh gated on token presence |
+| `web/admin.js` | `escapeAdminHtml`; `state.vfarmCustomers` / `vfarmCustomersLoaded`; `fillVfarmOrgSelect`, `refreshVfarmOrgOptions` (org discovery + placeholder flagging), `loadVfarmUsers`, `loadSpeakersTab`; provenance badges in the CST speaker table; honest `vfarm_source: 'unavailable'` rendering; mutations refresh the vFarm view; boot refresh gated on token presence; a 401 carrying `VFARM_AUTH_FAILED`/`PROXY_ERROR` no longer clears the admin session |
 
-### Tests & docs
+### Database
 
 | File | Change |
 |---|---|
-| `tests/admin/admin_user_integration.test.ts` | new, 17 tests |
-| `tests/adapters/vfarm_org_members_auth.test.ts` | new, 7 tests |
+| `db/migrations/012_customers_project_scope_and_vfarm_org_mapping.sql` | new — drops the stale per-tenant uniqueness, adds a partial unique index for NULL-project rows, re-points `projects.tenant_org_id` at the real vFarm org UUID (overridable via the `cst.vfarm_org_id` GUC) |
+
+### Tests, config & docs
+
+| File | Change |
+|---|---|
+| `tests/identity/identity_debt.test.ts` | new, 14 tests (G9 adapter precedence + full `farm_ids` + fail-closed, G19 org mapping, farm-grants shape tolerance, G10/G11 project-scoped uniqueness and predicates) |
+| `tests/publishers/turn_event_contract.test.ts` | new, 5 tests (`cst.turn` field completeness + fire-and-forget never blocks) |
+| `tests/admin/admin_user_integration.test.ts` | 2 tests added — expired upstream vFarm credential must answer 502, not 401 |
+| `tests/adapters/vfarm_org_members_auth.test.ts` | new, 7 tests (bearer auth on org-members) |
+| `tests/adapters/vfarm_adapter_live.test.ts` | org id updated to the real UUID |
+| `tests/voice/voice_lane.test.ts` | seeds speakers through the adapter (production onboarding path), since voice is now adapter-authoritative |
+| `vitest.config.ts` | `testTimeout: 20000` — the 5 s default was below real connector cost and caused intermittent reds |
 | `docs/evidence/cst-user-integration-admin-panel.md` | this document |
+
+### Deleted
+
+| File | Reason |
+|---|---|
+| `engine/src/transport/twilio/inbound.ts` | G14 — unmounted duplicate SMS handler on a divergent identity path |
 
 ---
 
 ## 11. Tests and results
 
-`npm test` → **34 files, 307 tests, all passing.**
-`npm run typecheck` → clean (was 2 errors). `npm run build` → clean.
+`npm test` → **36 files, 328 tests, all passing** (green on 3 consecutive runs).
+`npm run typecheck` → clean. `npm run build` → clean.
+Browser (real Google Chrome) → **16/16**.
+
+New this round: `tests/identity/identity_debt.test.ts` (14),
+`tests/publishers/turn_event_contract.test.ts` (5), plus 2 in
+`tests/admin/admin_user_integration.test.ts`.
 
 Baseline before this work: 32 files, 283 tests, **1 failing** (a 5 s timeout in
 `tests/publishers/turn_publisher.test.ts`, unrelated to users — it passes now) and
@@ -429,27 +474,178 @@ Rendered org selector:
 
 ---
 
-## 12. Remaining blockers
+## 12. Verification of this round
 
-- **G9 / G14**: two identity paths still coexist. Only the adapter path
-  (`interfaces/sms`) is mounted. Consolidating on one resolver — and deleting or
-  mounting `transport/twilio/inbound.ts` — is an architectural change and was
-  deliberately left alone here.
-- **G10 / G11**: latent `DbClient` upsert/predicate mismatches against migration
-  010. They only bite against a real Postgres instance. Note the local DB is
-  currently *behind* migration 010 (see §11b), so this should be validated against
-  a migrated schema before relying on it.
-- **G12**: auto-import of vFarm users is impossible without a phone field
-  upstream. Requires a vFarm capability request, not a CST change. The panel
-  surfaces these users as `vFarm only` instead of hiding them.
-- **G19: the project→org mapping is wrong and only mitigated in the UI.** The
-  default projects still point at `org-vfarm-austin` / `org-vfarm-dallas`, which
-  no vFarm org matches, so live speaker cross-checking is skipped for them
-  (`adapters/vfarm/index.ts:435-438`) and the panel can only reach real users
-  through org discovery. Correcting `projects.tenant_org_id` to the real UUID is
-  a **data/config change** and was not invented here.
-- **Verification scope**: live vFarm was exercised for the org-members and org
-  discovery endpoints using the existing `.env` credentials. The
-  **farm-grants** endpoint was exercised only through a mocked HTTP client — its
-  live auth/response shape has not been confirmed against the real instance, and
-  `pullSpeakers` treats it as best-effort (`adapters/vfarm/index.ts:460-464`).
+### 12.1 Migrated Postgres (G10/G11)
+
+Migration `012_customers_project_scope_and_vfarm_org_mapping.sql` was applied to
+the real database. Before → after:
+
+| Constraint | Before | After |
+|---|---|---|
+| `customers_tenant_id_phone_e164_key` UNIQUE (tenant_id, phone_e164) | present | **dropped** |
+| `unq_customers_tenant_project_phone` UNIQUE (tenant_id, project_id, phone_e164) | present | present |
+| `unq_customers_tenant_phone_null_project` (partial, WHERE project_id IS NULL) | absent | **created** |
+
+`projects.tenant_org_id` for both projects is now `122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d`.
+
+Behaviour proven with real SQL inside a transaction (rolled back afterwards):
+
+- The same phone was inserted into `proj-vfarm-main` and `proj-vfarm-dallas` of
+  `tenant-vfarm-01` with independent `customer_ref`, `role` and `farm_ids` —
+  **impossible before the migration**, now works.
+- A project-scoped `UPDATE ... AND project_id = 'proj-vfarm-main'` reported
+  `UPDATE 1`, leaving the dallas row's `role` untouched (G11).
+
+### 12.2 Identity resolution (G9)
+
+`IdentityResolver.resolveSenderIdentity(from, system, { projectId })` now delegates
+to `CoreRegistry.resolveSpeaker`. Verified by test that a **conflicting** source
+loses: a `customers` row claiming `usr_from_db_table` versus an adapter entry
+claiming `usr_from_vfarm` resolve to the **adapter's** identity. Also verified:
+
+- full `farm_ids` (3 farms) exposed, where the legacy path offered one `farm_id`;
+- fail-closed: a caller present in the DB but unknown to the adapter is refused
+  (`is_known_customer: false`, `role: 'unknown'`, `permissions: []`) — no
+  DB fallback reintroduces a revoked user;
+- the unscoped DB fallback still works for callers that cannot supply a project
+  (and logs a warning that it is not the preferred path);
+- neither path auto-registers an unknown sender.
+
+`voice_lane.ts` now resolves the project from the **service-number binding** for
+the receiving number (`Twilio To → binding → tenant/project → speaker`) and passes
+it through, so voice and SMS/Web share one resolver.
+
+### 12.3 Farm-grants verification — partially blocked
+
+| Probe | Result |
+|---|---|
+| `GET /users/{id}/farm-grants` with farm key only | `401 Missing authentication — provide X-Farm-Key or Authorization: Bearer <token>` |
+| Same, with `Authorization: Bearer $VFARM_JWT` | `401 Invalid or expired token` |
+
+The second failure is **not an endpoint difference**: `VFARM_JWT` in `.env`
+expired. Decoded claims: `iat 1790249981`, `exp 1790854781` (7-day token); at
+verification time `now = 1790861831`, i.e. expired ~2 hours earlier. `org-members`
+returned `200` with that same token before expiry, and `401 Invalid or expired
+token` after — confirming the credential, not the endpoint, was the variable.
+
+So the **auth requirement is confirmed live** (bearer JWT mandatory; farm key
+rejected), but the **200 response shape could not be observed**.
+
+Rather than guess, the divergent parsers were made tolerant. The repo previously
+held two contradictory assumptions: `http_client.getUserFarmGrants` required a
+bare array (`farmGrantListSchema`) while `live_client.getUserFarmGrants` required
+`{ grants: [...] }` (`BulkGrantResponseSchema`). Because `pullSpeakers` treats a
+farm-grants failure as best-effort (`adapters/vfarm/index.ts:460-464`), a wrong
+guess is not a loud failure — farm scope would go **silently stale**.
+`normalizeFarmGrants()` now accepts either shape and throws only on genuinely
+unrecognised input (a silent empty array would be worse).
+
+### 12.4 Engine Dashboard integration (`cst.turn`)
+
+The path already existed and is wired in `engine/src/core/engine.ts:38-140`, called
+from `processEnvelope` on every outcome (refused, error, escalation, success).
+No rewrite was needed; the work was verification plus tests.
+
+Exact path:
+
+```
+channel ingress (interfaces/sms|web|voice, or transport/voice/voice_lane)
+  → CoreRegistry.resolveSpeaker            (identity, active adapter path)
+  → CoreEngine.processEnvelope             (core/engine.ts:145)
+      → IntentRouter.detectIntent          (intent)
+      → step-up / RBAC / BHARAG handling   (reply, status, reason, incident_id)
+      → CoreEngine.publishTurn             (core/engine.ts:38)
+          → build CstTurnEventV1           (contracts/events.ts, zod-validated)
+          → CstDashboardPublisher.publishFireAndForget  (publishers/dashboard.ts:104)
+              → setImmediate → publish → sendWithRetry   (dashboard.ts:145)
+```
+
+Field coverage (asserted in `tests/publishers/turn_event_contract.test.ts`):
+
+| Required | Where in the event |
+|---|---|
+| turn_id | `data.turn_id` (= `correlation_id`, i.e. the Twilio `MessageSid`) |
+| tenant / project | `tenant_id`, `project_id`, and repeated in `data` |
+| customer identity | `customer.{customer_ref, phone_e164, person_id, role, is_known, farm_ids}` |
+| channel | `channel` and `data.channel` |
+| intent | `data.intent` |
+| status | `data.status` |
+| reply | `data.reply_text` / `data.reply` |
+| reason | `data.reason` (always modelled, may be undefined) |
+| incident_id | `data.incident_id` (always modelled) |
+| duration | `data.duration_ms` and `data.duration.total_ms` |
+
+Fire-and-forget guarantees (`dashboard.ts`): `setImmediate` dispatch,
+`publishFireAndForget` returns `void`, 5 s per-attempt timeout, 3 attempts with
+exponential backoff, retry on 408/429/5xx, fail-fast on other 4xx, and it never
+throws. Tests assert `processEnvelope` still resolves when the dashboard hangs
+indefinitely, throws, or is unconfigured.
+
+`cst.delivery` already existed (`publishers/delivery.ts`, joined to the turn by
+`turn_id`/`correlation_id`, published from `transport/twilio/outbound.ts:354`).
+Since the turn path is stable and the suite is clean, it was left unchanged.
+
+### 12.5 Browser verification (real Google Chrome) — 16/16
+
+Against the dev server with the **migrated database**:
+
+- admin login → console; org selector offers **only** the real UUID
+  (`122d8fb6-f4d3-…`), with no `org-vfarm-austin` option (G19);
+- 3 speakers load from the migrated Postgres, each carrying `project_id` (G7);
+- the vFarm block honestly reports `source unavailable` with the upstream reason
+  rather than a fabricated empty-but-live list;
+- Tab 8 and tabs 1, 3, 4, 5, 6, 7 all render;
+- an expired vFarm JWT surfaces as `502 VFARM_AUTH_FAILED`, **never** as a CST 401.
+
+### 12.6 Defect found by the browser: expired upstream credential logged admins out
+
+Symptom: loading the Admin Panel bounced the operator to `/admin/login` and
+cleared the stored token, intermittently.
+
+Cause: the vFarm proxy routes re-emitted the **upstream** status —
+`res.status(err.status || 502)` — so vFarm's own `401` reached the browser as a
+CST `401`. `web/admin.js` treats any 401 as "my CST session expired", removes
+`cst_admin_token` and redirects. An expired `VFARM_JWT` therefore ended CST admin
+sessions (17 proxy routes affected).
+
+Fix: `sendProxyError()` maps upstream auth failures to `502` with
+`error: 'VFARM_AUTH_FAILED'` and `upstream_status: 401`, preserving the detail
+while keeping CST admin auth independent of vFarm credentials. Applied to all
+17 proxy routes. Defence in depth in `web/admin.js`: a 401 whose body is
+`VFARM_AUTH_FAILED`/`PROXY_ERROR` no longer clears the session. Genuinely invalid
+CST sessions still get 401.
+
+### 12.7 Test-suite flakiness fixed
+
+`tests/publishers/turn_publisher.test.ts` intermittently failed on a 5 s timeout —
+the same flake present before this work began. Root cause: a single
+`CoreEngine.processEnvelope` costs ~2.2 s of real connector work (measured), and
+**no test in that file had a timeout**, so under parallel execution some exceeded
+the 5 s default. Rather than patch individual tests, `vitest.config.ts` now sets
+`testTimeout: 20000`; genuine hangs remain caught because the fire-and-forget
+tests assert their own explicit ceiling.
+
+## 13. Remaining blockers
+
+- **`VFARM_JWT` has expired.** Live vFarm verification (org-members, farm-grants,
+  farms) cannot be completed until a fresh admin JWT is issued. It is a 7-day
+  token, so this recurs weekly and should move to a refresh/rotation path rather
+  than a static `.env` value. Not invented or worked around here.
+- **farm-grants 200 response shape unconfirmed live.** Auth is confirmed; the
+  payload shape is handled tolerantly (`normalizeFarmGrants`) but has not been
+  observed against the real instance.
+- **Voice authorization semantics changed, deliberately.** Voice identity is now
+  adapter-authoritative, so a `customers` row that exists without a matching
+  adapter entry no longer authorizes a caller. All production writes go through
+  the admin routes, which mirror into the adapter, but a row inserted directly
+  into Postgres will not be honored until the next sync/onboarding. This is
+  secure-by-default; it is a real operational change worth knowing about.
+- **`admin.auth` is bypassed in tests.** `requireAdminAuth` returns early when
+  `NODE_ENV === 'test'` (`engine/src/admin/auth.ts:183`), so the admin integration
+  tests run unauthenticated and the negative auth case cannot be asserted in that
+  harness.
+- **Pre-existing, unrelated:** the outbound queue worker logs
+  `Postgres Error: column "next_retry_at" does not exist` every 5 s. No migration
+  creates that column. Out of scope for this work, but it means the DB-backed
+  outbound path is broken until fixed.

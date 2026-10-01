@@ -1,5 +1,4 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
-import { inboundRouter } from './transport/twilio/inbound.js';
 import { smsInterfaceRouter } from './interfaces/sms/index.js';
 import { outboundRouter } from './transport/twilio/outbound.js';
 import { voiceRouter } from './transport/voice/voice_router.js';
