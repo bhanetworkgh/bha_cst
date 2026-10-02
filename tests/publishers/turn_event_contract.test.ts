@@ -11,6 +11,7 @@ import { CstDashboardPublisher } from '../../engine/src/publishers/dashboard.js'
 import type { CstTurnEventV1 } from '../../engine/src/contracts/index.js';
 import type { MessageEnvelope, EnvelopeResponse } from '../../engine/src/core/envelope.js';
 import type { SpeakerIdentity } from '../../engine/src/core/types.js';
+import { REQUIRED_TURN_STATUSES, isRequiredTurnStatus } from '../../engine/src/contracts/index.js';
 
 const TENANT = 'tenant-cst-turn';
 const PROJECT = 'proj-cst-turn';
@@ -112,6 +113,27 @@ describe('cst.turn — required field completeness', () => {
     expect(ev.data.text).toBe('what is my farm status');
     expect(ev.data.reply_text).toBeDefined();
 
+    // Required dashboard contract: the status must be one of the five
+    // documented values, never an internal CoreEngine lifecycle name.
+    expect(REQUIRED_TURN_STATUSES).toEqual([
+      'ok',
+      'refused',
+      'step_up_required',
+      'onboarding',
+      'error',
+    ]);
+    expect(isRequiredTurnStatus(ev.data.status)).toBe(true);
+    // Regression: internal names that used to leak verbatim.
+    for (const internal of ['completed', 'step_up', 'failed', 'dropped', 'processing', 'synthesized']) {
+      expect(ev.data.status).not.toBe(internal);
+    }
+
+    // Explicit required-field aliases (event_type / message / occurred_at).
+    expect(ev.data.event_type).toBe('cst.turn');
+    expect(ev.data.message).toBe('what is my farm status');
+    expect(typeof ev.data.occurred_at).toBe('string');
+    expect(ev.time).toBe(ev.data.occurred_at);
+
     // duration
     expect(typeof ev.data.duration_ms).toBe('number');
     expect(ev.data.duration_ms).toBeGreaterThanOrEqual(0);
@@ -131,7 +153,8 @@ describe('cst.turn — required field completeness', () => {
       expect(ev.data.reason).toBe(res.reason);
       expect(ev.metadata?.reason ?? ev.data.reason).toBeTruthy();
     }
-    expect(ev.data.status).toMatch(/answered|refused|escalated|error|completed/i);
+    // Only the required contract statuses may ever be published.
+    expect(isRequiredTurnStatus(ev.data.status)).toBe(true);
   }, 30_000);
 });
 

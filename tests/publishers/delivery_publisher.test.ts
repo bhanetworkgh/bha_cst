@@ -328,10 +328,38 @@ describe('Task 5 — cst.delivery: Delivery Event Publishing', () => {
     });
   });
 
+  // ─── Refused publishes must not consume monotonic state ──────────────────────
+
+  describe('Refusal side effects', () => {
+    it('a refused empty-project_id publish does not record the monotonic rank', () => {
+      // Regression: if the empty-project guard ran AFTER the rank was recorded,
+      // the refused attempt would burn the 'sent' slot for this SID and the
+      // legitimate follow-up below would be silently dropped as a duplicate —
+      // i.e. a real delivery event would vanish from the dashboard.
+      const sid = 'SM_empty_project_rank';
+
+      publishDelivery({ ...makeParams('sent', sid), projectId: '   ' });
+      expect(capturedEvents).toHaveLength(0);
+      expect(isMonotonicAdvance(sid, 'sent')).toBe(true);
+
+      publishDelivery(makeParams('sent', sid));
+      expect(capturedEvents).toHaveLength(1);
+      expect(capturedEvents[0].data.status).toBe('sent');
+    });
+
+    it('a refused empty-project_id publish does not block a later delivered event', () => {
+      const sid = 'SM_empty_project_delivered';
+      publishDelivery({ ...makeParams('delivered', sid), projectId: '' });
+      expect(capturedEvents).toHaveLength(0);
+      publishDelivery(makeParams('delivered', sid));
+      expect(capturedEvents).toHaveLength(1);
+      expect(capturedEvents[0].project_id).toBe('proj-delivery-test');
+    });
+  });
+
   // ─── Fire-and-forget guarantee ───────────────────────────────────────────────
 
-  describe('Fire-and-forget guarantee', () => {
-    it('publishDelivery returns undefined synchronously (no promise block)', () => {
+  describe('Fire-and-forget guarantee', () => {    it('publishDelivery returns undefined synchronously (no promise block)', () => {
       const result = publishDelivery(makeParams('sent', 'SM_sync_test'));
       expect(result).toBeUndefined();
     });

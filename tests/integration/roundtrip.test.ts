@@ -61,12 +61,18 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     // 4. Verify message transcript stored
     expect(DbClient.getTranscriptCount()).toBeGreaterThanOrEqual(1);
 
-    // 5. Verify IntentRouter reply was dispatched via outbound worker.
-// Only BHARAG RAG connector is active — reply includes knowledge response.
+// 5. Verify IntentRouter reply was dispatched via outbound worker.
+    // The roundtrip completes regardless of whether the intent could be
+    // answered: "How is Bay 4 doing today?" is a status intent, and the caller
+    // has no vFarm-verified unit (vFarm does not expose a unit id on
+    // org-member / farm-grant records), so the router refuses rather than
+    // substituting the farm id where a unit id belongs. The refusal still
+    // reaches Twilio, which is what this test verifies.
     expect(outboundCall).not.toBeNull();
     const sent = outboundCall as SendSmsParams | null;
     expect(sent?.to).toBe(knownSender);
-    // "How is Bay 4 doing today?" triggers 'status' intent → returns BHARAG knowledge
-    expect(sent?.body).toContain('BHARAG Knowledge');
+    expect(sent?.body).toContain('not linked to an active vFarm unit');
+    // And it must never be answered with fabricated telemetry about Bay 4.
+    expect(sent?.body).not.toContain('BHARAG Knowledge: Bay 4');
   });
 });

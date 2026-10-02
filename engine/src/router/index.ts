@@ -76,7 +76,10 @@ export class IntentRouter {
     const onboardingReply = systemConfig?.onboarding_reply ?? 'Welcome to vFarm Support! Contact our onboarding team to link your phone number to your farm.';
 
     const orgId = identity.organization_id || identity.tenant_id;
-    const wsId = identity.workspace_id || 'ws-vfarm-main';
+    // The workspace is the project scope. No hardcoded legacy workspace id:
+    // an unbound caller is stamped with the tenant id rather than a
+    // platform-wide constant that would blur project boundaries.
+    const wsId = identity.workspace_id || identity.project_id || orgId;
 
     // Create or fetch conversation record scoped to Organization and Workspace
     const { conversation_id } = await DbClient.getOrCreateConversation(
@@ -268,7 +271,10 @@ export class IntentRouter {
       );
     }
 
-    // BHARAG Incidents Connector (escalate intent)
+    // BHARAG Incidents Connector (escalate intent).
+    // Integrity: a failed create never yields an incident id — the customer is
+    // told the truth and the failure is logged with commercial impact.
+    let incidentId: string | undefined;
     if (intent === 'escalate') {
       const incidentRes = await BharagIncidentsConnector.fileIncident({
         customerRef:    identity.customer_ref,
@@ -278,7 +284,27 @@ export class IntentRouter {
         priority:       'high',
         unitContext:    verifiedUnitContext,
       });
-      Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversation_id}`);
+      if (incidentRes.created && incidentRes.incident_id) {
+        incidentId = incidentRes.incident_id;
+        Logger.info(`Incident filed: ${incidentId} for conversation ${conversation_id}`);
+      } else {
+        Logger.audit({
+          timestamp:     new Date().toISOString(),
+          tenant_id:     orgId,
+          actor:         identity.customer_ref,
+          role:          identity.role,
+          entry_point:   'webhook',
+          tool_or_route: 'IntentRouter.routeAndHandle()',
+          outcome:       'error',
+          reason:        `Escalation NOT ticketed — BHARAG incident creation failed: ${incidentRes.error || 'unavailable'}`,
+          correlation_id: msg.correlation_id,
+          commercial_impact:
+            'Customer asked for help and no incident was created. No one is tracking this escalation; support must be contacted directly.',
+        });
+        replyBody =
+          'I could not open a support ticket for this escalation because our incident system is unavailable. '
+          + 'Please contact vFarm support directly so a specialist can follow up.';
+      }
     }
 
     // Media Server Connector (images intent)

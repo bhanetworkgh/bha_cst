@@ -23,8 +23,8 @@ const system: SystemConfig = {
 };
 
 /** Live-mode adapter whose org contains `customer_ref`s we choose. */
-function makeLiveAdapter(members: string[]) {
-  const mockFetch = vi.fn(async (url: string) => {
+function makeLiveAdapter(members: string[], farmGrants: Record<string, string[]> = {}) {
+  const mockFetch = vi.fn(async (url: string): Promise<any> => {
     if (url.includes('/organizations/')) {
       return {
         ok: true,
@@ -41,7 +41,8 @@ function makeLiveAdapter(members: string[]) {
       };
     }
     if (url.includes('/farm-grants')) {
-      return { ok: true, status: 200, json: async () => [], text: async () => '' };
+      const userId = decodeURIComponent(url.split('/users/')[1]?.split('/')[0] || '');
+      return { ok: true, status: 200, json: async () => (farmGrants[userId] ?? []).map((farm_id) => ({ farm_id })), text: async () => '' };
     }
     throw new Error(`Unmocked: ${url}`);
   });
@@ -74,7 +75,7 @@ describe('G9 — IdentityResolver uses the active tenant-adapter path', () => {
   it('resolves through CoreRegistry (vFarm adapter), not the customers table', async () => {
     CoreRegistry.registerTenant(
       { tenant_id: TENANT_ID, name: 't', status: 'active', adapter_type: 'vfarm', created_at: new Date().toISOString() },
-      makeLiveAdapter(['usr_from_vfarm'])
+      makeLiveAdapter(['usr_from_vfarm'], { usr_from_vfarm: ['farm_live'] })
     );
     // Conflicting sources: the DB row and the adapter disagree on who this phone
     // is. Resolution must come from the adapter (the active vFarm path).
@@ -110,7 +111,7 @@ describe('G9 — IdentityResolver uses the active tenant-adapter path', () => {
   it('reports the full farm_ids array, not just the legacy single farm_id', async () => {
     CoreRegistry.registerTenant(
       { tenant_id: TENANT_ID, name: 't', status: 'active', adapter_type: 'vfarm', created_at: new Date().toISOString() },
-      makeLiveAdapter(['usr_multi'])
+      makeLiveAdapter(['usr_multi'], { usr_multi: ['farm_1', 'farm_2', 'farm_3'] })
     );
     const adapter = CoreRegistry.getAdapter(TENANT_ID);
     adapter!.registerSpeaker!(PROJECT_A, {
@@ -148,12 +149,31 @@ describe('G9 — IdentityResolver uses the active tenant-adapter path', () => {
     expect(identity.customer_ref).toMatch(/^opaque_unresolved_/);
   });
 
-  it('keeps the unscoped DB fallback working when no project is supplied (and warns)', async () => {
+  it('refuses rather than falling back to the unscoped DB row when no project is supplied', async () => {
+    // +15551110000 exists ONLY as a legacy `customers` row ('usr_in_db_only',
+    // tech). With no project there is no service_number_binding, so there is no
+    // tenancy chain and the resolver must not fall back to the unscoped table.
     const identity = await IdentityResolver.resolveSenderIdentity('+15551110000', system);
 
-    expect(identity.is_known_customer).toBe(true);
+    expect(identity.is_known_customer).toBe(false);
+    expect(identity.role).not.toBe('tech');
+    expect(identity.permissions).toEqual([]);
+    expect(identity.unit_context).toBeUndefined();
+    expect(identity.customer_ref).toMatch(/^opaque_unresolved_/);
+  });
+
+  it('the explicit unscoped-lookup opt-in correlates the caller but grants nothing', async () => {
+    const identity = await IdentityResolver.resolveSenderIdentity('+15551110000', system, {
+      allowUnscopedLookup: true,
+    });
+
+    // Correlatable for audit joins...
     expect(identity.customer_ref).toBe('usr_in_db_only');
-    expect(identity.role).toBe('tech');
+    // ...but never authorizing.
+    expect(identity.is_known_customer).toBe(false);
+    expect(identity.role).not.toBe('tech');
+    expect(identity.permissions).toEqual([]);
+    expect(identity.unit_context).toBeUndefined();
   });
 
   it('never auto-registers an unknown sender on either path', async () => {
@@ -203,7 +223,7 @@ describe('G19 — project → real vFarm organization mapping', () => {
   it('runs the live org cross-check instead of skipping it', async () => {
     // pullSpeakers only performs the live membership check when tenant_org_id is
     // a usable value. Assert the code path is reached with the real UUID.
-    const mockFetch = vi.fn(async (url: string) => {
+    const mockFetch = vi.fn(async (url: string): Promise<any> => {
       if (url.includes('/organizations/')) {
         return {
           ok: true,

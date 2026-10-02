@@ -95,22 +95,30 @@ export class BharagRagConnector {
       });
     }
 
-    // Fallback domain knowledge response when cluster is unavailable or lacks sufficient context
-    const qLower = question.toLowerCase();
+    // ── Degraded fallback ──────────────────────────────────────────────────
+    // BHARAG is unavailable or had no answer. We MUST NOT present canned text
+    // as though BHARAG produced it (docs/degraded-state-spec-v0.1.md §3: no
+    // synthetic values presented as authoritative). These strings are CST's own
+    // static operator guidance, carry no farm-specific specification, and say so
+    // explicitly; anything farm- or unit-specific is deferred to support.
+    const prefix =
+      'vFarm support (CST general guidance — the BHARAG knowledge base is unavailable, so this is not a verified answer for your site): ';
+
+    const qLower = (question || '').toLowerCase();
     if (qLower.includes('filter') || qLower.includes('clean')) {
-      return 'BHARAG Knowledge: To clean the vFarm nutrient filter, shut off intake valve B, unthread filter casing, rinse mesh under warm water, and re-tighten to 5 Nm.';
+      return `${prefix}filter cleaning procedures vary between installations, so please confirm the procedure for your site with your vFarm manual or a support specialist before servicing the filter.`;
     }
     if (qLower.includes('ph') || qLower.includes('balance')) {
-      return 'BHARAG Knowledge: Ideal hydroponic pH is 5.8 - 6.5. Use pH Down (diluted phosphoric acid) if pH exceeds 6.8.';
+      return `${prefix}target pH depends on the crop and growth stage in your deployment, so please confirm the target range for your site with your vFarm manual or a support specialist before dosing.`;
     }
     if (qLower.includes('light') || qLower.includes('cycle')) {
-      return 'BHARAG Knowledge: Standard LED lighting cycle is 18 hours ON / 6 hours OFF for vegetative growth stage.';
+      return `${prefix}lighting cycles are configured per installation, so please confirm the photoperiod for your site with your vFarm manual or a support specialist before changing it.`;
     }
     if (qLower.includes('irrigation') || qLower.includes('water')) {
-      return 'BHARAG Knowledge: Irrigation rules vary by crop type and growth stage. Generally, maintain consistent moisture levels without waterlogging. Check specific crop guidelines in your vFarm documentation.';
+      return `${prefix}irrigation rules vary by crop type and growth stage. Please consult your site-specific vFarm documentation or contact support for the values that apply to your installation.`;
     }
 
-    return `BHARAG Knowledge: We received your query regarding "${question}". For detailed operational specifications, please consult your vFarm user manual or contact support for direct assistance.`;
+    return `${prefix}please consult your vFarm user manual or contact support for direct assistance with "${question}".`;
   }
 }
 

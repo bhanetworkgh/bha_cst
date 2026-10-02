@@ -4,7 +4,7 @@ import { Logger } from '../../config/logger.js';
 import { VfarmHttpClient, VfarmApiError } from './http_client.js';
 import { VfarmLiveClient } from './live_client.js';
 import { assertSpeakerFarmAccess, VfarmAuthorizationError } from './authorization.js';
-import { CONFIG_HASH_RE, type FarmResponse } from './schemas.js';
+import { CONFIG_HASH_RE, type FarmResponse, type OrgResponse } from './schemas.js';
 
 export { VfarmAuthorizationError, assertSpeakerFarmAccess } from './authorization.js';
 
@@ -123,8 +123,63 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return this.discoveredFarms.map((f: any) => String(f.farm_id || f.id || ''));
   }
 
+  /**
+   * The bearer token to use for the next upstream call, WITHOUT acquiring one.
+   *
+   * Synchronous by design so callers that only inspect state keep working. Code
+   * that is about to make a live request must call `ensureAdminToken()` first —
+   * that is the method that prefers a freshly acquired credential over the
+   * static env token.
+   */
   public getAdminJwt(): string | null {
     return this.adminJwt || process.env.VFARM_API_JWT || process.env.VFARM_JWT || null;
+  }
+
+  /**
+   * True when the adapter can obtain a token on its own, i.e. it does not have
+   * to rely on an operator pasting a long-lived JWT into the environment.
+   *
+   * vFarm exposes `POST /api/v1/auth/login` but NO refresh endpoint, so
+   * "acquire on its own" necessarily means "log in with credentials again".
+   */
+  public static hasAdminCredentials(): boolean {
+    return Boolean(process.env.VFARM_ADMIN_EMAIL && process.env.VFARM_ADMIN_PASSWORD);
+  }
+
+  /**
+   * Return a usable admin token, acquiring or refreshing it when needed.
+   *
+   * Precedence:
+   *   1. A cached token that is not expired.
+   *   2. `POST /api/v1/auth/login` with VFARM_ADMIN_EMAIL / VFARM_ADMIN_PASSWORD.
+   *   3. The static `VFARM_API_JWT` / `VFARM_JWT`, only as a last resort.
+   *
+   * Step 2 is what removes the operational dependency on a hand-maintained
+   * 7-day JWT: the adapter re-authenticates itself instead of requiring someone
+   * to paste a new token into `.env` every week. Step 3 is kept so an
+   * environment with no admin credentials at all still works, and so the
+   * upstream's own 401 remains the authority when a token really is rejected.
+   *
+   * Never throws: on failure it falls back and lets the upstream decide.
+   */
+  public async ensureAdminToken(): Promise<string | null> {
+    const current = this.getAdminJwt();
+
+    // Already usable.
+    if (current && !VfarmTenantAdapter.jwtIsExpired(current)) {
+      return current;
+    }
+
+    if (current) {
+      Logger.warn('VfarmTenantAdapter: stored admin JWT is expired — re-authenticating');
+    }
+
+    // Credentials beat a static token, including a non-expired one, only when we
+    // actually have to re-authenticate; a valid token is not worth re-logging for.
+    const fresh = await this.tryRelogin();
+    if (fresh) return fresh;
+
+    return current;
   }
 
   public async authenticateAdmin(email: string, password: string): Promise<string> {
@@ -183,8 +238,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   public async discoverFarms(jwt?: string): Promise<FarmResponse[]> {
     if (!this.liveClient) return [];
 
-    // Resolve token, refreshing proactively when it is already expired.
-    let token = jwt || this.getAdminJwt() || undefined;
+    // Resolve token, acquiring a fresh one when the stored token is expired.
+    let token = jwt || (await this.ensureAdminToken()) || undefined;
     if (token && VfarmTenantAdapter.jwtIsExpired(token)) {
       Logger.warn('VfarmTenantAdapter: stored JWT is expired — attempting auto-relogin before farm discovery');
       const fresh = await this.tryRelogin();
@@ -222,7 +277,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (!this.liveClient) {
       throw new Error('vFarm live client not configured');
     }
-    const token = jwt || this.getAdminJwt();
+    const token = jwt || (await this.ensureAdminToken());
     if (!token) {
       throw new Error('JWT token is required to issue farm token');
     }
@@ -257,7 +312,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // Fetch farm info, devices, and health in parallel for a composite view.
     // We never pass errors up raw — instead we degrade gracefully so the UI
     // can still render whatever data is available.
-    const farmListPromise = this.liveClient.listFarms(this.getAdminJwt() || undefined)
+    const adminToken = await this.ensureAdminToken();
+    const farmListPromise = this.liveClient.listFarms(adminToken || undefined)
       .catch(() => ({ farms: [] as import('./schemas.js').FarmResponse[], total: 0 }));
 
     const devicesPromise = targetFarmId
@@ -468,27 +524,157 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return Array.from(next.values());
   }
 
+  /**
+   * Stable CST project id for a vFarm organization.
+   * `projects.tenant_org_id` holds the REAL vFarm organization UUID (vFarm org
+   * ids are UUIDs and it answers 422 for CST placeholders), so a project must
+   * keep pointing at the same CST id across syncs. We therefore key on the
+   * organization id itself, and reuse the existing CST project_id when one is
+   * already mapped to that org so renames upstream never orphan the project.
+   */
+  private projectIdForOrg(orgId: string, orgName: string): string {
+    for (const proj of this.projectsMap.values()) {
+      if (proj.tenant_org_id === orgId) return proj.project_id;
+    }
+    const slug = (orgName || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32);
+    return `proj-vfarm-${slug || 'org'}`;
+  }
+
+  /**
+   * Real vFarm organization -> CST project synchronization.
+   *
+   * Uses only endpoints already present in the verified vFarm OpenAPI contract
+   * (`GET /api/v1/organizations`, `VfarmLiveClient.listOrganizations`). No
+   * endpoint is invented. In local mode (no baseUrl configured) there is nothing
+   * to pull and the CST/admin-configured projects are returned unchanged.
+   *
+   * vFarm organizations are the authoritative tenancy boundary: `tenant_org_id`
+   * is set from the real org UUID on every synced project, and the org's
+   * name/is_active drive the CST project name/status.
+   */
   async pullProjects(tenantId: string): Promise<Project[]> {
     if (this.config.simulateDegraded) {
       throw new Error('vFarm Adapter API unavailable (degraded state)');
     }
     if (tenantId !== this.tenantId) return [];
-    // NOTE: the verified vFarm OpenAPI contract exposes no "list organizations"
-    // endpoint, so CST projects (which map 1:1 to vFarm orgs via
-    // `tenant_org_id`) remain CST/admin-configured rather than pulled live.
-    return Array.from(this.projectsMap.values());
+
+    if (!this.liveClient) {
+      // Local/dev mode: no upstream to sync from. CST/admin-configured projects
+      // remain the projection (pre-existing behavior, no live calls).
+      return Array.from(this.projectsMap.values());
+    }
+
+    let organizations: OrgResponse[];
+    try {
+      const list = await this.liveClient.listOrganizations((await this.ensureAdminToken()) || undefined);
+      organizations = list.organizations || [];
+    } catch (err: any) {
+      // Fail closed: an org list we could not read must never be replaced with
+      // an empty projection (that would drop every tenant_org_id mapping).
+      Logger.warn(`vFarm pullProjects: organization sync unavailable for tenant ${tenantId}: ${err?.message}`);
+      throw err;
+    }
+
+    const now = new Date().toISOString();
+    const synced: Project[] = [];
+    for (const org of organizations) {
+      const orgId = (org.id || '').trim();
+      if (!orgId) continue;
+
+      const projectId = this.projectIdForOrg(orgId, org.name || org.slug || '');
+      const existing = this.projectsMap.get(projectId);
+
+      const project: Project = {
+        ...(existing || {}),
+        project_id: projectId,
+        tenant_id: this.tenantId,
+        // Authoritative vFarm organization id — never a CST placeholder.
+        tenant_org_id: orgId,
+        name: org.name || existing?.name || projectId,
+        status: org.is_active === false ? 'suspended' : 'active',
+        capabilities: existing?.capabilities ?? { sms: true, voice: true },
+        speaker_policy: existing?.speaker_policy ?? 'allowlist',
+        onboarding_reply: existing?.onboarding_reply,
+        elevenlabs_voice_id: existing?.elevenlabs_voice_id,
+        elevenlabs_model_id: existing?.elevenlabs_model_id,
+        voice_enabled: existing?.voice_enabled,
+        synced_at: now,
+      };
+
+      this.projectsMap.set(projectId, project);
+      synced.push(project);
+    }
+
+    Logger.info(
+      `vFarm pullProjects: synced ${synced.length} vFarm organization(s) -> CST projects for tenant ${tenantId}`
+    );
+    return synced;
   }
 
+  /**
+   * Real vFarm farm -> CST project resource-scope synchronization.
+   *
+   * Uses `GET /api/v1/farms?org_id={org_id}` (`VfarmLiveClient.listOrgFarms`) —
+   * an endpoint already present in the verified contract. The project's
+   * `tenant_org_id` supplies the authoritative organization filter; nothing is
+   * inferred from CST-side project naming.
+   *
+   * Farm scopes are only replaced on a successful read. If the call fails the
+   * previously-known scopes are kept (they remain advisory metadata) and the
+   * caller is warned — farm *authorization* never relies on this projection,
+   * it always comes from the live per-user grant lookup in resolveSpeaker().
+   */
   async pullResourceScopes(tenantId: string, projectId: string): Promise<ResourceScope[]> {
     if (this.config.simulateDegraded) {
       throw new Error('vFarm Adapter API unavailable (degraded state)');
     }
     if (tenantId !== this.tenantId) return [];
-    // NOTE: no verified "list farms for an org" endpoint exists upstream, so
-    // farm resource scopes remain CST/admin-configured. Farm *authorization*
-    // for a specific cabinet is still checked live against the authoritative
-    // vFarm inventory record — see resolveCabinetConfig.
-    return this.resourceScopesMap.get(projectId) || [];
+
+    const project = this.projectsMap.get(projectId);
+
+    if (!this.liveClient || !project?.tenant_org_id) {
+      return this.resourceScopesMap.get(projectId) || [];
+    }
+
+    let farms: FarmResponse[];
+    try {
+      const list = await this.liveClient.listOrgFarms(
+        project.tenant_org_id,
+        (await this.ensureAdminToken()) || undefined
+      );
+      farms = list.farms || [];
+    } catch (err: any) {
+      Logger.warn(
+        `vFarm pullResourceScopes: farm sync unavailable for project ${projectId} (org ${project.tenant_org_id}): ${err?.message}`
+      );
+      return this.resourceScopesMap.get(projectId) || [];
+    }
+
+    const scopes: ResourceScope[] = farms
+      .map((f) => ({
+        id: (f.id || '').trim(),
+        name: f.name || undefined,
+        type: 'farm',
+        metadata: {
+          ...(f.code ? { code: f.code } : {}),
+          ...(f.is_active !== undefined ? { is_active: f.is_active } : {}),
+          org_id: project.tenant_org_id,
+        },
+      }))
+      .filter((s) => s.id.length > 0);
+
+    if (scopes.length > 0) {
+      this.resourceScopesMap.set(projectId, scopes);
+    }
+
+    Logger.info(
+      `vFarm pullResourceScopes: synced ${scopes.length} farm scope(s) for project ${projectId} (org ${project.tenant_org_id})`
+    );
+    return scopes;
   }
 
   /**
@@ -538,12 +724,16 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       let farmIds = speaker.farm_ids;
       try {
         const grants = await this.httpClient.getUserFarmGrants(speaker.person_id);
-        const grantedFarmIds = grants.map((g) => g.farm_id).filter(Boolean);
-        if (grantedFarmIds.length > 0) {
-          farmIds = grantedFarmIds;
-        }
+        // Authoritative grant list wins outright, including when it is empty:
+        // an empty list upstream means "no farms", which is different from "we
+        // could not ask".
+        farmIds = grants.map((g) => g.farm_id).filter(Boolean);
       } catch (err: any) {
-        Logger.warn(`vFarm pullSpeakers: farm-grants check unavailable for ${speaker.person_id}, keeping locally-recorded farm scope: ${err?.message}`);
+        // Fail closed: the grant lookup is the authority on farm scope. When it
+        // is unavailable we must NOT reuse the stale locally-recorded farm_ids
+        // as authorization (they may have been revoked upstream).
+        Logger.warn(`vFarm pullSpeakers: farm-grants check unavailable for ${speaker.person_id}, dropping farm scope (fail closed): ${err?.message}`);
+        farmIds = [];
       }
       result.push({
         ...speaker,
@@ -635,13 +825,29 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
         try {
           const grants = await this.httpClient.getUserFarmGrants(speaker.person_id);
-          const grantedFarmIds = grants.map((g) => g.farm_id).filter(Boolean);
-          if (grantedFarmIds.length > 0) farmIds = grantedFarmIds;
+          // Authoritative grant list wins outright, including when empty.
+          farmIds = grants.map((g) => g.farm_id).filter(Boolean);
         } catch (err: any) {
-          // Farm-grants endpoint schema/availability is best-effort (docs
-          // handoff §8) — keep the last known-good farm scope rather than
-          // failing the whole resolution over this one unverified endpoint.
-          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${speaker.person_id}: ${err?.message}`);
+          // Farm-grants IS the authority on farm scope (docs handoff §8). When
+          // it is unavailable we fail CLOSED for farm-specific data rather than
+          // reusing the stale locally-recorded farm_ids, which may already have
+          // been revoked upstream. Identity itself stays resolved (org
+          // membership was verified above) — only the farm scope is empty, so
+          // CoreEngine's farm-scope gate refuses status/images with zero farm
+          // data instead of leaking another farm's telemetry.
+          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${speaker.person_id}; failing closed with zero farm scope: ${err?.message}`);
+          Logger.infra({
+            message: `vFarm farm-grant lookup unavailable for ${speaker.person_id} (project ${params.projectId})`,
+            commercial_impact:
+              'Farm-specific answers (status, images) are refused for this caller until the grant lookup recovers. Non-farm knowledge answers still work.',
+            meta: {
+              tenant_id: params.tenantId,
+              project_id: params.projectId,
+              person_id: speaker.person_id,
+              error: err?.message,
+            },
+          });
+          farmIds = [];
         }
       }
     }
@@ -667,9 +873,15 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       role,
       permissions,
       farm_ids: farmIds,
-      unit_context: {
-        farm_id: farmIds[0],
-        unit_id: 'unit_bay_04',
+            unit_context: {
+        // farm_id is vFarm-authoritative (first entry of the live grant list).
+        // unit_id is deliberately ABSENT: vFarm exposes no unit identifier on
+        // the org member / farm-grant records this path reads, so any value
+        // here would be invented. It used to be hardcoded to 'unit_bay_04',
+        // which core/engine.ts forwarded to vFarm and BHARAG as though it were
+        // real — producing answers about a unit that does not exist. Consumers
+        // already treat a missing unit as unbound.
+        ...(farmIds[0] ? { farm_id: farmIds[0] } : {}),
         role,
       },
     };

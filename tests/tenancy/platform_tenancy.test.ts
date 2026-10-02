@@ -67,7 +67,15 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
     const outMessages = DbClient.getAllMessagesOut();
     const austinReply = outMessages.find((m) => m.to_e164 === '+923082113844');
     expect(austinReply).toBeDefined();
-    expect(austinReply?.body).toContain('farm_austin_main');
+    // vFarm exposes no unit identifier on the org-member / farm-grant records,
+    // so the speaker has a verified farm but no verified unit. A status query
+    // must therefore be REFUSED rather than answered by substituting the farm id
+    // where a unit id belongs (which previously produced telemetry for a unit
+    // that does not exist).
+    expect(austinReply?.body).toContain('not linked to an active vFarm unit');
+    // The isolation guarantee this test exists for still holds a fortiori: no
+    // farm data of any kind leaks, least of all the other project's.
+    expect(austinReply?.body).not.toContain('farm_austin_main');
     expect(austinReply?.body).not.toContain('farm_dallas_north');
   });
 

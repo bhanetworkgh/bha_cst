@@ -21,14 +21,17 @@
 
 import { randomUUID } from 'crypto';
 import { Logger } from '../config/logger.js';
-import { dashboardPublisher } from './dashboard.js';
+import { getDashboardPublisher } from './dashboard.js';
 import {
   CstDeliveryEventV1,
   DeliveryStatus,
   createCstDeliveryEventV1,
   AllowedChannel,
   CustomerPayload,
+  deliveryStatusRank,
 } from '../contracts/events.js';
+
+export { DELIVERY_STATUS_RANK, deliveryStatusRank } from '../contracts/events.js';
 
 // ─── Monotonic Status Rank ────────────────────────────────────────────────────
 
@@ -36,20 +39,16 @@ import {
  * Supported statuses for cst.delivery events (subset required by Task 5).
  * "pending" and "refused" are internal transport states; they are mapped
  * before this layer is reached so they do not appear here.
+ *
+ * The rank table itself lives in `contracts/events.js` so the persistence
+ * layer (`DbClient.updateDeliveryStatusByProviderSid`) enforces the exact same
+ * ordering when writing delivery state.
  */
-const DELIVERY_STATUS_RANK: Record<string, number> = {
-  queued: 1,
-  sending: 2,
-  sent: 3,
-  delivered: 4,
-  undelivered: 4,
-  failed: 4,
-};
 
 /**
  * In-memory monotonic guard: providerSid → highest rank published so far.
- * Cleared per-process; intentionally ephemeral — restarts reset state which
- * is acceptable given Twilio resends webhooks in order.
+ * Cleared per-process; intentionally ephemeral — restarts reset state which is
+ * acceptable given Twilio resends webhooks in order.
  */
 const monotonicStore = new Map<string, number>();
 
@@ -58,7 +57,7 @@ const monotonicStore = new Map<string, number>();
  * greater than the previously recorded rank for this providerSid).
  */
 export function isMonotonicAdvance(providerSid: string, newStatus: DeliveryStatus): boolean {
-  const newRank = DELIVERY_STATUS_RANK[newStatus] ?? 0;
+  const newRank = deliveryStatusRank(newStatus);
   const currentRank = monotonicStore.get(providerSid) ?? 0;
   return newRank > currentRank;
 }
@@ -67,7 +66,7 @@ export function isMonotonicAdvance(providerSid: string, newStatus: DeliveryStatu
  * Record the rank for a providerSid after a successful publish attempt.
  */
 export function recordMonotonicRank(providerSid: string, status: DeliveryStatus): void {
-  const rank = DELIVERY_STATUS_RANK[status] ?? 0;
+  const rank = deliveryStatusRank(status);
   const current = monotonicStore.get(providerSid) ?? 0;
   if (rank > current) {
     monotonicStore.set(providerSid, rank);
@@ -143,6 +142,28 @@ export function publishDelivery(params: PublishDeliveryParams): void {
     return;
   }
 
+  // ── Invariant: never publish a delivery event with an empty project_id ────
+  // A cst.delivery with no project cannot be attributed to a tenant project on
+  // the dashboard, so it would silently pollute (or, worse, be mis-attributed
+  // in) cross-project reporting. Drop it loudly instead.
+  if (!projectId || !projectId.trim()) {
+    Logger.warn(
+      `[DeliveryPublisher] Refusing to publish cst.delivery for ${sid}: empty project_id (status="${status}", tenant="${tenantId}")`
+    );
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: tenantId || null,
+      actor: 'cst_delivery_publisher',
+      role: 'transport_worker',
+      entry_point: 'api',
+      tool_or_route: 'publishDelivery',
+      outcome: 'refused',
+      reason: `cst.delivery refused: no project_id could be resolved for provider sid ${sid}`,
+      correlation_id: correlationId,
+    });
+    return;
+  }
+
   // ── Build the canonical customer payload ─────────────────────────────────
   const effectiveCustomer: CustomerPayload = customer ?? {
     customer_ref: to,
@@ -193,7 +214,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
 
   // ── Fire-and-forget via singleton publisher ──────────────────────────────
   try {
-    dashboardPublisher.publishFireAndForget(event);
+    getDashboardPublisher().publishFireAndForget(event);
   } catch (err: any) {
     Logger.warn(
       `[DeliveryPublisher] publishFireAndForget threw synchronously for ${sid}: ${err?.message}`

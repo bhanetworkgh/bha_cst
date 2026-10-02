@@ -1,7 +1,6 @@
 import { getEnv } from '../config/env.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
-import { randomUUID } from 'crypto';
 
 export interface FileIncidentParams {
   customerRef: string;
@@ -15,9 +14,21 @@ export interface FileIncidentParams {
 }
 
 export interface IncidentResult {
-  incident_id: string;
-  status: 'open' | 'pending' | 'resolved';
+  /**
+   * The REAL incident id returned by BHARAG, or `null` when creation failed.
+   * CST NEVER fabricates an id: a made-up `inc_vfarm_*` value cannot be looked
+   * up, escalated or closed by a human, so publishing one silently converts an
+   * infrastructure failure into a customer-visible promise that nothing is
+   * tracking.
+   */
+  incident_id: string | null;
+  /** `open` on a real create; `unavailable` when BHARAG could not create one. */
+  status: 'open' | 'pending' | 'resolved' | 'unavailable';
   created_at: string;
+  /** True only when BHARAG confirmed the incident exists. */
+  created: boolean;
+  /** Present only on failure — never a substitute for an incident id. */
+  error?: string;
 }
 
 export class BharagIncidentsConnector {
@@ -25,6 +36,10 @@ export class BharagIncidentsConnector {
    * File incident in BHARAG incidents.v0 (Spec §3, §4 & §6).
    * Subsystem is frozen as 'CUSTOMER_TWIN', engine as 'VFARM'.
    * CST stores ONLY the returned incident_id on the conversation record.
+   *
+   * Integrity rule: if BHARAG does not return an incident id, this method
+   * resolves with `created: false` and `incident_id: null`. It does not invent
+   * an id and it does not persist one. Callers must surface the failure.
    */
   static async fileIncident(params: FileIncidentParams): Promise<IncidentResult> {
     const env = getEnv();
@@ -47,6 +62,7 @@ export class BharagIncidentsConnector {
     });
 
     let incidentId: string | null = null;
+    let failureReason: string | undefined;
 
     try {
       const controller = new AbortController();
@@ -74,28 +90,74 @@ export class BharagIncidentsConnector {
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
-      }).catch(() => null);
+      }).catch((err: any) => {
+        failureReason = err?.message || 'network error';
+        return null;
+      });
 
       clearTimeout(timeoutId);
 
       if (response && (response.ok || response.status === 201)) {
         const data = await response.json() as any;
-        incidentId = data.incident_id;
+        // Only trust a non-empty string id that BHARAG actually returned.
+        incidentId =
+          typeof data?.incident_id === 'string' && data.incident_id.trim()
+            ? data.incident_id.trim()
+            : null;
+        if (!incidentId) {
+          failureReason = `BHARAG responded ${response.status} without an incident_id`;
+        }
+      } else {
+        failureReason = response
+          ? `BHARAG incidents API returned HTTP ${response.status}`
+          : 'BHARAG incidents API unreachable';
       }
     } catch (err: any) {
-      Logger.warn(`BHARAG Incidents API post fallback: ${err.message}`);
+      failureReason = err?.message || String(err);
+      Logger.warn(`BHARAG Incidents API error: ${failureReason}`);
     }
 
-    // Fallback incident ID generator if BHARAG server is running in standalone mode
+    const createdAt = new Date().toISOString();
+
     if (!incidentId) {
-      const hex = randomUUID().replace(/-/g, '').substring(0, 8);
-      incidentId = `inc_vfarm_${hex}`;
+      // Fail honestly. Nothing is persisted: there is no id to record.
+      const error = failureReason || 'unknown BHARAG incident failure';
+      Logger.audit({
+        timestamp: createdAt,
+        tenant_id: null,
+        actor: params.customerRef,
+        role: 'customer_escalation',
+        entry_point: 'api',
+        tool_or_route: 'fileIncident',
+        outcome: 'error',
+        reason: `BHARAG incident creation FAILED — no incident id to store: ${error}`,
+        correlation_id: params.conversationId,
+      });
+      Logger.infra({
+        message: `BHARAG incident creation failed for conversation ${params.conversationId}`,
+        commercial_impact:
+          'Customer escalation was NOT ticketed. No incident exists to track or close, so the customer must be told escalation is unavailable and support must be contacted directly.',
+        meta: {
+          conversation_id: params.conversationId,
+          customer_ref: params.customerRef,
+          error,
+        },
+      });
+
+      return {
+        incident_id: null,
+        status: 'unavailable',
+        created_at: createdAt,
+        created: false,
+        error,
+      };
     }
 
     const result: IncidentResult = {
       incident_id: incidentId,
       status: 'open',
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
+      created: true,
     };
 
     // Store ONLY the incident_id reference on the conversation record per Spec §3

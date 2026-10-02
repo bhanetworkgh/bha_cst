@@ -3,11 +3,15 @@ import { DbClient } from '../../engine/src/db/client.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 import { processOutboundQueue } from '../../engine/src/transport/twilio/outbound.js';
 import { TwilioClientWrapper, SendSmsParams } from '../../engine/src/transport/twilio/client.js';
+import { CoreRegistry } from '../../engine/src/core/registry.js';
 
 describe('Outbound Queue Concurrency and Stress Testing', () => {
   beforeEach(() => {
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
+    // Outbound SMS is authorized only via project -> service_number_binding, so
+    // the registry must hold the tenant/project + bound SMS number these tests send from.
+    CoreRegistry.resetToDefault();
     TwilioClientWrapper.setMockHandler(null);
   });
 
@@ -40,6 +44,8 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       await DbClient.saveOutboundMessage({
         id,
         tenant_id: 'tenant-vfarm-01',
+        // Outbound sends are authorized ONLY through project -> service_number_binding.
+        project_id: 'proj-vfarm-main',
         to_e164: `+1555${String(1000000 + i)}`,
         body: `${id}: Stress test message payload ${i}`,
         correlation_id: `corr_stress_${i}`,
@@ -107,6 +113,9 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
     await DbClient.saveOutboundMessage({
       id: msgId,
       tenant_id: 'tenant-vfarm-01',
+      // Outbound sends are authorized ONLY through the project -> service_number_binding
+      // chain, so queued messages must carry the project that owns the sending DID.
+      project_id: 'proj-vfarm-main',
       to_e164: '+15559876543',
       body: `${msgId}: Single race item`,
       correlation_id: 'corr_race_single_001',
@@ -132,6 +141,9 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
     await DbClient.saveOutboundMessage({
       id: msgId,
       tenant_id: 'tenant-vfarm-01',
+      // Outbound sends are authorized ONLY through the project -> service_number_binding
+      // chain, so queued messages must carry the project that owns the sending DID.
+      project_id: 'proj-vfarm-main',
       to_e164: '+15554445555',
       body: `${msgId}: Direct atomic claim race item`,
       correlation_id: 'corr_race_direct_claim',
@@ -171,6 +183,8 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       await DbClient.saveOutboundMessage({
         id,
         tenant_id: 'tenant-vfarm-01',
+        // Outbound sends are authorized ONLY through project -> service_number_binding.
+        project_id: 'proj-vfarm-main',
         to_e164: `+15552000${String(i).padStart(3, '0')}`,
         body: `${id}: Retry race payload ${i}`,
         correlation_id: `corr_retry_race_${i}`,
@@ -217,6 +231,9 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
     await DbClient.saveOutboundMessage({
       id: msgId,
       tenant_id: 'tenant-vfarm-01',
+      // Outbound sends are authorized ONLY through the project -> service_number_binding
+      // chain, so queued messages must carry the project that owns the sending DID.
+      project_id: 'proj-vfarm-main',
       to_e164: '+15551112233',
       body: `${msgId}: Temporary failure retry test`,
       correlation_id: 'corr_retry_temp_fail',
@@ -250,6 +267,9 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
     await DbClient.saveOutboundMessage({
       id: msgId,
       tenant_id: 'tenant-vfarm-01',
+      // Outbound sends are authorized ONLY through the project -> service_number_binding
+      // chain, so queued messages must carry the project that owns the sending DID.
+      project_id: 'proj-vfarm-main',
       to_e164: '+15550009999',
       body: `${msgId}: Permanent failure test`,
       correlation_id: 'corr_retry_perm_fail',
@@ -279,6 +299,9 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
     await DbClient.saveOutboundMessage({
       id: msgId,
       tenant_id: 'tenant-vfarm-01',
+      // Outbound sends are authorized ONLY through the project -> service_number_binding
+      // chain, so queued messages must carry the project that owns the sending DID.
+      project_id: 'proj-vfarm-main',
       to_e164: '+15553334444',
       body: `${msgId}: Exhausted retries test`,
       correlation_id: 'corr_retry_exhaust',

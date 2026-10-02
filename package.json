@@ -5,7 +5,9 @@
   "type": "module",
   "main": "engine/src/server.ts",
   "scripts": {
-    "build": "tsc -b engine/tsconfig.json",
+    "build": "tsc -b engine/tsconfig.json && node scripts/copy_web_assets.js",
+    "build:engine": "tsc -b engine/tsconfig.json",
+    "copy:web": "node scripts/copy_web_assets.js",
     "start": "node dist/engine/src/server.js",
     "start:dev": "tsx watch engine/src/server.ts",
     "dev": "tsx watch engine/src/server.ts",

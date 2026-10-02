@@ -20,7 +20,13 @@ function buildDefaultSystems(): SystemConfig[] {
     .filter(Boolean);
 
   const orgId = env.VFARM_TENANT_ID || 'tenant-vfarm-01';
-  const workspaceId = 'ws-vfarm-main';
+  // `workspace_id` is DEPRECATED: the project is the security boundary now
+  // (`service_number_binding.project_id`). There is deliberately no hardcoded
+  // legacy workspace constant — a platform-wide value stamped onto every
+  // tenant's transcripts and audit rows blurred project boundaries. Configure a
+  // workspace id explicitly with VFARM_WORKSPACE_ID if a legacy consumer needs
+  // one; otherwise it tracks the tenant.
+  const workspaceId = process.env.VFARM_WORKSPACE_ID || orgId;
 
   return [
     {
@@ -68,6 +74,28 @@ function buildDefaultSystems(): SystemConfig[] {
 
 
 
+/**
+ * @deprecated NON-IDENTITY CONFIGURATION ONLY.
+ *
+ * `SystemsRegistry` is a *configuration* registry (system display name,
+ * onboarding copy, BHARAG workspace key, ElevenLabs voice-clone pointer). It is
+ * NOT a tenancy or identity authority. The authoritative chains are:
+ *
+ *   Twilio To   -> service_number_binding -> tenant/project/capability
+ *   Twilio From -> vFarm tenant adapter   -> person / role / farm_ids
+ *
+ * Historically this registry also answered "which tenant owns this number?",
+ * which created a second, static identity system alongside `CoreRegistry`. Any
+ * still-mounted call site that used it for identity has been migrated to
+ * `CoreRegistry` (see `transport/voice/voice_lane.ts`,
+ * `transport/twilio/outbound.ts`); what remains is presentation/config lookup
+ * plus one DENY-only cross-tenant guard in `validateOutboundTenancyScope`,
+ * which can only refuse a send and can never grant access.
+ *
+ * Kept in place (not deleted) because it is still the source for the voice-lane
+ * presentation config and for the seeded `systems` row; deleting it would
+ * redesign unrelated components.
+ */
 export class SystemsRegistry {
   private static systems: Map<string, SystemConfig> = new Map();
   private static numberToSystemMap: Map<string, SystemConfig> = new Map();

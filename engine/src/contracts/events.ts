@@ -46,6 +46,90 @@ export type AllowedTurnStatus = (typeof ALLOWED_TURN_STATUSES)[number];
 export const AllowedTurnStatusSchema = z.enum(ALLOWED_TURN_STATUSES);
 
 /**
+ * The Engine Dashboard's REQUIRED `cst.turn` status contract.
+ *
+ * `ALLOWED_TURN_STATUSES` above is the wide, schema-level union (it also carries
+ * internal/transitional values such as `received`, `processing`, `synthesized`
+ * and `dropped`, which exist for voice/transport bookkeeping). Everything the
+ * dashboard consumes must instead land on exactly one of these five values, so
+ * the dashboard never has to interpret CST-internal lifecycle names.
+ */
+export const REQUIRED_TURN_STATUSES = [
+  'ok',
+  'refused',
+  'step_up_required',
+  'onboarding',
+  'error',
+] as const;
+export type RequiredTurnStatus = (typeof REQUIRED_TURN_STATUSES)[number];
+
+export const RequiredTurnStatusSchema = z.enum(REQUIRED_TURN_STATUSES);
+
+export function isRequiredTurnStatus(value: unknown): value is RequiredTurnStatus {
+  return typeof value === 'string' && (REQUIRED_TURN_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Internal `CoreEngine` outcome names, as produced by the pipeline itself.
+ * These are never published verbatim — they are translated through
+ * {@link mapInternalStatusToContractStatus}.
+ */
+export const INTERNAL_ENGINE_STATUSES = [
+  'completed',
+  'refused',
+  'step_up',
+  'onboarding',
+  'failed',
+  'dropped',
+  'timeout',
+  'received',
+  'processing',
+  'synthesized',
+] as const;
+export type InternalEngineStatus = (typeof INTERNAL_ENGINE_STATUSES)[number];
+
+/**
+ * Explicit, total mapping from an internal CoreEngine result to the required
+ * dashboard status. There is deliberately no default pass-through: any internal
+ * value that is not recognised becomes `error`, because an unknown status is a
+ * contract violation and must never reach the dashboard as-is.
+ *
+ *   completed  → ok                 (turn produced a customer-facing answer)
+ *   refused    → refused            (tenant isolation / RBAC / scope denial)
+ *   step_up    → step_up_required   (sensitive action, step-up not satisfied)
+ *   onboarding → onboarding          (unknown speaker, safe generic reply)
+ *   failed     → error              (unexpected exception)
+ *   dropped/timeout/received/processing/synthesized → error / ok per below
+ */
+export function mapInternalStatusToContractStatus(
+  internalStatus: string | undefined | null
+): RequiredTurnStatus {
+  switch (internalStatus) {
+    case 'completed':
+    case 'ok':
+      return 'ok';
+    case 'refused':
+    case 'dropped':
+      return 'refused';
+    case 'step_up':
+    case 'step_up_required':
+      return 'step_up_required';
+    case 'onboarding':
+      return 'onboarding';
+    case 'synthesized':
+    case 'processing':
+    case 'received':
+      return 'ok';
+    case 'failed':
+    case 'timeout':
+    case 'error':
+      return 'error';
+    default:
+      return 'error';
+  }
+}
+
+/**
  * Outbound delivery statuses for SMS, Voice, and webhook callbacks.
  */
 export const ALLOWED_DELIVERY_STATUSES = [
@@ -79,14 +163,20 @@ export const OperationalStatusSchema = z.enum(ALLOWED_OPERATIONAL_STATUSES);
  * Aggregate allowed statuses across turns, deliveries, and operations.
  */
 export const ALLOWED_STATUSES = [
+  ...REQUIRED_TURN_STATUSES,
   ...ALLOWED_TURN_STATUSES,
   ...ALLOWED_DELIVERY_STATUSES,
   ...ALLOWED_OPERATIONAL_STATUSES,
 ] as const;
-export type AllowedStatus = AllowedTurnStatus | DeliveryStatus | OperationalStatus;
+export type AllowedStatus =
+  | AllowedTurnStatus
+  | RequiredTurnStatus
+  | DeliveryStatus
+  | OperationalStatus;
 
 export const AllowedStatusSchema = z.union([
   AllowedTurnStatusSchema,
+  RequiredTurnStatusSchema,
   DeliveryStatusSchema,
   OperationalStatusSchema,
 ]);
@@ -97,6 +187,29 @@ export function isAllowedTurnStatus(value: unknown): value is AllowedTurnStatus 
 
 export function isAllowedDeliveryStatus(value: unknown): value is DeliveryStatus {
   return typeof value === 'string' && (ALLOWED_DELIVERY_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Canonical monotonic rank for a delivery status, shared by the event publisher
+ * and the persistence layer so a delivery state can never move backwards in
+ * either place.
+ *
+ *   queued(1) -> sending(2) -> sent(3) -> delivered(4)
+ *                                       \-> undelivered(4) | failed(4)
+ *
+ * An unknown/undefined status ranks 0 so it can never overwrite real state.
+ */
+export const DELIVERY_STATUS_RANK: Record<string, number> = {
+  queued: 1,
+  sending: 2,
+  sent: 3,
+  delivered: 4,
+  undelivered: 4,
+  failed: 4,
+};
+
+export function deliveryStatusRank(status: string | undefined | null): number {
+  return DELIVERY_STATUS_RANK[(status || '').toLowerCase()] ?? 0;
 }
 
 export function isAllowedStatus(value: unknown): value is AllowedStatus {
@@ -177,12 +290,24 @@ export type CustomerPayload = z.infer<typeof CustomerPayloadSchema>;
 export const TurnDirectionSchema = z.enum(['inbound', 'outbound']);
 export type TurnDirection = z.infer<typeof TurnDirectionSchema>;
 
+/**
+ * Statuses a `cst.turn` event may carry: the five REQUIRED dashboard contract
+ * values, plus the wide `ALLOWED_TURN_STATUSES` set that still backs internal
+ * lifecycle/transport bookkeeping (voice synthesis stages, dropped/timeout
+ * transport markers) and the historical schema surface.
+ *
+ * Anything published to the dashboard must additionally satisfy
+ * `RequiredTurnStatusSchema` — see `mapInternalStatusToContractStatus`.
+ */
+export const CstTurnStatusSchema = z.union([RequiredTurnStatusSchema, AllowedTurnStatusSchema]);
+export type CstTurnStatus = z.infer<typeof CstTurnStatusSchema>;
+
 export const CstTurnSchema = z.object({
   turn_id: z.string().min(1),
   conversation_id: z.string().optional(),
   direction: TurnDirectionSchema,
   channel: CstChannelSchema,
-  status: AllowedTurnStatusSchema,
+  status: CstTurnStatusSchema,
   intent: CstIntentSchema.optional(),
   text: z.string().optional(),
   reply_text: z.string().optional(),
@@ -200,6 +325,14 @@ export const CstTurnSchema = z.object({
   customer: CustomerPayloadSchema.optional(),
   error: z.string().optional(),
   reason: z.string().optional(),
+  /**
+   * Explicit aliases for the Engine Dashboard's required field names. `text`
+   * (inbound message) and `reply` (outbound answer) already exist above; these
+   * spell the dashboard contract out so no consumer has to guess the mapping.
+   */
+  message: z.string().optional(),
+  occurred_at: z.string().datetime({ offset: true }).optional(),
+  event_type: z.literal('cst.turn').optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 export type CstTurn = z.infer<typeof CstTurnSchema>;

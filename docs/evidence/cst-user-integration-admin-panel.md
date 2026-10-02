@@ -21,6 +21,8 @@ dev server, and a direct probe of the live vFarm instance using the existing
 | 4 — live vFarm integration | Probed the real vFarm instance; found G17 (org-members needs a Bearer JWT), G18 (JWT assigned after clients built), G19 (project org ids are placeholders). All fixed or mitigated. Real vFarm users now list in the panel. New `tests/adapters/vfarm_org_members_auth.test.ts`. |
 | 5 — identity debt closed | G9 migrated (voice now resolves via the active tenant adapter), G14 dead router deleted, G10/G11 fixed against a migrated Postgres, G19 replaced with the real org UUID in code **and** migration 012. |
 | 6 — Engine pillar | Confirmed the `cst.turn` path already existed and was correct; added contract + fire-and-forget regression tests. Found and fixed an availability bug where an expired vFarm JWT logged admins out of CST. New `tests/publishers/turn_event_contract.test.ts`, `tests/identity/identity_debt.test.ts`. |
+| 7 — remaining requirements | See §14. Authoritative tenancy for vFarm sync, binding-authoritative voice ingress, non-authorizing legacy identity surface, strict `cst.turn` statuses, fail-closed farm scope, honest BHARAG degradation, durable delivery correlation (migrations 013/014), and a real-Postgres delivery regression suite. Verified live against vFarm, Postgres, and a running engine. |
+| 8 — final closure | See §15. Dashboard E2E over real HTTP (real service + key still externally required), vFarm person→unit determined absent upstream, static-JWT dependency removed in favour of credential re-login, delivery correlation fixed for suppressed transitions. |
 
 ---
 
@@ -628,6 +630,9 @@ tests assert their own explicit ceiling.
 
 ## 13. Remaining blockers
 
+*(Superseded by §14.3 — every item below is resolved as of round 7 except the two
+still-open upstream/operational items, which are restated there.)*
+
 - **`VFARM_JWT` has expired.** Live vFarm verification (org-members, farm-grants,
   farms) cannot be completed until a fresh admin JWT is issued. It is a 7-day
   token, so this recurs weekly and should move to a refresh/rotation path rather
@@ -649,3 +654,359 @@ tests assert their own explicit ceiling.
   `Postgres Error: column "next_retry_at" does not exist` every 5 s. No migration
   creates that column. Out of scope for this work, but it means the DB-backed
   outbound path is broken until fixed.
+
+---
+
+# 14. Round 7 — remaining requirements
+
+Everything below cites code that exists in the tree. No vFarm API, endpoint,
+credential, or identifier was invented.
+
+## 14.1 What changed
+
+| # | Requirement | Implementation |
+|---|---|---|
+| 1 | Real vFarm org/project sync | `VfarmTenantAdapter.pullProjects()` calls `listOrganizations()` (`GET /api/v1/organizations`) and maps each org onto a CST project, reusing the existing CST `project_id` across upstream renames. Sync failure leaves the previous mapping in place instead of installing an empty projection. `pullResourceScopes()` uses `listOrgFarms()` (`GET /api/v1/farms?org_id=…`). |
+| 2 | No platform-wide default farm | `VFARM_DEFAULT_FARM_ID` / `VFARM_DEFAULT_UNIT_ID` removed from `core/engine.ts`, `router/index.ts` and `.env.example`. A regression test asserts no runtime file reads either. |
+| 3 | Fail-closed farm scope | Farm-grant lookup failure or an empty grant list yields `farm_ids: []` in `resolveSpeaker()` and `pullSpeakers()`; a stale local scope is overridden by the live grant list rather than merged. |
+| 4 | Binding-authoritative SMS + delivery | Outbound sending DID resolves through `service_number_binding` for the message's project (never tenant/system first-number), with a fresh capability re-check immediately before send. Delivery callbacks resolve `Twilio To → service_number_binding → tenant_id + project_id` and refuse to publish when tenancy cannot be attributed. |
+| 5 | `cst.turn` statuses | `RequiredTurnStatus` = `ok \| refused \| step_up_required \| onboarding \| error`. `mapInternalStatusToContractStatus()` maps the internal `completed/step_up/failed` vocabulary. The legacy `ALLOWED_TURN_STATUSES` set is preserved for existing consumers. |
+| 6 | Honest BHARAG degradation | `fileIncident()` returns `incident_id: null, created: false, status: 'unavailable'` on HTTP error, missing id, or transport failure. No `inc_vfarm_*` synthetic id is generated, stored, or published. The RAG fallback is explicitly labelled unverified CST guidance, not BHARAG output. |
+| 7 | Capability enforcement | SMS send re-checks the project's current `sms` capability at send time, not just at message creation, and refuses with a recorded reason. |
+| 8 | `SystemsRegistry` demoted | Retained as a **non-identity** configuration registry only. It can no longer admit a call or set a tenant; see §14.2. |
+| 9 | No fabricated unit id | `VfarmTenantAdapter.resolveSpeaker()` hardcoded `unit_context.unit_id = 'unit_bay_04'` for **every** speaker of **every** tenant, and `core/engine.ts` additionally substituted the **farm** id when no unit id existed. vFarm exposes no unit identifier on the org-member / farm-grant records this path reads, so both values were invented — and `engine.ts` forwarded them to vFarm, BHARAG and the media server as though real. Both are removed. `IntentRouter` already refused a status query when no verified unit exists (and its comment already named this exact hazard), so the correct end state is refusal, not invention. |
+
+### Voice ingress is now binding-authoritative
+
+`processVoiceTurn()` previously gated on `SystemsRegistry.resolveSystemByPhoneNumber(to)`,
+which made the configuration registry the tenancy authority: a number known only to
+the registry was admitted, and the caller was then identified through the unscoped
+`customers` table. The order is now inverted:
+
+1. `CoreRegistry.resolveServiceNumber(to)` — **no binding ⇒ refuse** (no tenancy chain exists).
+2. `SystemsRegistry.resolveSystemByPhoneNumber(to)` — non-identity configuration only; absent ⇒ refuse (deployment fault).
+3. Tenant comes from `binding.tenant_id`. If the registry disagrees about the tenant, **refuse** rather than pick a winner, because letting a stale registry entry override the binding that admitted the call would reintroduce exactly the bypass being removed.
+
+### The legacy identity surface can no longer authorize
+
+`IdentityResolver.resolveSenderIdentity()` called without a `projectId` previously fell
+through to `DbClient.lookupCustomerByPhoneAsync()` and returned that row's `role`,
+`permissions`, and `unit_context.farm_id/farm_ids` — a second, unscoped authority for
+farm scope. Now:
+
+- No `projectId` ⇒ **refuse** (`role: 'unknown'`, `permissions: []`, no `unit_context`). There is no binding, so there is nothing that could authorize the caller.
+- With `allowUnscopedLookup: true` (explicit, non-default, for audits) the row can be named for correlation, but the result is **correlation-only**: still `is_known_customer: false`, still no role, no permissions, no farm scope. Verified by `tests/identity/identity_roles.test.ts` ("a legacy owner row cannot escalate to owner permissions").
+
+Role assignment did not regress — it moved to the authoritative chain. `tests/identity/identity_roles.test.ts`
+now derives owner/manager/tech permissions from the mocked vFarm org directory instead of from `customers` rows.
+
+## 14.2 Delivery tenancy: precedence and the trust model
+
+Two questions had to be settled rather than guessed:
+
+**Does the stored row count as attribution when `To` has no binding?** Yes. The callback is Twilio-signature-verified *before* this handler runs, and the stored row was itself written from a project binding at send time — so it is not attacker-controlled. Requiring a binding alone would drop legitimate deliveries whenever a number is unbound or rotated between send and callback, which is precisely the silent-dashboard-gap failure this work is meant to remove.
+
+**Which wins when they disagree?** The binding. `To` is the actual receiving number, so a reassigned number attributes to its current project; the stored row still supplies `turn_id`, which is the only place the originating `cst.turn` id exists. Pinned by `tests/transport/outbound_tenancy.test.ts` → "the To binding wins over a conflicting stored row".
+
+**Nothing is ever published un-attributable.** `publishDelivery()` refuses an empty `project_id` before recording monotonic state, so a refused publish cannot burn the rank slot and cause a later legitimate event for the same SID to be dropped as a duplicate. Pinned by `tests/publishers/delivery_publisher.test.ts` → "Refusal side effects".
+
+## 14.3 Live verification (all run in this round)
+
+### Real vFarm — `https://bhavfarm1.duckdns.org`
+
+| Call | Result |
+|---|---|
+| `GET /api/v1/health` | `{"status":"ok","db":"ok","version":"1.0.0"}` |
+| `GET /api/v1/organizations` | 1 org: `122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d` (`default`, active) |
+| `GET /api/v1/farms?org_id=122d8fb6-…` | 2 farms: `ed95e120-74c4-4126-a2e9-0e4ffa9275e6` (`test-001`), `21dde23e-f7f6-46bc-9b54-e97fabaaafd7` (`v-farm`) |
+| `GET /api/v1/organizations/122d8fb6-…/users` | 1 member: `debf555c-b37d-4e92-bb15-597e169f1b38` |
+| `GET /api/v1/users/debf555c-…/farm-grants` | **200, 0 grants** |
+
+This confirms migration 012's UUID is the real one, and it resolves the round-6
+blocker: the farm-grants response shape is observed, and the *content* is an empty
+grant list. Fail-closed behaviour is therefore correct and observable: that member
+resolves to `farm_ids: []`.
+
+`POST /api/v1/admin/projects/sync` against the running engine: `status: "synced"`,
+`count: 1`, reusing `project-vfarm-main` and refreshing its name to `Default`.
+
+`POST /api/v1/admin/speakers/sync` against the running engine: `count: 0`,
+`pruned_count: 3` (`usr_vfarm_001/002/003`). **Observed, expected:** the real vFarm
+org has one member with no phone number, so vFarm-authoritative sync correctly
+removed the three seeded demo speakers. The Admin Panel now shows 0 speakers until
+real phone-bearing vFarm members exist. This is the fail-closed rule working, not a
+regression — noted so it is not mistaken for data loss.
+
+### Real PostgreSQL 16.14
+
+Applied `013_messages_out_turn_id.sql` and `014_messages_out_next_retry_at.sql`.
+Both were needed: `messages_out` had **no `turn_id` column**, so the `RETURNING`
+clause added in round 5 would have failed on every delivery callback, and
+`next_retry_at` was **never created by any migration** despite being read by the
+5-second outbound poller.
+
+Two real defects were found and fixed only because the database was exercised:
+
+1. **`updateDeliveryStatusByProviderSid()` never matched `provider_sid`.** Its `WHERE` clause was `(id = $3 OR correlation_id LIKE $4)`. The MessageSid lives in `provider_sid`, so after a restart (empty in-memory store) the `UPDATE` matched nothing — delivery state stopped persisting *and* the callback resolved no tenant/project and refused to publish. Real deliveries silently vanished from the dashboard. `query2` against `messages` did match `provider_sid`, which is why this was invisible in the transcript path.
+2. **The `dist/` build could not serve the Admin Panel.** `app.ts` resolves the web root as `<dirname(app)>/../../web`, which is `<repo>/web` in dev but `<repo>/dist/web` in a built deployment — and `tsc` emits no assets. Every `npm run build && npm start` deployment served `/admin`, `/admin/login` and `/web` as HTTP 500 (ENOENT `admin.html`). `npm run build` now runs `scripts/copy_web_assets.js`.
+
+After both fixes, verified directly against Postgres: the row moved `sent → delivered`,
+the returned context carried `tenant_id`, `project_id`, `turn_id`, `to_e164`, `from_e164`,
+and a late lower-ranked callback was rejected (`advanced: false`, status held at `delivered`).
+
+`tests/transport/delivery_persistence.test.ts` locks this in against a real database.
+It is **opt-in** (`CST_DB_TESTS=1`) so the shared suite never depends on a developer's
+local Postgres, and it constructs its own pool because `DbClient.getPool()` is disabled
+under `NODE_ENV=test`.
+
+### Running engine (`npm run build && npm start`)
+
+| Endpoint | Result |
+|---|---|
+| `/health`, `/api/health` | 200 — `vfarm.status: healthy`, `mode: live`, 2 projects |
+| `/admin`, `/admin/login`, `/web` | 200 (were 500 before the asset-copy fix) |
+| `/api/v1/auth/login` as `admin@cst.com` | 200, 64-char token; `/api/v1/auth/me` → `superadmin` |
+| `GET /api/v1/admin/tenants \| projects \| numbers/bindings \| numbers/candidate` | 200 with live data |
+| `GET /api/v1/admin/vfarm/organizations \| farms \| health \| summary` | 200 from the real vFarm |
+| `GET /api/v1/admin/audit/logs` | 200 |
+
+Admin requests authenticate with the `x-admin-token` header (not `Authorization:
+Bearer`). After the restart, server logs contain **no errors** — in particular the
+per-5-second `next_retry_at` error is gone.
+
+### Automated
+
+`npm test` → **43 files, 400 tests, all passing** (baseline before this work: 35 files,
+328). `npm run typecheck` clean. `npm run build` clean.
+
+New/expanded suites: `tests/adapters/vfarm_sync_projects.test.ts`,
+`tests/identity/farm_scope_fail_closed.test.ts`, `tests/identity/runtime_identity_model.test.ts`,
+`tests/transport/outbound_tenancy.test.ts`, `tests/transport/delivery_persistence.test.ts`,
+`tests/voice/voice_ingress_tenancy.test.ts`, `tests/publishers/turn_status_contract.test.ts`,
+plus refusal-side-effect cases in `tests/publishers/delivery_publisher.test.ts`.
+
+## 14.4 Still open
+
+- **`admin.auth` is bypassed in tests** (unchanged from round 6). `requireAdminAuth` returns early when `NODE_ENV === 'test'`, so the negative auth case is only verifiable live, which it now is.
+- **`VFARM_JWT` rotation.** A fresh vFarm credential is still a static `.env` value on a 7-day lifetime. The engine's own auto-recovery login exists, but a static short-lived JWT upstream will keep recurring.
+- **Dashboard publisher disabled locally.** `ENGINE_DASHBOARD_URL` / `ENGINE_DASHBOARD_KEY` are unset, so the engine logs "Dashboard event publishing is disabled". Events are constructed and validated in tests, but end-to-end dashboard delivery was not exercised.
+- **Voice callers must be onboarded in vFarm.** Consequence of §14.1: a `customers` row without a matching adapter entry no longer authorizes a voice caller.
+- **Status/telemetry queries are now refused for every adapter-resolved caller.** This is the intended consequence of removing the fabricated unit id (§14.1 row 9), not a bug: vFarm exposes no person→unit relationship on the records CST reads, so CST has no verified unit to scope a status query to and refuses rather than answering about an invented unit. Making this work requires an upstream person→unit binding that was **not** invented here. Two existing tests that asserted the old substituted behavior (`tests/tenancy/platform_tenancy.test.ts` Req 1, `tests/integration/roundtrip.test.ts`) were updated to assert refusal; the roundtrip itself still completes end-to-end. Confirm with the vFarm owner whether a unit binding is available upstream before re-enabling the intent.
+- **Local demo speakers were pruned** by live sync (§14.3). The panel shows 0 speakers until real phone-bearing vFarm members exist.
+
+---
+
+# 15. Final CST Closure
+
+Closure pass only. No completed requirement was redesigned or reopened. Every
+claim below was executed; nothing is marked complete on the strength of a
+planned change.
+
+## 15.1 Engine Dashboard E2E — **partially verified, with one external dependency**
+
+**What exists.** `CstDashboardPublisher` (`engine/src/publishers/dashboard.ts`)
+already implemented the whole client side: `POST <ENGINE_DASHBOARD_URL>` with
+`Authorization: Bearer <key>`, `x-dashboard-key`, `x-cst-specversion:
+cst.event.v1`, a 5 s per-attempt timeout, retry on network/408/429/5xx, fail-fast
+on other 4xx, and `publishFireAndForget()` scheduling via `setImmediate` so the
+customer response is never blocked. Nothing was missing in the publisher, and no
+Dashboard endpoint or contract had to be invented — the contract is the one the
+code already targets.
+
+**What is missing, and it is external.** The Engine Dashboard *service* is not
+part of this repository and no credential for it exists in this environment.
+`.env` had no `ENGINE_DASHBOARD_URL` / `ENGINE_DASHBOARD_KEY` before this pass,
+and none was invented. **A real Engine Dashboard deployment and its API key are
+required to close this item against the actual product.**
+
+**What was verified instead.** A local sink implementing the ingestion side of
+that exact contract (`scripts/dashboard_sink.mjs`, clearly marked as a test
+fixture that must never be deployed) was pointed at through `.env`. Every
+assertion is therefore made against bytes that crossed a real socket and were
+authenticated.
+
+Live, against a running engine built from `npm run build` and started with
+`npm start`:
+
+| Check | Result |
+|---|---|
+| `cst.turn` reaches the Dashboard | Yes — 1 event, HTTP 202 |
+| `cst.delivery` reaches the Dashboard | Yes — 4 events (`queued`, `sending`, `failed`, `delivered`) |
+| Spec version | `cst.event.v1` in header **and** payload on every event |
+| Authentication | `Bearer` + `x-dashboard-key` present and equal on all 4 requests; the sink returns 401 otherwise, so a missing credential would have yielded zero events |
+| `tenant_id` / `project_id` populated and correct | `tenant-vfarm-01` / `proj-vfarm-main` on every event |
+| Inbound webhook not blocked | HTTP 204 in **3–10 ms** while the turn itself took ~18 ms and the events arrived afterwards |
+| Event source | `cst/sms` for the turn, `cst/transport` for deliveries |
+
+All five required `cst.turn` statuses — `ok`, `refused`, `step_up_required`,
+`onboarding`, `error` — are covered in
+`tests/integration/dashboard_e2e.test.ts` (12 tests, real socket, real auth).
+They cannot all be produced **live** in this environment because `ok`, `refused`
+and `step_up_required` each require a caller the vFarm directory knows, and the
+real vFarm org has no phone-bearing member (§15.3). `onboarding` was produced
+live. No status is asserted on the basis of a unit test alone.
+
+Retry behaviour, verified against injected 5xx faults:
+
+| Behaviour | Result |
+|---|---|
+| 5xx retry | 3 attempts for one event; **exactly one** event recorded (no duplicates) |
+| Non-retryable 4xx | 1 attempt, `HTTP_400`, not retried, nothing recorded |
+| Unconfigured dashboard | Returns `MISSING_CONFIGURATION`, never throws; fire-and-forget stays silent |
+
+### One real defect found and fixed while verifying this
+
+**A suppressed delivery transition published an event with no `turn_id`.**
+`updateDeliveryStatusByProviderSid()` only resolved the correlation context from
+rows its `UPDATE` actually modified. The monotonic guard legitimately suppresses
+duplicate and regressing callbacks, so a late `delivered` for a message already
+recorded as `failed` updated nothing — and the resulting `cst.delivery` went to
+the Dashboard with `turn_id: null`, silently orphaning it from its `cst.turn`.
+Found live: the monotonic log line read *"duplicate/regressing callback — stored
+state unchanged"* while the event carried no join key. Fixed with a read-only
+lookup that always resolves the context, and pinned by
+`tests/transport/delivery_persistence.test.ts`. Re-verified live: the `delivered`
+event now carries `turn_id = SM_CLOSE_1790979672`, matching its `cst.turn`.
+
+### Publisher seam unified
+
+`publishDelivery()` used the `dashboardPublisher` singleton directly while
+`CoreEngine` had its own override, so the `cst.turn` and `cst.delivery` paths
+could be pointed at different endpoints. Both now resolve through one
+`getDashboardPublisher()` seam. This is what allowed the E2E test to observe both
+event types from one injection, and it is a correctness fix, not a test
+accommodation.
+
+## 15.2 `cst.turn` / `cst.delivery` correlation — **verified**
+
+Live, one customer turn:
+
+```
+type          status     turn_id                    provider_sid                 tenant / project
+cst.turn      onboarding SM_CLOSE_1790979672        -                            tenant-vfarm-01 / proj-vfarm-main
+cst.delivery  queued     SM_CLOSE_1790979672        out_73762b1c-…               tenant-vfarm-01 / proj-vfarm-main
+cst.delivery  sending    SM_CLOSE_1790979672        out_73762b1c-…               tenant-vfarm-01 / proj-vfarm-main
+cst.delivery  failed     SM_CLOSE_1790979672        out_73762b1c-…               tenant-vfarm-01 / proj-vfarm-main
+cst.delivery  delivered  SM_CLOSE_1790979672        SM_CLOSE_DEL_out_73762b1c-…  tenant-vfarm-01 / proj-vfarm-main
+```
+
+`cst.turn.turn_id === cst.delivery.turn_id` for **all four** delivery events,
+including the one whose transition was suppressed by the monotonic guard.
+
+## 15.3 vFarm person → unit — **does not exist upstream; kept fail-closed**
+
+Determined from the vFarm OpenAPI contract (130 paths) and then confirmed against
+the live instance. Every `/users` path was enumerated and probed:
+
+| Endpoint | Live result | Contains a unit? |
+|---|---|---|
+| `GET /api/v1/organizations/{org}/users` | 200 | `user_id, email, name, role, granted_by, granted_at` — **no** |
+| `GET /api/v1/users` | 200 | `id, email, name, avatar_url, is_active, system_role, last_login_at, created_at, farms[{farm_id, role}], orgs` — **no** |
+| `GET /api/v1/users/{user_id}/farm-grants` | 200, `{"grants":[],"total":0}` | farm scope only — **no** |
+| `GET /api/v1/farms/{farm_id}/users` | (no user-scoped unit field) | **no** |
+| `GET /api/v1/farms/{farm_id}/layout` | 200 | `zones → locations → sublocations` — geographic, **no user** |
+| `GET /api/v1/devices` | 200 | `farm_id, zone_id, location_id, sublocation_id` — device→place, **no user** |
+| `GET /api/v1/devices/{id}/metadata` | 200 | `device_id, config, tags, notes` — **no** |
+
+The complete user surface in vFarm is six paths: role and farm grants only. The
+zone/location/sublocation hierarchy is farm- and device-scoped and carries no
+person reference. **vFarm exposes no person → unit relationship.**
+
+Nothing was fabricated. Status/telemetry stays fail-closed, and the invented
+`unit_bay_04` plus the farm-id-as-unit-id substitution remain removed (§14.1
+row 9). `IntentRouter` already refused a status query with no verified unit, so
+the refusal is the designed end state.
+
+**Upstream capability required to enable it:** either
+
+- a user-scoped sub-resource returning the caller's assigned location/sublocation
+  (e.g. `GET /api/v1/users/{user_id}/assignments` → `{ zone_id, location_id, sublocation_id }`), or
+- a `user_id` / `owner_id` field on `DevicePlacement` (`zone_id, location_id, sublocation_id`) or on device metadata.
+
+Until one exists, CST cannot scope a status query to a unit and will keep
+refusing. `VfarmTenantAdapter` already carries `farm_ids` through the identical
+adapter seam, so consuming such a field later is additive.
+
+## 15.4 vFarm auth — static JWT dependency **removed**
+
+The upstream API offers `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`,
+`GET|PATCH /api/v1/auth/me`, `POST /api/v1/auth/register` and
+`POST /api/v1/tokens/{id}/rotate` (farm/API keys). **There is no
+`/api/v1/auth/refresh`**, so "refresh" necessarily means "log in again".
+
+`VfarmTenantAdapter.ensureAdminToken()` now resolves a token in this order:
+
+1. a cached token that is not expired;
+2. `POST /api/v1/auth/login` with `VFARM_ADMIN_EMAIL` / `VFARM_ADMIN_PASSWORD`;
+3. the static `VFARM_API_JWT` / `VFARM_JWT`, last resort only.
+
+Every live call site (`discoverFarms`, `issueFarmToken`, `pullProjects`,
+`pullResourceScopes`, composite farm view, and the two admin proxy routes) now goes
+through it, so the operator no longer has to paste a fresh 7-day JWT weekly.
+Secrets stay in the environment; `tryRelogin` reads only `process.env` and logs
+never contain a token.
+
+Proven live, twice:
+
+| Scenario | Result |
+|---|---|
+| **Deliberately expired** static JWT + credentials | Token re-acquired via login; `listOrganizations` → 1 org; `pullResourceScopes` → both real vFarms |
+| **No static JWT at all**, credentials only | Identical result — the static token is not required |
+
+The previously stored JWT still had ~6 days left, which is why it had masked the
+problem. `.env.example` now documents both mechanisms and states which one wins.
+
+## 15.5 Final verification
+
+| Check | Result |
+|---|---|
+| `npm test` | **44 files, 414 tests, all passing** (baseline 35 files / 328) |
+| `npm run typecheck` | clean |
+| `npm run build` | clean (emits JS **and** web assets) |
+| `tests/transport/delivery_persistence.test.ts` against real Postgres | 5/5 (`CST_DB_TESTS=1`) |
+| `/health`, `/api/health` | 200; `vfarm.status: healthy`, `mode: live` |
+| `/admin`, `/admin/login`, `/web` | 200 |
+| Live vFarm organization sync | `POST /projects/sync` → `status: synced, count: 1` |
+| Live vFarm organizations proxy | 200, real org `122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d` |
+| Live speaker sync (farm grants) | `count: 0`, pruned the caller absent from vFarm — fail-closed working |
+| Live farm-grant behavior | Speaker resolves to `farm_ids: []`, onboarding reply, zero farm data in the published event |
+| Real `cst.turn` | delivered to the Dashboard |
+| Real `cst.delivery` | 4 transitions delivered to the Dashboard |
+
+### Log review — expected entries and two pre-existing issues
+
+Expected and correct: Twilio rejecting the test destination
+`+15551234567` with `21211 Invalid 'To'` (a Twilio test credential, so the send
+is correctly non-retriable and reported as permanently undeliverable); the
+delivery-callback monotonic line; the outbound deny-only guard refusing an unbound
+destination.
+
+Two pre-existing issues, **not caused by this work and not fixed here** because
+fixing either is a redesign decision:
+
+1. **`conversations_system_id_fkey` / `messages_conversation_id_fkey` violations.**
+   Every inbound turn logs two Postgres errors, so conversation transcripts are
+   not persisting to Postgres and fall back to memory. This does not affect event
+   delivery — the published `cst.turn` is correct — but it is silent data loss in
+   the transcript tables.
+2. **vFarm latency can exceed CST's 5 s client timeout.** During a window around
+   22:10, raw probes showed `GET /api/v1/health` taking **6.0 s** and
+   `GET /api/v1/organizations` **3.9 s** while the same calls had answered in
+   15 ms earlier. Five consecutive `POST /projects/sync` calls returned
+   `SYNC_FAILED … This operation was aborted` at exactly the 5 s client timeout;
+   the identical code path run standalone succeeded in 2.1–4.4 s, and the engine
+   returned to `synced, count: 1` in 0.25–0.73 s once upstream recovered. Raised
+   upstream latency, not a code defect — but `VFARM_API_TIMEOUT_MS` is unset and
+   the effective 5 s budget has no headroom for a degraded upstream.
+
+## 15.6 Remaining external dependencies
+
+| Dependency | Blocks | Needed to close |
+|---|---|---|
+| **Engine Dashboard service + API key** | E2E against the real product | `ENGINE_DASHBOARD_URL`, `ENGINE_DASHBOARD_KEY`. CST side is complete and verified over real HTTP. |
+| **vFarm person → unit relationship** | status/telemetry intent | A user-scoped location/sublocation assignment, or a `user_id` on device placement (§15.3). |
+| **vFarm phone-bearing org member** | live `ok` / `refused` / `step_up_required` turns | At least one vFarm org member with a phone and a non-empty farm-grant list. All five statuses are verified in-process (§15.1). |
+| **Real Twilio destination number** | live `sent`/`delivered` from a genuine send | Any non-test E.164 number reachable by the configured Twilio account. |
+| **vFarm upstream latency headroom** | sync reliability under upstream degradation | A decision on `VFARM_API_TIMEOUT_MS`; 5 s had no margin during the observed degradation (§15.5). |
+| **Transcript FK constraints** | Postgres conversation/message persistence | `systems` rows must exist for the `system_id` being written, or the constraint must be corrected (§15.5). |
+| **Dashboard publisher local config** | local E2E reruns | The two `ENGINE_DASHBOARD_*` values are in the gitignored `.env` only, never in the repository. |

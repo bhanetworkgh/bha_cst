@@ -86,6 +86,57 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
 let isProcessingQueue = false;
 
 /**
+ * Resolve the sending DID for an outbound message.
+ *
+ * ONLY chain supported:
+ *   OutboundMessage.project_id -> service_number_binding -> phone_e164
+ *
+ * The old "look up the tenant's SystemsRegistry entry and take
+ * phone_numbers[0]" logic is gone: it ignored the project boundary entirely
+ * (any project of the tenant could originate from any of its numbers) and it
+ * depended on the static `VFARM_PHONE_NUMBERS` env list. If the project has no
+ * bound SMS service number the message is refused — a number that is not
+ * explicitly bound to this tenant+project may not originate its traffic.
+ */
+export function resolveOutboundSendingNumber(msg: OutboundMessage): string | null {
+  const binding = CoreRegistry.resolveProjectServiceNumber(msg.tenant_id, msg.project_id, 'sms');
+  if (binding?.phone_e164) return binding.phone_e164;
+
+  // A reply queued by the SMS ingress lane already carries the receiving
+  // service number in `from_e164`. Accept it only if it is genuinely bound to
+  // this tenant+project — never because it merely appears in some list.
+  const queuedFrom = (msg.from_e164 || '').trim();
+  if (queuedFrom) {
+    const fromBinding = CoreRegistry.resolveServiceNumber(queuedFrom);
+    if (
+      fromBinding &&
+      fromBinding.tenant_id === msg.tenant_id &&
+      fromBinding.project_id === msg.project_id &&
+      fromBinding.capability === 'sms'
+    ) {
+      return fromBinding.phone_e164;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Re-check the CURRENT project capability immediately before sending.
+ *
+ * A message can sit in the queue while an operator disables SMS for its
+ * project. Capability is re-evaluated here — not just at enqueue time — so a
+ * disabled channel never actually transmits.
+ */
+export function isSmsCapabilityEnabled(msg: OutboundMessage): boolean {
+  if (!msg.project_id) return false;
+  const project = CoreRegistry.getProject(msg.project_id);
+  if (!project) return false;
+  if (project.tenant_id !== msg.tenant_id) return false;
+  return project.capabilities.sms === true;
+}
+
+/**
  * Worker function to process pending & queued outbound messages.
  * Manages status transitions: pending/queued -> sending -> sent | failed | refused
  * Concurrency-safe: uses atomic queue claiming so multiple workers can process concurrently
@@ -118,6 +169,57 @@ export async function processOutboundQueue(): Promise<void> {
       continue;
     }
 
+    // Step 1b: Re-check the current project capability (may have been disabled
+    // after the message was queued). Disabled => do not send, fail with reason.
+    if (!isSmsCapabilityEnabled(msg)) {
+      const reason = !msg.project_id
+        ? 'Outbound send refused: message has no project_id, so no project service number binding can be authorized'
+        : 'Outbound send refused: SMS capability is currently disabled for this project';
+      await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: msg.tenant_id,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'processOutboundQueue',
+        outcome: 'refused',
+        reason,
+        correlation_id: msg.correlation_id,
+      });
+      Logger.infra({
+        message: `Outbound SMS refused (capability/project binding): ${reason}`,
+        commercial_impact:
+          'A queued customer reply was not delivered. The customer will not receive an answer on this channel; confirm the project SMS capability and service-number binding.',
+        meta: {
+          tenant_id: msg.tenant_id,
+          project_id: msg.project_id || null,
+          to_e164: msg.to_e164,
+          correlation_id: msg.correlation_id,
+        },
+      });
+      continue;
+    }
+
+    // Step 1c: Resolve the sending DID through the binding chain.
+    const resolvedFromNumber = resolveOutboundSendingNumber(msg);
+    if (!resolvedFromNumber) {
+      const reason = `Outbound send refused: no SMS service number is bound to project "${msg.project_id}" for tenant "${msg.tenant_id}"`;
+      await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: msg.tenant_id,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'resolveOutboundSendingNumber',
+        outcome: 'refused',
+        reason,
+        correlation_id: msg.correlation_id,
+      });
+      continue;
+    }
+
     // Publish initial queued event
     publishDelivery({
       providerSid: msg.provider_sid || msg.id!,
@@ -125,7 +227,7 @@ export async function processOutboundQueue(): Promise<void> {
       turnId: msg.turn_id,
       channel: 'sms',
       to: msg.to_e164,
-      from: msg.from_e164,
+      from: resolvedFromNumber,
       status: 'queued',
       tenantId: msg.tenant_id,
       projectId: msg.project_id || '',
@@ -157,15 +259,14 @@ export async function processOutboundQueue(): Promise<void> {
           turnId: msg.turn_id,
           channel: 'sms',
           to: msg.to_e164,
-          from: msg.from_e164,
+          from: resolvedFromNumber,
           status: 'sending',
           tenantId: msg.tenant_id,
           projectId: msg.project_id || '',
           correlationId: msg.correlation_id,
           retryCount: attempt - 1,
         });
-        const system = SystemsRegistry.getSystemByTenantId(msg.tenant_id);
-        const fromNumber = system?.phone_numbers[0];
+        const fromNumber = resolvedFromNumber;
 
         const res = await TwilioClientWrapper.sendSms({
           to: msg.to_e164,
@@ -261,7 +362,7 @@ export async function processOutboundQueue(): Promise<void> {
           turnId: msg.turn_id,
           channel: 'sms',
           to: msg.to_e164,
-          from: msg.from_e164,
+          from: resolvedFromNumber,
           status: 'failed',
           tenantId: msg.tenant_id,
           projectId: msg.project_id || '',
@@ -296,7 +397,14 @@ export async function processOutboundQueue(): Promise<void> {
 }
 
 // Delivery status callback handler
-// Requires Twilio signature verification, validates payload, resolves tenant_id, and updates database records.
+// Requires Twilio signature verification, validates payload, resolves
+// tenant_id + project_id, and updates database records.
+//
+// Tenancy chain:  Twilio To -> service_number_binding -> tenant_id + project_id
+// The legacy `SystemsRegistry.resolveSystemByPhoneNumber(To)` lookup is no
+// longer the tenancy authority; a callback for a DID that is not bound to any
+// project cannot be attributed, and an unattributable delivery event is never
+// published.
 outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req: Request, res: Response) => {
   const { MessageSid, MessageStatus, To, ErrorCode } = req.body as Record<string, string>;
 
@@ -315,9 +423,8 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     return;
   }
 
-  // Resolve tenant_id from the system number (To parameter in delivery status webhook)
-  const system = To ? SystemsRegistry.resolveSystemByPhoneNumber(To) : null;
-  const resolvedTenantIdFromPhone = system?.tenant_id;
+  // Resolve tenant_id + project_id from the receiving DID's service-number binding.
+  const binding = To ? CoreRegistry.resolveServiceNumber(To.trim()) : null;
 
   // Map Twilio status to allowed internal status
   const normalizedStatus = MessageStatus.toLowerCase();
@@ -329,14 +436,17 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
 
   const errorDetails = ErrorCode ? `Twilio ErrorCode: ${ErrorCode}` : undefined;
 
-  // Update DB records across outbound queue and message transcripts
+  // Update DB records across outbound queue and message transcripts.
+  // This is also where correlation comes from: the stored row carries the
+  // outbound message's project_id and turn_id (=== cst.turn.turn_id).
   const updateResult = await DbClient.updateDeliveryStatusByProviderSid(
     MessageSid,
     mappedStatus,
     errorDetails
   );
 
-  const tenantId = resolvedTenantIdFromPhone || updateResult.tenant_id || null;
+  const tenantId = binding?.tenant_id || updateResult.tenant_id || null;
+  const projectId = binding?.project_id || updateResult.project_id || '';
   const isFailure = mappedStatus === 'failed' || mappedStatus === 'undelivered';
 
   Logger.audit({
@@ -347,25 +457,56 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     entry_point: 'webhook',
     tool_or_route: '/webhooks/twilio/delivery-status',
     outcome: isFailure ? 'error' : 'ok',
-    reason: `Twilio delivery status update: ${mappedStatus}${ErrorCode ? ` (${errorDetails})` : ''}`,
+    reason: `Twilio delivery status update: ${mappedStatus}${ErrorCode ? ` (${errorDetails})` : ''}${
+      updateResult.advanced ? '' : ' (duplicate/regressing callback — stored state unchanged)'
+    }`,
     correlation_id: MessageSid,
   });
 
-  // Publish cst.delivery event for webhook-driven status transitions
-  // (delivered / undelivered / sent callbacks from Twilio)
-  if (tenantId) {
-    publishDelivery({
-      providerSid: MessageSid,
-      channel: 'sms',
-      to: To || '',
-      status: mappedStatus,
-      tenantId,
-      projectId: '',
-      correlationId: MessageSid,
-      errorCode: ErrorCode || undefined,
-      errorMessage: errorDetails,
+  // Publish cst.delivery for webhook-driven status transitions
+  // (delivered / undelivered / sent callbacks from Twilio).
+  // Never publish without BOTH a tenant and a project: an un-attributable
+  // delivery cannot be joined back to a cst.turn and would pollute the
+  // dashboard's per-project reporting.
+  if (!tenantId || !projectId) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: tenantId,
+      actor: 'twilio_delivery_status',
+      role: 'transport_worker',
+      entry_point: 'webhook',
+      tool_or_route: '/webhooks/twilio/delivery-status',
+      outcome: 'refused',
+      reason: `cst.delivery not published for ${MessageSid}: tenancy unresolved (To=${To || 'n/a'} binding=${
+        binding ? 'found' : 'none'
+      }, stored project_id=${projectId || 'none'})`,
+      correlation_id: MessageSid,
     });
+    Logger.infra({
+      message: `Delivery callback for ${MessageSid} could not be attributed to a tenant project`,
+      commercial_impact:
+        'Delivery status was recorded against the message row but no dashboard delivery event was emitted, so the Dashboard will not show this delivery outcome. Check the receiving number is bound to a project.',
+      meta: { message_sid: MessageSid, to: To || null, status: mappedStatus },
+    });
+    res.status(204).send();
+    return;
   }
+
+  publishDelivery({
+    providerSid: MessageSid,
+    messageId: updateResult.message_id,
+    // cst.delivery.turn_id === cst.turn.turn_id for the same customer turn.
+    turnId: updateResult.turn_id,
+    channel: 'sms',
+    to: updateResult.to_e164 || To || '',
+    from: updateResult.from_e164 || To || '',
+    status: mappedStatus,
+    tenantId,
+    projectId,
+    correlationId: MessageSid,
+    errorCode: ErrorCode || undefined,
+    errorMessage: errorDetails,
+  });
 
   res.status(204).send();
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { InboundMessage, OutboundMessage, SystemConfig } from '../twilio/types.js';
 import { SystemsRegistry } from '../../systems/registry.js';
+import { CoreRegistry } from '../../core/registry.js';
 import { IdentityResolver } from '../../identity/resolver.js';
 import { IntentRouter } from '../../router/index.js';
 import { DbClient, VoiceDeliveryRecord } from '../../db/client.js';
@@ -78,9 +79,14 @@ export class VoiceLaneService {
     const to_e164 = (input.to_e164 || '').trim();
     const speech_text = (input.speech_text || '').trim();
 
-    // 1. Resolve system by receiving phone number
-    const system = SystemsRegistry.resolveSystemByPhoneNumber(to_e164);
-    if (!system) {
+    // 1. Resolve the tenancy chain first.
+    //    Twilio To -> service_number_binding -> tenant_id + project_id.
+    // The binding is the tenancy AUTHORITY for voice ingress. `SystemsRegistry`
+    // is consulted only for non-identity configuration (system name, onboarding
+    // copy, BHARAG workspace key, ElevenLabs voice pointer); it cannot admit a
+    // call and it cannot set the tenant.
+    const binding = CoreRegistry.resolveServiceNumber(to_e164);
+    if (!binding) {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: null,
@@ -89,35 +95,72 @@ export class VoiceLaneService {
         entry_point: 'api',
         tool_or_route: 'VoiceLaneService.processVoiceTurn',
         outcome: 'refused',
-        reason: `Voice turn refused: Unknown receiving phone number ${to_e164}`,
+        reason: `Voice turn refused: receiving number ${to_e164} is not bound to any project, so no tenant/project tenancy chain exists`,
         correlation_id,
       });
 
       return {
         status: 'refused',
-        reason: `Unknown receiving phone number ${to_e164}`,
+        reason: `Receiving number ${to_e164} is not bound to a project`,
         correlation_id,
       };
     }
 
-    const tenantId = system.tenant_id;
-    const systemId = system.system_id;
-
-    // 2. Resolve caller identity.
-    // Resolve project scope from the receiving number's service-number binding so
-    // identity goes through the same active tenant-adapter path as SMS/Web
-    // (CoreRegistry.resolveSpeaker) instead of the unscoped customers-table
-    // lookup. Twilio `To` -> binding -> tenant/project -> speaker.
-    let resolvedProjectId: string | undefined;
-    try {
-      const bindings = await DbClient.getAllServiceNumberBindings();
-      resolvedProjectId = bindings.find((b) => b.phone_e164 === to_e164)?.project_id;
-    } catch (bindErr: any) {
-      Logger.warn(`VoiceLane: could not resolve service-number binding for ${to_e164}: ${bindErr?.message}`, {
-        correlation_id, tenant_id: tenantId,
+    // Non-identity runtime configuration. Absent config is a deployment fault,
+    // not an identity question, so it still refuses — but the tenancy is already
+    // established by the binding above and is never taken from this lookup.
+    const system = SystemsRegistry.resolveSystemByPhoneNumber(to_e164);
+    if (!system) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: binding.tenant_id,
+        actor: from_e164 || 'unknown_caller',
+        role: 'untrusted_ingress',
+        entry_point: 'api',
+        tool_or_route: 'VoiceLaneService.processVoiceTurn',
+        outcome: 'refused',
+        reason: `Voice turn refused: no runtime system configuration registered for bound number ${to_e164} (tenant=${binding.tenant_id}, project=${binding.project_id})`,
+        correlation_id,
       });
+
+      return {
+        status: 'refused',
+        reason: `Receiving number ${to_e164} has no runtime system configuration`,
+        correlation_id,
+      };
     }
 
+    // The binding is authoritative. If SystemsRegistry disagrees about which
+    // tenant owns this number, that is a configuration conflict: refuse rather
+    // than pick a winner, because picking one would let a stale registry entry
+    // override the binding that actually admitted the call.
+    const tenantId = binding.tenant_id;
+    const resolvedProjectId = binding.project_id;
+    const systemId = system.system_id;
+
+    if (system.tenant_id !== tenantId) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        actor: from_e164 || 'unknown_caller',
+        role: 'untrusted_ingress',
+        entry_point: 'api',
+        tool_or_route: 'VoiceLaneService.processVoiceTurn',
+        outcome: 'refused',
+        reason: `Voice turn refused: configuration conflict — service number ${to_e164} is bound to tenant "${tenantId}" but the system configuration claims tenant "${system.tenant_id}"`,
+        correlation_id,
+      });
+      return {
+        status: 'refused',
+        reason: 'Receiving number binding conflicts with system configuration',
+        correlation_id,
+      };
+    }
+
+    // 2. Resolve caller identity through the same active tenant-adapter path as
+    //    SMS/Web (CoreRegistry.resolveSpeaker → vFarm tenant adapter).
+    //    Project scope comes from the binding resolved above, so the vFarm
+    //    farm-grant lookup is authoritative for farm_ids.
     const identity = await IdentityResolver.resolveSenderIdentity(from_e164, system, {
       projectId: resolvedProjectId,
     });

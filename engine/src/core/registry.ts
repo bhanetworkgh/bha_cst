@@ -348,6 +348,35 @@ export class CoreRegistry {
     return Array.from(this.serviceNumberBindings.values());
   }
 
+  /**
+   * Resolve the authoritative SENDING service number for a project.
+   *
+   * Chain (the only supported one for outbound SMS):
+   *   OutboundMessage.project_id -> service_number_binding -> phone_e164
+   *
+   * There is deliberately no "first phone of the tenant's system" or
+   * VFARM_PHONE_NUMBERS fallback: a number that is not explicitly bound to this
+   * tenant+project is not authorized to originate this project's traffic.
+   */
+  static resolveProjectServiceNumber(
+    tenantId: string,
+    projectId: string | undefined,
+    capability: CapabilityType = 'sms'
+  ): ServiceNumberBinding | null {
+    if (!tenantId || !projectId) return null;
+    for (const binding of this.serviceNumberBindings.values()) {
+      if (
+        binding.tenant_id === tenantId &&
+        binding.project_id === projectId &&
+        binding.capability === capability &&
+        binding.status === 'bound'
+      ) {
+        return binding;
+      }
+    }
+    return null;
+  }
+
   // ── Speaker Identity Resolution & Projection Cache ───────────────────────
 
   static async resolveSpeaker(params: {

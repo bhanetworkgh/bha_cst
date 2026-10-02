@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { DbClient } from '../../engine/src/db/client.js';
+import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { processOutboundQueue } from '../../engine/src/transport/twilio/outbound.js';
 import { TwilioClientWrapper } from '../../engine/src/transport/twilio/client.js';
 
@@ -10,17 +11,21 @@ describe('Outbound Transport Unit Tests', () => {
 
   beforeEach(() => {
     DbClient.clearAll();
+    // Outbound SMS tenancy resolves through project -> service_number_binding.
+    CoreRegistry.resetToDefault();
   });
 
-  it('handles delivery status callbacks cleanly and updates DbClient status for delivered and failed status', async () => {
+  it('handles delivery status callbacks cleanly and advances the stored delivery state', async () => {
     // Seed an outbound message record
     await DbClient.saveOutboundMessage({
       id: 'out_deliv_001',
       tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
       to_e164: '+15551234567',
       from_e164: '+19715885823',
       body: 'Status delivery test',
       correlation_id: 'corr_deliv_test',
+      turn_id: 'corr_deliv_test',
       provider_sid: 'SM_DELIVERY_TEST_001',
       status: 'sent',
     });
@@ -41,23 +46,49 @@ describe('Outbound Transport Unit Tests', () => {
     // Verify database record was updated to 'delivered'
     const outboundRecord = DbClient.getAllMessagesOut().find((m) => m.id === 'out_deliv_001');
     expect(outboundRecord?.status).toBe('delivered');
+  });
 
-    // Test failure status update
-    const resFailed = await request(app)
-      .post('/webhooks/twilio/delivery-status')
-      .set('x-test-bypass-signature', 'true')
-      .type('form')
-      .send({
-        MessageSid: 'SM_DELIVERY_TEST_001',
-        MessageStatus: 'failed',
-        ErrorCode: '30008',
-        To: '+19715885823',
-        From: '+15551234567',
-      });
+  it('never moves a terminal delivery state backwards (delivered then failed/undelivered)', async () => {
+    await DbClient.saveOutboundMessage({
+      id: 'out_deliv_monotonic',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
+      to_e164: '+15551234567',
+      from_e164: '+19715885823',
+      body: 'Monotonic delivery test',
+      correlation_id: 'corr_deliv_mono',
+      turn_id: 'corr_deliv_mono',
+      provider_sid: 'SM_DELIVERY_MONO_001',
+      status: 'sent',
+    });
 
-    expect(resFailed.status).toBe(204);
-    expect(outboundRecord?.status).toBe('failed');
-    expect((outboundRecord as any)?.error_message).toContain('30008');
+    const callback = (status: string, errorCode?: string) =>
+      request(app)
+        .post('/webhooks/twilio/delivery-status')
+        .set('x-test-bypass-signature', 'true')
+        .type('form')
+        .send({
+          MessageSid: 'SM_DELIVERY_MONO_001',
+          MessageStatus: status,
+          ErrorCode: errorCode,
+          To: '+19715885823',
+          From: '+15551234567',
+        });
+
+    expect((await callback('delivered')).status).toBe(204);
+    const record = DbClient.getAllMessagesOut().find((m) => m.id === 'out_deliv_monotonic');
+    expect(record?.status).toBe('delivered');
+
+    // Regression: a late `failed` callback used to overwrite `delivered`.
+    expect((await callback('failed', '30008')).status).toBe(204);
+    expect(record?.status).toBe('delivered');
+
+    expect((await callback('undelivered')).status).toBe(204);
+    expect(record?.status).toBe('delivered');
+
+    // Nor can it regress all the way back to a non-terminal state.
+    expect((await callback('sent')).status).toBe(204);
+    expect(record?.status).toBe('delivered');
   });
 
   it('returns HTTP 400 Bad Request when delivery status payload is missing required fields', async () => {
@@ -84,6 +115,7 @@ describe('Outbound Transport Unit Tests', () => {
 
     await DbClient.saveOutboundMessage({
       tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
       to_e164: '+15551234567',
       body: 'Testing retry mechanism',
       correlation_id: 'corr_retry_test',

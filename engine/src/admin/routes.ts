@@ -1024,8 +1024,8 @@ adminRouter.get('/vfarm/organizations', async (_req: Request, res: Response) => 
     const client = getLiveClient(res);
     if (!client) return;
     const adapter = CoreRegistry.getVfarmAdapter()!;
-    const jwt = adapter.getAdminJwt() || process.env.VFARM_JWT;
-    const data = await client.listOrganizations(jwt || undefined);
+    const jwt = (await adapter.ensureAdminToken()) || undefined;
+    const data = await client.listOrganizations(jwt);
     res.status(200).json(data);
   } catch (err: any) {
     sendProxyError(res, 'organizations', err);
@@ -1404,7 +1404,7 @@ adminRouter.get('/vfarm/customers', async (req: Request, res: Response) => {
       return;
     }
 
-    const jwt = adapter.getAdminJwt() || process.env.VFARM_JWT;
+    const jwt = await adapter.ensureAdminToken();
 
     // Fetch live vFarm org members — try both method names for safety
     let vfarmMembers: any[] = [];

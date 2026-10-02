@@ -16,7 +16,17 @@ describe('IntentRouter & Intent Detection Tests', () => {
   beforeEach(() => {
     DbClient.clearAll();
     seedTestCustomers();
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      // BHARAG incidents endpoint returns a real incident_id — a response with
+      // no id is a genuine creation failure (see the degraded-escalation test
+      // below), never a licence to invent one.
+      if (String(url).includes('/incidents')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ incident_id: 'inc_real_001', status: 'open' }),
+        } as Response;
+      }
       return {
         ok: true,
         json: async () => ({ answer: 'BHARAG Knowledge response for query.' }),
@@ -212,6 +222,38 @@ describe('IntentRouter & Intent Detection Tests', () => {
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
     expect(outbound.body).toContain('BHARAG Knowledge');
     expect(IntentRouter.detectIntent(msg.body)).toBe('escalate');
+  });
+
+  it('tells the customer honestly when a BHARAG incident could not be created', async () => {
+    // Incident creation returns 200 but no incident_id — i.e. no ticket exists.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/incidents')) {
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ answer: 'BHARAG Knowledge response for query.' }),
+      } as Response;
+    });
+
+    const msg: InboundMessage = {
+      message_id:     'SM_FAULT_TEST_NO_TICKET',
+      tenant_id:      'tenant-vfarm-01',
+      from_e164:      '+15551234567',
+      to_e164:        '+19715885823',
+      body:           'Pump alarm water leak emergency!',
+      media:          [],
+      received_at:    new Date().toISOString(),
+      correlation_id: 'corr_fault_no_ticket',
+    };
+
+    const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
+
+    // No fabricated incident id reaches the customer or the conversation record.
+    expect(outbound.body).not.toContain('inc_vfarm_');
+    expect(outbound.body).toContain('could not open a support ticket');
+    const conv = DbClient.getAllConversations().find((c: any) => c.conversation_id === outbound.id);
+    expect(conv?.incident_id ?? null).toBeNull();
   });
 
   it('resolves +923082113844 as a known customer (cust_vfarm_003_test_user) and routes to BHARAG RAG', async () => {

@@ -4,6 +4,7 @@ import pg from 'pg';
 import { Logger } from '../config/logger.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
 import { CoreRegistry } from '../core/registry.js';
+import { deliveryStatusRank } from '../contracts/events.js';
 import type { Project, ServiceNumberBinding, Tenant } from '../core/types.js';
 
 export interface CustomerRecord {
@@ -164,16 +165,18 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
-        // project_id included since migration 010; column is nullable for older rows.
+        // project_id since migration 010; turn_id since migration 013. Both are
+        // nullable so legacy rows keep loading.
         const query = `
-          INSERT INTO messages_out (id, tenant_id, project_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          INSERT INTO messages_out (id, tenant_id, project_id, from_e164, to_e164, body, media_url, correlation_id, turn_id, status, retry_count, error_message, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             retry_count = EXCLUDED.retry_count,
             error_message = EXCLUDED.error_message,
             from_e164 = EXCLUDED.from_e164,
-            project_id = COALESCE(EXCLUDED.project_id, messages_out.project_id)
+            project_id = COALESCE(EXCLUDED.project_id, messages_out.project_id),
+            turn_id = COALESCE(EXCLUDED.turn_id, messages_out.turn_id)
         `;
         await pool.query(query, [
           record.id,
@@ -184,6 +187,8 @@ export class DbClient {
           record.body,
           record.media_url || null,
           record.correlation_id,
+          // Durable cst.turn <-> cst.delivery join key.
+          record.turn_id || null,
           record.status,
           record.retry_count,
           record.error_message || null,
@@ -201,8 +206,11 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // project_id (migration 010) and turn_id (migration 013) are read here so
+        // the worker can resolve the sending number and publish correlated
+        // delivery events from persisted state alone.
         const query = `
-          SELECT id, tenant_id, from_e164, to_e164, body, media_url, correlation_id, status, retry_count, error_message, created_at, next_retry_at
+          SELECT id, tenant_id, project_id, from_e164, to_e164, body, media_url, correlation_id, turn_id, provider_sid, status, retry_count, error_message, created_at, next_retry_at
           FROM messages_out
           WHERE (status = 'pending') OR (status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
           ORDER BY created_at ASC
@@ -212,11 +220,14 @@ export class DbClient {
         const dbPending: OutboundMessage[] = res.rows.map((r) => ({
           id: r.id,
           tenant_id: r.tenant_id,
+          project_id: r.project_id ?? undefined,
           from_e164: r.from_e164,
           to_e164: r.to_e164,
           body: r.body,
           media_url: r.media_url,
           correlation_id: r.correlation_id,
+          turn_id: r.turn_id ?? undefined,
+          provider_sid: r.provider_sid ?? undefined,
           status: r.status,
           retry_count: r.retry_count,
           error_message: r.error_message,
@@ -360,32 +371,83 @@ export class DbClient {
   }
 
   /**
-   * Update delivery status across outbound queue and message transcripts by provider_sid or correlation_id.
-   * Returns true if a matching record was found and updated.
-   */
+ * Update delivery status across outbound queue and message transcripts by provider_sid or correlation_id.
+ *
+ * Monotonic: a delivery state never moves backwards. Once a terminal status
+ * (delivered / undelivered / failed) is recorded, a late duplicate or regressing
+ * callback (e.g. Twilio re-sending `sent`) leaves the stored state untouched.
+ *
+ * Returns the resolved correlation context so the caller can build a
+ * `cst.delivery` event whose `turn_id` matches the originating `cst.turn` and
+ * whose `project_id` is never empty.
+ */
   static async updateDeliveryStatusByProviderSid(
     providerSid: string,
     status: 'sent' | 'delivered' | 'failed' | 'undelivered',
     errorDetails?: string
-  ): Promise<{ updated: boolean; tenant_id?: string }> {
+  ): Promise<{
+    updated: boolean;
+    /** False when the incoming status was a duplicate or a regression. */
+    advanced: boolean;
+    tenant_id?: string;
+    project_id?: string;
+    message_id?: string;
+    turn_id?: string;
+    to_e164?: string;
+    from_e164?: string;
+    previous_status?: string;
+  }> {
     let updated = false;
+    let advanced = false;
     let resolvedTenantId: string | undefined;
+    let resolvedProjectId: string | undefined;
+    let resolvedMessageId: string | undefined;
+    let resolvedTurnId: string | undefined;
+    let resolvedTo: string | undefined;
+    let resolvedFrom: string | undefined;
+    let previousStatus: string | undefined;
+
+    const incomingRank = deliveryStatusRank(status);
 
     for (const msg of this.messagesOutStore.values()) {
       if (msg.provider_sid === providerSid || msg.id === providerSid || msg.correlation_id?.includes(providerSid)) {
+        previousStatus = msg.status;
+        if (deliveryStatusRank(msg.status) >= incomingRank) {
+          // Duplicate or backwards transition — keep the stored state.
+          resolvedTenantId = msg.tenant_id;
+          resolvedProjectId = msg.project_id;
+          resolvedMessageId = msg.id;
+          resolvedTurnId = msg.turn_id;
+          resolvedTo = msg.to_e164;
+          resolvedFrom = msg.from_e164;
+          break;
+        }
         msg.status = status;
         if (errorDetails) (msg as any).error_message = errorDetails;
         resolvedTenantId = msg.tenant_id;
+        resolvedProjectId = msg.project_id;
+        resolvedMessageId = msg.id;
+        // turn_id is the cst.turn.turn_id join key; fall back to the
+        // correlation_id, which the SMS ingress lane sets to the same value.
+        resolvedTurnId = msg.turn_id || msg.correlation_id;
+        resolvedTo = msg.to_e164;
+        resolvedFrom = msg.from_e164;
         updated = true;
+        advanced = true;
         break;
       }
     }
 
     for (const transcript of this.transcriptsStore.values()) {
       if (transcript.provider_sid === providerSid || transcript.message_id === providerSid) {
-        transcript.delivery_status = status;
-        if (errorDetails) transcript.error_message = errorDetails;
+        if (deliveryStatusRank(transcript.delivery_status) < incomingRank) {
+          transcript.delivery_status = status;
+          if (errorDetails) transcript.error_message = errorDetails;
+          advanced = true;
+        }
         if (!resolvedTenantId) resolvedTenantId = transcript.tenant_id;
+        if (!resolvedProjectId) resolvedProjectId = transcript.project_id;
+        if (!resolvedTurnId) resolvedTurnId = transcript.message_id;
         updated = true;
         break;
       }
@@ -394,25 +456,102 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
-        const query1 = `UPDATE messages_out SET status = $1, error_message = $2 WHERE id = $3 OR correlation_id LIKE $4 RETURNING tenant_id`;
-        const res1 = await pool.query(query1, [status, errorDetails || null, providerSid, `%${providerSid}%`]);
+        // `provider_sid` is the join column for a Twilio callback: it is the only
+        // column that holds the MessageSid for a row written by the send path.
+        // Matching on `id`/`correlation_id` alone (as this used to) matched
+        // nothing once the process had restarted and the in-memory store was
+        // empty, so delivery state stopped persisting AND the callback resolved
+        // no tenant/project and refused to publish — real deliveries silently
+        // vanished from the dashboard.
+        const query1 = `
+          UPDATE messages_out SET status = $1, error_message = $2
+          WHERE (provider_sid = $3 OR id = $3 OR correlation_id LIKE $4)
+            AND COALESCE(
+              (CASE status WHEN 'queued' THEN 1 WHEN 'sending' THEN 2 WHEN 'sent' THEN 3 ELSE 4 END),
+              0
+            ) < $5
+          RETURNING tenant_id, project_id, id, turn_id, correlation_id, to_e164, from_e164
+        `;
+        const res1 = await pool.query(query1, [
+          status,
+          errorDetails || null,
+          providerSid,
+          `%${providerSid}%`,
+          incomingRank,
+        ]);
         if (res1.rowCount && res1.rowCount > 0) {
           updated = true;
-          resolvedTenantId = res1.rows[0].tenant_id;
+          advanced = true;
+          resolvedTenantId = res1.rows[0].tenant_id ?? resolvedTenantId;
+          resolvedProjectId = res1.rows[0].project_id ?? resolvedProjectId;
+          resolvedMessageId = res1.rows[0].id ?? resolvedMessageId;
+          resolvedTurnId = res1.rows[0].turn_id ?? res1.rows[0].correlation_id ?? resolvedTurnId;
+          resolvedTo = res1.rows[0].to_e164 ?? resolvedTo;
+          resolvedFrom = res1.rows[0].from_e164 ?? resolvedFrom;
         }
 
-        const query2 = `UPDATE messages SET delivery_status = $1 WHERE message_id = $2 OR provider_sid = $3 RETURNING tenant_id`;
-        const res2 = await pool.query(query2, [status, providerSid, providerSid]);
+        const query2 = `
+          UPDATE messages SET delivery_status = $1
+          WHERE (message_id = $2 OR provider_sid = $3)
+            AND COALESCE(
+              (CASE delivery_status WHEN 'queued' THEN 1 WHEN 'sending' THEN 2 WHEN 'sent' THEN 3 ELSE 4 END),
+              0
+            ) < $4
+          RETURNING tenant_id, project_id, message_id, from_e164, to_e164
+        `;
+        const res2 = await pool.query(query2, [status, providerSid, providerSid, incomingRank]);
         if (res2.rowCount && res2.rowCount > 0) {
           updated = true;
+          advanced = true;
           if (!resolvedTenantId) resolvedTenantId = res2.rows[0].tenant_id;
+          if (!resolvedProjectId) resolvedProjectId = res2.rows[0].project_id;
+          if (!resolvedTurnId) resolvedTurnId = res2.rows[0].message_id;
+        }
+
+        // Correlation must survive a SUPPRESSED transition.
+        //
+        // The monotonic guard in both UPDATEs above means a duplicate or a
+        // regression (e.g. a late `delivered` arriving for a message already
+        // recorded as `failed`) legitimately updates no row — so `resolvedTurnId`
+        // would still be undefined and the resulting cst.delivery event would go
+        // out with no turn_id, silently breaking the cst.turn join for that
+        // event. Read-only lookup so the join key is always resolvable.
+        if (!resolvedTurnId || !resolvedTenantId || !resolvedProjectId) {
+          const lookup = `
+            SELECT tenant_id, project_id, id AS message_id, turn_id, correlation_id, to_e164, from_e164
+            FROM messages_out
+            WHERE provider_sid = $1 OR id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          const res3 = await pool.query(lookup, [providerSid]);
+          if (res3.rowCount && res3.rowCount > 0) {
+            const row = res3.rows[0];
+            resolvedTenantId = resolvedTenantId ?? row.tenant_id;
+            resolvedProjectId = resolvedProjectId ?? row.project_id;
+            resolvedMessageId = resolvedMessageId ?? row.message_id;
+            resolvedTurnId = resolvedTurnId ?? row.turn_id ?? row.correlation_id;
+            resolvedTo = resolvedTo ?? row.to_e164;
+            resolvedFrom = resolvedFrom ?? row.from_e164;
+            updated = true;
+          }
         }
       } catch (err: any) {
         Logger.error(`DbClient.updateDeliveryStatusByProviderSid Postgres Error: ${err.message}`);
       }
     }
 
-    return { updated, tenant_id: resolvedTenantId };
+    return {
+      updated,
+      advanced,
+      tenant_id: resolvedTenantId,
+      project_id: resolvedProjectId,
+      message_id: resolvedMessageId,
+      turn_id: resolvedTurnId,
+      to_e164: resolvedTo,
+      from_e164: resolvedFrom,
+      previous_status: previousStatus,
+    };
   }
 
   static async getOrCreateConversation(

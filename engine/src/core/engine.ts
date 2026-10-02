@@ -5,11 +5,11 @@ import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 import { StepUpAuthService } from '../identity/stepup.js';
 import { IntentRouter, DetectedIntent } from '../router/index.js';
-import { dashboardPublisher, CstDashboardPublisher } from '../publishers/dashboard.js';
+import { dashboardPublisher, setActiveDashboardPublisher, CstDashboardPublisher } from '../publishers/dashboard.js';
 import {
   CstTurnEventV1,
   CST_EVENT_SPEC_VERSION,
-  AllowedTurnStatus,
+  mapInternalStatusToContractStatus,
   CustomerPayload,
 } from '../contracts/events.js';
 import { randomUUID } from 'crypto';
@@ -25,6 +25,9 @@ export class CoreEngine {
 
   static setDashboardPublisher(publisher: CstDashboardPublisher | null): void {
     this.customPublisher = publisher;
+    // Also switch the shared publisher used by the cst.delivery path, so both
+    // event types go to the same ingestion endpoint.
+    setActiveDashboardPublisher(publisher);
   }
 
   static getDashboardPublisher(): CstDashboardPublisher {
@@ -34,11 +37,17 @@ export class CoreEngine {
   /**
    * Helper to format and dispatch a canonical cst.turn event.
    * Fail-safe: Never throws or interrupts customer interaction flow.
+   *
+   * `internalStatus` is the CoreEngine pipeline's own outcome name (completed /
+   * step_up / refused / onboarding / failed). It is mapped explicitly through
+   * `mapInternalStatusToContractStatus` so the dashboard only ever sees the
+   * required contract values (ok / refused / step_up_required / onboarding /
+   * error) and never an internal lifecycle name.
    */
   private static publishTurn(params: {
     envelope: MessageEnvelope;
     speaker: SpeakerIdentity;
-    status: AllowedTurnStatus;
+    status: string;
     durationMs: number;
     intent?: string;
     replyText?: string;
@@ -53,7 +62,7 @@ export class CoreEngine {
       const {
         envelope,
         speaker,
-        status,
+        status: internalStatus,
         durationMs,
         intent,
         replyText,
@@ -64,6 +73,8 @@ export class CoreEngine {
         incidentId,
         metadata,
       } = params;
+
+      const status = mapInternalStatusToContractStatus(internalStatus);
 
       const customerRole = (['owner', 'manager', 'tech', 'unknown'].includes(speaker?.role as any)
         ? speaker.role
@@ -81,11 +92,13 @@ export class CoreEngine {
         farm_ids: speaker?.farm_ids,
       };
 
+      const occurredAt = new Date().toISOString();
+
       const event: CstTurnEventV1 = {
         specversion: CST_EVENT_SPEC_VERSION,
         id: `turn_evt_${randomUUID()}`,
         source: `cst/${envelope.channel || 'core'}`,
-        time: new Date().toISOString(),
+        time: occurredAt,
         tenant_id: envelope.tenant_id,
         project_id: envelope.project_id,
         correlation_id: envelope.correlation_id,
@@ -113,6 +126,10 @@ export class CoreEngine {
           customer,
           reason,
           error,
+          // Explicit required-field aliases for the Engine Dashboard contract.
+          event_type: 'cst.turn',
+          message: envelope.text,
+          occurred_at: occurredAt,
           metadata: {
             ...envelope.metadata,
             ...metadata,
@@ -528,9 +545,22 @@ export class CoreEngine {
         }
       }
 
-      // Verified resource context
-      const primaryFarmId = grantedFarmIds[0] || process.env.VFARM_DEFAULT_FARM_ID || 'farm_default';
-      const boundUnitId = (speaker.unit_context?.unit_id as string) || process.env.VFARM_DEFAULT_UNIT_ID || primaryFarmId;
+      // Verified resource context — built ONLY from the vFarm-verified
+      // farm_ids on the resolved speaker identity. There is deliberately no
+      // VFARM_DEFAULT_FARM_ID / VFARM_DEFAULT_UNIT_ID / 'farm_default' fallback:
+      // a static default would silently issue farm data to a speaker whose
+      // authoritative grant list is empty or unavailable (see the farm-scope
+      // gate above, which already refuses when grantedFarmIds is empty).
+      const primaryFarmId = grantedFarmIds[0];
+      // Only a unit id vFarm actually reported may be used. Falling back to
+      // `primaryFarmId` would pass a FARM id where a UNIT id is expected, so
+      // vFarm / BHARAG / the media server would answer about an identifier of
+      // the wrong kind (or, before this, about a hardcoded bay-4 unit id).
+      // When vFarm reports no unit, `unit_id` stays undefined and the speaker is
+      // treated as not bound to any specific unit.
+      const reportedUnitId = speaker.unit_context?.unit_id as string | undefined;
+      const boundUnitId =
+        reportedUnitId && String(reportedUnitId).trim() ? reportedUnitId : undefined;
       const verifiedUnitContext = {
         farm_id: primaryFarmId,
         unit_id: boundUnitId,
@@ -550,7 +580,11 @@ export class CoreEngine {
           text,
           speaker,
         );
-        replyText = statusRes?.text || `Farm ${primaryFarmId} (Unit ${boundUnitId}): Telemetry currently normal.`;
+        replyText =
+          statusRes?.text ||
+          (boundUnitId
+            ? `Farm ${primaryFarmId} (Unit ${boundUnitId}): Telemetry currently normal.`
+            : `Farm ${primaryFarmId}: Telemetry currently normal.`);
       } else {
         replyText = await BharagRagConnector.askKnowledge(
           text,
@@ -559,8 +593,12 @@ export class CoreEngine {
         );
       }
 
-      // Incidents (escalate intent)
+      // Incidents (escalate intent).
+      // Integrity: an incident_id only ever reaches the customer-facing
+      // response, the transcript and cst.turn if BHARAG actually created the
+      // incident. A failed create is reported honestly instead.
       let incidentId: string | undefined;
+      let incidentFailure: string | undefined;
       if (detectedIntent === 'escalate') {
         const incidentRes = await BharagIncidentsConnector.fileIncident({
           customerRef: speaker.customer_ref,
@@ -569,18 +607,52 @@ export class CoreEngine {
           priority: 'high',
           unitContext: verifiedUnitContext,
         });
-        incidentId = incidentRes.incident_id;
-        Logger.info(`Incident filed: ${incidentRes.incident_id} for conversation ${conversationId}`);
+        if (incidentRes.created && incidentRes.incident_id) {
+          incidentId = incidentRes.incident_id;
+          Logger.info(`Incident filed: ${incidentId} for conversation ${conversationId}`);
+        } else {
+          incidentFailure = incidentRes.error || 'BHARAG incident creation unavailable';
+          Logger.audit({
+            timestamp: new Date().toISOString(),
+            tenant_id,
+            actor: speaker.customer_ref,
+            role: speaker.role,
+            entry_point: 'api',
+            tool_or_route: 'CoreEngine.processEnvelope',
+            outcome: 'error',
+            reason: `Escalation NOT ticketed — BHARAG incident creation failed: ${incidentFailure}. No incident_id recorded.`,
+            correlation_id,
+            commercial_impact:
+              'Customer asked for help and no incident was created. No one is tracking this escalation; support must be contacted directly.',
+          });
+        }
       }
 
-      // Media Server (images intent)
-      if (detectedIntent === 'images') {
+      // When the escalation could not be ticketed, the customer must be told the
+      // truth rather than receiving an answer implying a ticket exists.
+      if (incidentFailure) {
+        const degradedNotice =
+          'I could not open a support ticket for this escalation because our incident system is unavailable. '
+          + 'Please contact vFarm support directly so a specialist can follow up.';
+        if (detectedIntent === 'escalate') {
+          replyText = degradedNotice;
+        } else {
+          replyText = `${replyText}\n\n${degradedNotice}`.trim();
+        }
+      }
+
+      // Media Server (images intent). Requires a unit id vFarm actually
+      // reported: asking the media server for an unbound speaker's captures
+      // would either 404 or return another unit's images.
+      if (detectedIntent === 'images' && boundUnitId) {
         mediaUrl = await MediaServerConnector.getSignedMediaUrl(boundUnitId);
         Logger.info(`Media Server: Fetched signed URL for unit ${boundUnitId}: ${mediaUrl}`);
       }
 
       const durationMs = Date.now() - startTime;
-      const successReason = `Intent "${detectedIntent}" successfully processed for project "${project_id}" (farms=[${grantedFarmIds.join(', ')}])`;
+      const successReason = incidentFailure
+        ? `Intent "${detectedIntent}" answered for project "${project_id}" (farms=[${grantedFarmIds.join(', ')}]) but escalation ticketing failed: ${incidentFailure}`
+        : `Intent "${detectedIntent}" successfully processed for project "${project_id}" (farms=[${grantedFarmIds.join(', ')}])`;
 
       Logger.audit({
         timestamp: new Date().toISOString(),
@@ -589,7 +661,7 @@ export class CoreEngine {
         role: speaker.role,
         entry_point: 'api',
         tool_or_route: 'CoreEngine.processEnvelope',
-        outcome: 'ok',
+        outcome: incidentFailure ? 'error' : 'ok',
         reason: successReason,
         correlation_id,
       });
@@ -621,7 +693,7 @@ export class CoreEngine {
       this.publishTurn({
         envelope,
         speaker,
-        status: 'completed',
+        status: incidentFailure ? 'error' : 'completed',
         durationMs,
         intent: detectedIntent,
         replyText,
@@ -629,6 +701,7 @@ export class CoreEngine {
         conversationId,
         incidentId,
         reason: successReason,
+        error: incidentFailure,
         metadata: res.metadata,
       });
 

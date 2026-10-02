@@ -55,7 +55,7 @@ describe('BharagRagConnector Tests', () => {
     expect(JSON.parse(capturedOptions.body).query).toBe('What is the recommended vFarm pH level?');
   });
 
-  it('falls back to domain knowledge when cluster returns uninformative lack-of-context response', async () => {
+  it('never attributes its static fallback knowledge to BHARAG when the cluster has no context', async () => {
     globalThis.fetch = vi.fn().mockImplementation(async () => {
       return {
         ok: true,
@@ -68,16 +68,19 @@ describe('BharagRagConnector Tests', () => {
     });
 
     const result = await BharagRagConnector.askKnowledge('How do I clean the filter?');
-    // Triggers domain fallback knowledge instead of forwarding unhelpful message
-    expect(result).toContain('BHARAG Knowledge: To clean the vFarm nutrient filter');
+    // Degraded fallback: explicitly labelled as CST guidance, NOT BHARAG output.
+    expect(result).not.toContain('BHARAG Knowledge:');
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+    expect(result).toContain('not a verified answer');
   });
 
-  it('uses domain knowledge fallback when cluster endpoint is unavailable and emits Logger.infra', async () => {
+  it('uses the labelled static fallback when the cluster endpoint is unavailable and emits Logger.infra', async () => {
     const infraSpy = vi.spyOn(Logger, 'infra');
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network connection timeout'));
 
     const result = await BharagRagConnector.askKnowledge('What are the irrigation rules across our sites?');
-    expect(result).toContain('BHARAG Knowledge: Irrigation rules vary by crop type');
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+    expect(result).toContain('vFarm support');
 
     expect(infraSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -87,11 +90,31 @@ describe('BharagRagConnector Tests', () => {
     );
   });
 
-  it('uses domain knowledge fallback for filter cleaning questions when cluster is offline', async () => {
+  it('does not fabricate a site-specific procedure when the cluster is offline', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
-    const result = await BharagRagConnector.askKnowledge('How do I clean the filter?');
-    expect(result).toContain('BHARAG Knowledge: To clean the vFarm nutrient filter');
+    // Regression: the old fallback asserted specific operating values
+    // ("re-tighten to 5 Nm", "pH 5.8 - 6.5", "18h ON / 6h OFF") that were
+    // presented as BHARAG knowledge but were invented in this file.
+    const filter = await BharagRagConnector.askKnowledge('How do I clean the filter?');
+    expect(filter).not.toContain('5 Nm');
+    expect(filter).not.toContain('BHARAG Knowledge:');
+
+    const ph = await BharagRagConnector.askKnowledge('What is the right pH balance?');
+    expect(ph).not.toContain('5.8');
+    expect(ph).not.toContain('BHARAG Knowledge:');
+
+    const light = await BharagRagConnector.askKnowledge('What is the light cycle?');
+    expect(light).not.toContain('18 hours');
+    expect(light).not.toContain('BHARAG Knowledge:');
+  });
+
+  it('labels the generic (no-keyword) fallback as unverified too', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+
+    const result = await BharagRagConnector.askKnowledge('Do you have a policy about compliance paperwork?');
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+    expect(result).not.toContain('BHARAG Knowledge:');
   });
 
   it('includes workspaceKey, farm_id, and unit_id in cluster API payload when provided', async () => {

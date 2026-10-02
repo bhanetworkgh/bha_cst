@@ -64,6 +64,23 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
     });
 
     CoreEngine.setDashboardPublisher(mockPublisher);
+
+    // BHARAG incident creation is stubbed to return a REAL incident id. A
+    // response without one is a genuine failure, never a licence to fabricate
+    // an id — see the degraded-escalation test below.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/incidents')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ incident_id: 'inc_turn_test_001', status: 'open' }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ answer: 'KB answer.' }),
+      } as Response;
+    });
   });
 
   afterEach(() => {
@@ -95,7 +112,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
       const turn = publishedEvents[0];
       expect(turn.type).toBe('cst.turn');
       expect(turn.channel).toBe('sms');
-      expect(turn.data.status).toBe('completed');
+      expect(turn.data.status).toBe('ok');
       expect(turn.data.turn_id).toBe('corr_sms_turn_01');
       expect(turn.customer.customer_ref).toBe('cust_turn_owner');
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
@@ -125,7 +142,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
       const turn = publishedEvents[0];
       expect(turn.type).toBe('cst.turn');
       expect(turn.channel).toBe('voice');
-      expect(turn.data.status).toBe('completed');
+      expect(turn.data.status).toBe('ok');
       expect(turn.data.turn_id).toBe('corr_voice_turn_02');
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
     });
@@ -154,7 +171,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
       const turn = publishedEvents[0];
       expect(turn.type).toBe('cst.turn');
       expect(turn.channel).toBe('web');
-      expect(turn.data.status).toBe('completed');
+      expect(turn.data.status).toBe('ok');
       expect(turn.data.turn_id).toBe('corr_web_turn_03');
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
     });
@@ -267,7 +284,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
 
       expect(publishedEvents).toHaveLength(1);
       const turn = publishedEvents[0];
-      expect(turn.data.status).toBe('step_up');
+      expect(turn.data.status).toBe('step_up_required');
       expect(turn.data.reply_text).toContain('Reply with your 6-digit PIN');
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
     });
@@ -293,7 +310,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
 
       expect(publishedEvents).toHaveLength(1);
       const turn = publishedEvents[0];
-      expect(turn.data.status).toBe('failed');
+      expect(turn.data.status).toBe('error');
       expect(turn.data.error).toBe('Database cluster deadlocked');
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
     });
@@ -414,7 +431,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
 
       expect(publishedEvents).toHaveLength(1);
       const turn = publishedEvents[0];
-      expect(turn.data.status).toBe('step_up');
+      expect(turn.data.status).toBe('step_up_required');
       expect(turn.data.conversation_id).toBeDefined();
       expect(turn.tenant_id).toBe('tenant-test-turn');
       expect(turn.project_id).toBe('proj-test-turn');
@@ -448,7 +465,7 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
 
       expect(publishedEvents).toHaveLength(1);
       const turn = publishedEvents[0];
-      expect(turn.data.status).toBe('completed');
+      expect(turn.data.status).toBe('ok');
       expect(turn.data.conversation_id).toBe(res.conversation_id);
       expect(turn.tenant_id).toBe('tenant-test-turn');
       expect(turn.project_id).toBe('proj-test-turn');
@@ -458,6 +475,40 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
       expect(turn.data.incident_id).toBe(res.incident_id);
       expect(turn.data.intent).toBe('escalate');
 
+      expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
+    });
+
+    it('never fabricates an incident_id when BHARAG incident creation fails', async () => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        if (String(url).includes('/incidents')) {
+          // Upstream 500 — no ticket exists.
+          return { ok: false, status: 500, text: async () => 'boom' } as unknown as Response;
+        }
+        return { ok: true, json: async () => ({ answer: 'KB answer.' }) } as Response;
+      });
+
+      const envelope: MessageEnvelope = {
+        tenant_id: 'tenant-test-turn',
+        project_id: 'proj-test-turn',
+        channel: 'voice',
+        speaker_ref: '+15559990001',
+        text: 'urgent water leak emergency help',
+        media: [],
+        correlation_id: 'corr_enrich_escalate_fail',
+      };
+
+      const res = await CoreEngine.processEnvelope(envelope, knownSpeaker);
+
+      expect(res.intent).toBe('escalate');
+      // No id at all — not a synthetic `inc_vfarm_<hex>`.
+      expect(res.incident_id).toBeUndefined();
+      expect(res.reply_text).toContain('could not open a support ticket');
+
+      expect(publishedEvents).toHaveLength(1);
+      const turn = publishedEvents[0];
+      expect(turn.data.incident_id).toBeUndefined();
+      expect(turn.data.status).toBe('error');
+      expect(turn.data.error).toBeTruthy();
       expect(CstTurnEventV1Schema.safeParse(turn).success).toBe(true);
     });
   });

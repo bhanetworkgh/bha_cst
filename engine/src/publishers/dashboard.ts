@@ -250,3 +250,23 @@ export class CstDashboardPublisher {
  * Default singleton instance configured from environment variables.
  */
 export const dashboardPublisher = new CstDashboardPublisher();
+
+/**
+ * Process-wide publisher override.
+ *
+ * `dashboardPublisher` is constructed at module load, so it captures the
+ * environment exactly once. Anything that needs to aim CST at a different
+ * ingestion endpoint (a local verification sink, a test double) goes through
+ * here rather than reaching into the singleton's private config — otherwise the
+ * cst.turn path and the cst.delivery path would disagree about where events go.
+ */
+let activePublisher: CstDashboardPublisher | null = null;
+
+export function setActiveDashboardPublisher(publisher: CstDashboardPublisher | null): void {
+  activePublisher = publisher;
+}
+
+/** The publisher every CST event path must use. */
+export function getDashboardPublisher(): CstDashboardPublisher {
+  return activePublisher ?? dashboardPublisher;
+}
