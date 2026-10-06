@@ -2,13 +2,18 @@ import { Request, Response, NextFunction } from 'express';
 import twilio from 'twilio';
 import { getEnv } from '../../config/env.js';
 import { Logger } from '../../config/logger.js';
+import { isTestRunner } from '../../config/runtime.js';
 
 export function verifyTwilioSignature(req: Request, res: Response, next: NextFunction): void {
   const env = getEnv();
   const twilioSignature = req.headers['x-twilio-signature'] as string;
 
-  // Allow explicit test signature bypass header in dev/test environment for testing
-  if (process.env.NODE_ENV !== 'production' && req.headers['x-test-bypass-signature'] === 'true') {
+  // Signature bypass header. Previously `NODE_ENV !== 'production'`, which meant
+  // ANY non-production environment (including development, and any environment
+  // where .env had been sourced) would accept an unauthenticated webhook that
+  // simply set x-test-bypass-signature. Restricted to a test runner, which
+  // cannot be armed by setting an environment variable in a deployed service.
+  if (isTestRunner() && req.headers['x-test-bypass-signature'] === 'true') {
     return next();
   }
 

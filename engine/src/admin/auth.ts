@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
+import { isTestRunner } from '../config/runtime.js';
 
 export const authRouter = Router();
 
@@ -180,8 +181,12 @@ authRouter.get('/me', async (req: Request, res: Response) => {
 
 // ── Admin Auth Middleware — protect /api/v1/admin/* routes ───────────────────
 export async function requireAdminAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // Skip auth in test environment
-  if (process.env.NODE_ENV === 'test') {
+  // Skip auth when running inside a test runner. This used to key off
+  // `NODE_ENV === 'test'`, which is an env var: sourcing the repo's `.env` (it
+  // sets NODE_ENV=development) silently disabled the bypass and broke the admin
+  // suites, while a production process could in principle arm it. The vitest
+  // signal cannot be set by accident in a deployed environment.
+  if (isTestRunner()) {
     return next();
   }
 

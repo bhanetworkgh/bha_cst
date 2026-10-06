@@ -12,7 +12,7 @@
  */
 
 import { Logger } from '../config/logger.js';
-import { CstEventV1, CST_EVENT_SPEC_VERSION } from '../contracts/events.js';
+import { CstEventV1, CST_EVENT_SPEC_VERSION, safeParseCstEventV1 } from '../contracts/events.js';
 
 export interface DashboardPublisherOptions {
   dashboardUrl?: string;
@@ -21,6 +21,13 @@ export interface DashboardPublisherOptions {
   maxRetries?: number;
   initialRetryDelayMs?: number;
   backoffMultiplier?: number;
+  /**
+   * Dry-run mode (cst-e2e/DASHBOARD_FLOW.md §5). When true the publisher
+   * validates the event against the cst.event.v1 contract and logs the
+   * serialized payload locally, but makes NO remote HTTP request, so the
+   * Dashboard persists nothing. Defaults to `DRY_RUN === 'true'`.
+   */
+  dryRun?: boolean;
   fetchFn?: typeof fetch;
 }
 
@@ -30,6 +37,9 @@ export interface PublishResult {
   attempts: number;
   error?: string;
   eventId?: string;
+  /** True when the event was validated and logged locally without any
+   *  remote request (dry-run mode). */
+  dryRun?: boolean;
 }
 
 export class CstDashboardPublisher {
@@ -41,6 +51,7 @@ export class CstDashboardPublisher {
   private readonly maxRetries: number;
   private readonly initialRetryDelayMs: number;
   private readonly backoffMultiplier: number;
+  private readonly dryRun: boolean;
   private readonly fetchFn: typeof fetch;
 
   constructor(options: DashboardPublisherOptions = {}) {
@@ -50,7 +61,17 @@ export class CstDashboardPublisher {
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.backoffMultiplier = options.backoffMultiplier ?? 2;
+    this.dryRun = options.dryRun ?? process.env.DRY_RUN === 'true';
     this.fetchFn = options.fetchFn ?? globalThis.fetch;
+  }
+
+  /**
+   * True when the publisher is in dry-run mode: events are validated and
+   * logged locally but never sent to the remote Dashboard (no production
+   * records are written). See cst-e2e/DASHBOARD_FLOW.md §5.
+   */
+  public isDryRun(): boolean {
+    return this.dryRun;
   }
 
   /**
@@ -133,6 +154,41 @@ export class CstDashboardPublisher {
         attempts: 0,
         error: 'MISSING_CONFIGURATION',
         eventId,
+      };
+    }
+
+    // Dry-run (DASHBOARD_FLOW.md §5): validate the event against the
+    // cst.event.v1 contract and log the serialized payload locally, but
+    // make NO remote HTTP request, so the Dashboard writes no production
+    // record. A structurally invalid event is reported as a validation
+    // failure rather than silently accepted — dry-run must not become a
+    // way to ship malformed events.
+    if (this.dryRun) {
+      const parsed = safeParseCstEventV1(event);
+      if (!parsed.success) {
+        const issues = parsed.error.issues
+          .map((i) => `${i.path.join('.')}: ${i.message}`)
+          .join('; ');
+        Logger.warn(
+          `[CstDashboardPublisher] Dry-run validation failed for event ${eventId}: ${issues}`
+        );
+        return {
+          success: false,
+          attempts: 0,
+          error: 'VALIDATION_FAILED',
+          eventId,
+          dryRun: true,
+        };
+      }
+      Logger.info(
+        `[CstDashboardPublisher] Dry-run: event ${eventId} (${(event as any).type}) validated against cst.event.v1; no remote request made.`
+      );
+      Logger.info(`[CstDashboardPublisher] Dry-run payload: ${JSON.stringify(event)}`);
+      return {
+        success: true,
+        attempts: 0,
+        eventId,
+        dryRun: true,
       };
     }
 

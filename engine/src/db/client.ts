@@ -2,6 +2,7 @@ import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
 import { randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
+import { shouldAutoCreatePool } from '../config/runtime.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
 import { CoreRegistry } from '../core/registry.js';
 import { deliveryStatusRank } from '../contracts/events.js';
@@ -20,6 +21,27 @@ export interface CustomerRecord {
   farm_ids?:        string[];
   speaker_cache_expires_at?: string;
   created_at?:      string;
+}
+
+/**
+ * Raised when a conversation row could not be persisted.
+ *
+ * Callers MUST abandon the turn rather than continue with the in-memory
+ * conversation id: that id has no row in `conversations`, so any message written
+ * against it would violate `messages_conversation_id_fkey`. The FK constraints
+ * are correct and are deliberately left in place — this error is the alternative
+ * to weakening them.
+ */
+export class ConversationPersistenceError extends Error {
+  public readonly code = 'CONVERSATION_PERSISTENCE_FAILED';
+  constructor(
+    message: string,
+    public readonly tenantId: string,
+    public readonly customerRef: string,
+  ) {
+    super(`Conversation could not be persisted for tenant ${tenantId}: ${message}`);
+    this.name = 'ConversationPersistenceError';
+  }
 }
 
 export interface VoiceDeliveryRecord {
@@ -59,14 +81,23 @@ export class DbClient {
 
   static getPool(): pg.Pool | null {
     if (this.pool) return this.pool;
-    const connectionString = process.env.DATABASE_URL;
-    if (connectionString && process.env.NODE_ENV !== 'test') {
-      try {
-        this.pool = new pg.Pool({ connectionString, max: 10, idleTimeoutMillis: 30000 });
-        Logger.info('DbClient: Initialized PostgreSQL database connection pool');
-      } catch (err: any) {
-        Logger.warn(`DbClient: Failed to initialize Postgres pool: ${err.message}`);
-      }
+    // Never auto-create a pool inside a test runner. This used to key off
+    // `NODE_ENV !== 'test'`, which broke whenever the shell had the repo's
+    // `.env` sourced (it sets NODE_ENV=development): unit tests then opened a
+    // live database and 76 tests across 14 files failed for that reason alone.
+    // Real-DB tests opt in with CST_DB_TESTS=1 and inject a pool via setPool().
+    if (!shouldAutoCreatePool()) {
+      return this.pool;
+    }
+    try {
+      this.pool = new pg.Pool({
+        connectionString: process.env.DATABASE_URL,
+        max: 10,
+        idleTimeoutMillis: 30000,
+      });
+      Logger.info('DbClient: Initialized PostgreSQL database connection pool');
+    } catch (err: any) {
+      Logger.warn(`DbClient: Failed to initialize Postgres pool: ${err.message}`);
     }
     return this.pool;
   }
@@ -554,6 +585,44 @@ export class DbClient {
     };
   }
 
+  /**
+   * Resolve the authoritative `systems.system_id` for a tenant.
+   *
+   * `systems.tenant_id` is UNIQUE (db/migrations/001_initial_schema.sql:5), so a
+   * tenant maps to exactly one system and this lookup is authoritative. Callers
+   * that pass a `project_id` in the `systemId` slot therefore get the real value
+   * instead of a string with no row in `systems` — which is what used to violate
+   * `conversations_system_id_fkey`.
+   *
+   * Falls back to the caller's value when no pool is configured (in-memory mode)
+   * or when the tenant genuinely has no system row yet, so behaviour outside
+   * Postgres is unchanged.
+   */
+  private static async resolveSystemIdForTenant(
+    pool: pg.Pool,
+    tenantId: string,
+    fallback: string,
+  ): Promise<string> {
+    try {
+      const res = await pool.query(
+        `SELECT system_id FROM systems WHERE tenant_id = $1 LIMIT 1`,
+        [tenantId],
+      );
+      if (res.rows.length > 0 && res.rows[0].system_id) {
+        return res.rows[0].system_id;
+      }
+      Logger.warn(
+        `DbClient: no systems row for tenant ${tenantId} — conversation FK parent missing (fail closed)`,
+      );
+      return fallback;
+    } catch (err: any) {
+      Logger.warn(
+        `DbClient: systems lookup failed for tenant ${tenantId}: ${err.message}`,
+      );
+      return fallback;
+    }
+  }
+
   static async getOrCreateConversation(
     tenantId: string,
     systemId: string,
@@ -587,6 +656,17 @@ export class DbClient {
 
     const pool = this.getPool();
     if (pool) {
+      // The database is the authority on system_id. Callers disagree about what
+      // belongs here (engine.ts passed a project_id, router/index.ts passed
+      // identity.system_id) and only the latter matched `systems`. Resolve it
+      // from tenant_id so the FK is satisfied by construction.
+      const authoritativeSystemId = await this.resolveSystemIdForTenant(
+        pool,
+        orgId,
+        systemId,
+      );
+      conv.system_id = authoritativeSystemId;
+
       try {
         // ON CONFLICT now uses the (tenant_id, project_id, customer_ref) unique constraint
         // added in migration 010. Falls back gracefully for rows where project_id is NULL.
@@ -596,13 +676,28 @@ export class DbClient {
           ON CONFLICT (tenant_id, project_id, customer_ref) DO UPDATE SET updated_at = NOW()
           RETURNING conversation_id
         `;
-        const res = await pool.query(query, [conv.conversation_id, orgId, projId, orgId, wsId, systemId, customerRef]);
+        const res = await pool.query(query, [
+          conv.conversation_id,
+          orgId,
+          projId,
+          orgId,
+          wsId,
+          authoritativeSystemId,
+          customerRef,
+        ]);
         if (res.rows.length > 0) {
           conv.conversation_id = res.rows[0].conversation_id;
           this.conversationsStore.set(key, conv);
         }
       } catch (err: any) {
+        // Previously this was logged and swallowed, and the unpersisted in-memory
+        // uuid was returned anyway. The caller then wrote a `messages` row against
+        // that dangling id, which is exactly how `messages_conversation_id_fkey`
+        // violations appeared: the conversation write had already failed. Fail
+        // loudly instead so the caller can abandon the turn rather than persist an
+        // orphan message.
         Logger.error(`DbClient.getOrCreateConversation Postgres Error: ${err.message}`);
+        throw new ConversationPersistenceError(err.message, orgId, customerRef);
       }
     }
 
@@ -1584,6 +1679,28 @@ export class DbClient {
 
     const pool = this.getPool();
     if (pool) {
+      // Same defect class as the conversations insert: `voice_deliveries.system_id`
+      // has the same `REFERENCES systems(system_id)` FK (migration 009:18), and
+      // most voice call sites pass a project_id. The previous
+      // `|| record.project_id || 'system-vfarm-01'` chain fed the FK either a
+      // project id (no matching row) or a hardcoded literal. Resolve from
+      // tenant_id instead, exactly as conversations does.
+      const authoritativeSystemId = await this.resolveSystemIdForTenant(
+        pool,
+        record.tenant_id,
+        record.system_id || '',
+      );
+      if (!authoritativeSystemId) {
+        // `system_id` is NOT NULL + FK. With no `systems` row for this tenant the
+        // row is genuinely unpersistable; skip the write rather than fabricate a
+        // value or fire a guaranteed-violating INSERT. The in-memory ledger below
+        // still records the event.
+        Logger.warn(
+          `DbClient.recordVoiceDelivery: no systems row for tenant ${record.tenant_id} — voice delivery not persisted (fail closed)`,
+        );
+        return record;
+      }
+      record.system_id = authoritativeSystemId;
       try {
         const query = `
           INSERT INTO voice_deliveries (
@@ -1595,7 +1712,7 @@ export class DbClient {
         `;
         await pool.query(query, [
           record.id,
-          record.system_id || record.project_id || 'system-vfarm-01',
+          authoritativeSystemId,
           record.tenant_id,
           record.conversation_id || null,
           record.message_id || null,

@@ -238,8 +238,19 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   public async discoverFarms(jwt?: string): Promise<FarmResponse[]> {
     if (!this.liveClient) return [];
 
-    // Resolve token, acquiring a fresh one when the stored token is expired.
-    let token = jwt || (await this.ensureAdminToken()) || undefined;
+    // A caller-supplied JWT is that caller's own credential and nothing else.
+    // It is used verbatim: never re-authenticated with VFARM_ADMIN_* and never
+    // replaced by a CST-owned token, so an expired caller JWT surfaces as an
+    // upstream 401/403 instead of silently escalating to CST's farm scope.
+    if (jwt) {
+      const list = await this.liveClient.listFarms(jwt);
+      this.recordDiscoveredFarms(list.farms || []);
+      return this.discoveredFarms;
+    }
+
+    // CST-owned credential path (Admin Panel / no caller JWT): resolve a token,
+    // acquiring a fresh one when the stored token is expired.
+    let token = (await this.ensureAdminToken()) || undefined;
     if (token && VfarmTenantAdapter.jwtIsExpired(token)) {
       Logger.warn('VfarmTenantAdapter: stored JWT is expired — attempting auto-relogin before farm discovery');
       const fresh = await this.tryRelogin();
@@ -252,7 +263,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     } catch (err: any) {
       // On an upstream 401, try re-logging-in once and retry.
       const status = (err as any)?.status ?? (err as any)?.statusCode;
-      if ((status === 401 || status === 403) && !jwt) {
+      if (status === 401 || status === 403) {
         Logger.warn(`VfarmTenantAdapter: listFarms got ${status} — attempting one-shot re-auth`);
         const fresh = await this.tryRelogin();
         if (fresh) {
@@ -265,12 +276,19 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       }
     }
 
-    this.discoveredFarms = list.farms || [];
+    this.recordDiscoveredFarms(list.farms || []);
+    return this.discoveredFarms;
+  }
+
+  /** Update the discovered-farm projection. Never called with a caller's
+   * partial view in place of CST's own — discovery results are cached so
+   * farm-scope checks have something to compare against. */
+  private recordDiscoveredFarms(farms: FarmResponse[]): void {
+    this.discoveredFarms = farms;
     if (!this.activeFarmId && this.discoveredFarms.length > 0) {
       const first = this.discoveredFarms[0];
       this.activeFarmId = (first as any).farm_id || first.id || null;
     }
-    return this.discoveredFarms;
   }
 
   public async issueFarmToken(farmId: string, jwt?: string, name?: string): Promise<string> {

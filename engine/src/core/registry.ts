@@ -4,6 +4,7 @@ import { VfarmTenantAdapter, VfarmAdapterConfig } from '../adapters/vfarm/index.
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
 import { getEnv } from '../config/env.js';
+import { isTestRunner } from '../config/runtime.js';
 
 export interface SpeakerCacheEntry {
   identity: SpeakerIdentity;
@@ -17,7 +18,11 @@ export interface SpeakerCacheEntry {
  * so existing dev/test setups that never set it keep working unchanged.
  */
 function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
-  if (process.env.NODE_ENV === 'test' && process.env.VFARM_LIVE_TEST !== 'true') {
+  // Never wire a live vFarm upstream from inside a test runner. Keyed off the
+  // vitest signal rather than NODE_ENV, which the repo's `.env` overwrites with
+  // 'development' (sourcing it used to make unit tests build a live adapter).
+  // VFARM_LIVE_TEST=true is the explicit opt-in for a test that wants it.
+  if (isTestRunner() && process.env.VFARM_LIVE_TEST !== 'true') {
     return {};
   }
   try {
@@ -57,7 +62,7 @@ export class CoreRegistry {
   private static readonly CACHE_TTL_MS = 60_000; // 60 seconds TTL
 
   static {
-    if (process.env.NODE_ENV === 'test') {
+    if (isTestRunner()) {
       this.resetToDefault();
     }
   }

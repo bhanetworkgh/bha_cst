@@ -3,6 +3,7 @@ import { CoreRegistry } from '../../core/registry.js';
 import { CoreEngine } from '../../core/engine.js';
 import { MessageEnvelope, EnvelopeResponse } from '../../core/envelope.js';
 import { Logger } from '../../config/logger.js';
+import { isTestRunner } from '../../config/runtime.js';
 import { randomUUID } from 'crypto';
 
 export const webInterfaceRouter = Router();
@@ -32,7 +33,11 @@ function cookieValue(req: Request, name: string): string | undefined {
 function getSession(req: Request): WebSession | null {
     const token = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-cst-session') || cookieValue(req, 'cst_web_session');
     if (token) return sessions.get(token) || null;
-    if (process.env.NODE_ENV === 'test') return createSessionSync('demo-owner', process.env.VFARM_PROJECT_ID_MAIN || 'proj-vfarm-main');
+    // A demo session exists only inside a test runner. Previously keyed off
+    // NODE_ENV === 'test', which the repo's .env overwrites with 'development',
+    // so sourcing .env would have silently granted a web session to any
+    // unauthenticated request in a dev environment.
+    if (isTestRunner()) return createSessionSync('demo-owner', process.env.VFARM_PROJECT_ID_MAIN || 'proj-vfarm-main');
     return null;
   }
 

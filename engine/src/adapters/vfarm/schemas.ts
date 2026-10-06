@@ -189,7 +189,12 @@ export type FarmHealthResponse = z.infer<typeof farmHealthResponseSchema>;
 export const layoutZoneSchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.string().optional(),
+  // `kind` is null in the live response (verified against the running vFarm
+  // service), and the upstream spec declares it as
+  // `anyOf: [{type: "string"}, {type: "null"}]`. It was declared `.optional()`
+  // only, so a real layout response failed validation here and getFarmLayout()
+  // threw a ZodError in production. Match the spec.
+  kind: z.string().nullable().optional(),
   cabinet_serial: z.string().nullable().optional(),
   sort_order: z.number().int().nullable().optional(),
   is_active: z.boolean().optional(),

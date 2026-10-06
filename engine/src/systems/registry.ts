@@ -99,6 +99,27 @@ function buildDefaultSystems(): SystemConfig[] {
 export class SystemsRegistry {
   private static systems: Map<string, SystemConfig> = new Map();
   private static numberToSystemMap: Map<string, SystemConfig> = new Map();
+  /**
+   * Every `INSERT INTO systems` this registry has issued, in order.
+   *
+   * `conversations.system_id` and `voice_deliveries.system_id` both carry
+   * `REFERENCES systems(system_id)`, and `systems` is populated by no migration
+   * and no seed — only here, at runtime. The insert used to be fire-and-forget
+   * with nothing awaiting it, so on a fresh database the first inbound webhook
+   * could reach `conversations` before its FK parent existed. `server.ts` awaits
+   * `whenPersisted()` before listening, which closes that window without changing
+   * `registerSystem`'s synchronous signature.
+   */
+  private static pendingWrites: Promise<unknown>[] = [];
+
+  /** Resolves once every `systems` row this registry has written is committed. */
+  static async whenPersisted(): Promise<void> {
+    while (this.pendingWrites.length > 0) {
+      const batch = this.pendingWrites;
+      this.pendingWrites = [];
+      await Promise.allSettled(batch);
+    }
+  }
 
   static {
     for (const sys of buildDefaultSystems()) {
@@ -136,7 +157,7 @@ export class SystemsRegistry {
           elevenlabs_model_id = EXCLUDED.elevenlabs_model_id,
           voice_enabled       = EXCLUDED.voice_enabled
       `;
-      pool.query(query, [
+      const write = pool.query(query, [
         normalizedConfig.system_id,
         normalizedConfig.tenant_id,
         normalizedConfig.organization_id,
@@ -154,7 +175,10 @@ export class SystemsRegistry {
         normalizedConfig.elevenlabs_voice_id || null,
         normalizedConfig.elevenlabs_model_id || null,
         normalizedConfig.voice_enabled ?? false,
-      ]).catch((err) => Logger.error(`SystemsRegistry Postgres Error: ${err.message}`));
+      ]);
+      this.pendingWrites.push(
+        write.catch((err) => Logger.error(`SystemsRegistry Postgres Error: ${err.message}`)),
+      );
     }
   }
 

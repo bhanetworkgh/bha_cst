@@ -234,14 +234,37 @@ export class CoreEngine {
         || 'Welcome! Contact support to link your account to active resources.';
 
       // Create or get conversation record stamped with tenant_id and project_id (§7)
-      const convRecord = await DbClient.getOrCreateConversation(
-        tenant_id,
-        project_id,                               // systemId ← using project_id as system ref
-        speaker.customer_ref || speaker_ref,
-        tenant_id,                                // organizationId
-        undefined,                                // workspaceId — deprecated, project_id is the scope
-        project_id                                // projectId — the new critical field
-      );
+      //
+      // `systemId` is resolved from tenant_id inside DbClient (systems.tenant_id is
+      // UNIQUE, so the DB is authoritative) precisely because this call site used
+      // to pass `project_id` here, which has no row in `systems` and violated
+      // `conversations_system_id_fkey`. The argument is kept for API compatibility
+      // and used only as a last-resort fallback.
+      let convRecord;
+      try {
+        convRecord = await DbClient.getOrCreateConversation(
+          tenant_id,
+          project_id,
+          speaker.customer_ref || speaker_ref,
+          tenant_id,                                // organizationId
+          undefined,                                // workspaceId — deprecated, project_id is the scope
+          project_id                                // projectId — the new critical field
+        );
+      } catch (err: any) {
+        // The conversation row was not persisted, so the in-memory id is dangling.
+        // Writing a message against it would violate messages_conversation_id_fkey.
+        // Abandon the turn rather than persist an orphan.
+        Logger.error(
+          `CoreEngine: conversation persistence failed, aborting turn before transcript write: ${err.message}`,
+        );
+        Logger.infra({
+          message: `Conversation not persisted for tenant ${tenant_id} / project ${project_id}; inbound transcript dropped for this turn.`,
+          commercial_impact:
+            'This turn produces no persisted transcript. Retry once persistence recovers. No partial or orphan rows are written.',
+          meta: { tenant_id, project_id, correlation_id, error: err?.message },
+        });
+        throw err;
+      }
       conversationId = convRecord.conversation_id;
 
       // Persist inbound message to transcript — project_id scopes the transcript row

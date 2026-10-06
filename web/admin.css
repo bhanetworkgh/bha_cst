@@ -1258,3 +1258,67 @@ body {
 .vfarm-e2e-card:hover {
   box-shadow: var(--shadow-md);
 }
+
+/* Tab 7 – Layout hierarchy map (inline SVG, zone → location → sublocation) */
+.vfarm-layout-map {
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--surface-hover);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.vfarm-layout-map .lm-caption {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.vfarm-layout-map .lm-empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.vfarm-layout-map .lm-svg {
+  display: block;
+}
+
+.vfarm-layout-map .lm-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--ink);
+}
+
+.vfarm-layout-map .lm-sub {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted);
+}
+
+.vfarm-layout-map .lm-zone-box {
+  fill: var(--primary-subtle);
+  stroke: var(--primary);
+  stroke-width: 1;
+}
+
+.vfarm-layout-map .lm-loc-box {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.vfarm-layout-map .lm-sub-box {
+  fill: var(--surface);
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.vfarm-layout-map .lm-inactive {
+  opacity: 0.45;
+  stroke-dasharray: 3 3;
+}

@@ -194,12 +194,13 @@ function fillProjectSelects() {
     '#edit-user-project',
     '#add-user-project',
     '#speaker-filter-project',
+    '#invalidate-project',
   ];
 
   projectSelects.forEach((selector) => {
     const select = $(selector);
     if (!select) return;
-    const keepFirst = selector === '#speaker-filter-project';
+    const keepFirst = selector === '#speaker-filter-project' || selector === '#invalidate-project';
     const current = select.value;
 
     select.replaceChildren(
@@ -211,6 +212,11 @@ function fillProjectSelects() {
       select.value = current;
     }
   });
+
+  // The invalidate form scopes its project list to the selected tenant (the
+  // backend treats an empty project as "every project in the tenant"), so it
+  // rebuilds its own options instead of keeping the flat fill above.
+  invalidateProjectOptions();
 
   renderProjectTable(scoped);
   if (state.projects.length && $('#project-config-select')) {
@@ -808,6 +814,77 @@ $('#btn-quick-sync-speakers')?.addEventListener('click', () => {
       await loadSpeakersTab();
     });
   }
+});
+
+// ── 2c. Instant Cache Invalidation form (R-NUM-P5) ──────────────────────────
+// Mirrors the per-row "Invalidate" button (same endpoint, same body shape) so an
+// operator can expire one speaker's cache entry without first loading the table.
+//
+// POST /api/v1/admin/speakers/invalidate
+//   body: { tenant_id, project_id?, phone_e164 }
+//   200:  { status: 'invalidated', tenant_id, project_id, phone_e164 }
+//   400:  { error: 'BAD_REQUEST', message }   — missing tenant_id or phone_e164
+//   500:  { error: 'INVALIDATION_FAILED', message }
+// project_id is optional by contract (engine/src/admin/routes.ts:487 treats a
+// NULL project as "every project in the tenant"), so the select may stay on
+// "— any project —".
+
+const E164_PATTERN = /^\+[1-9]\d{1,14}$/;
+
+function invalidateProjectOptions() {
+  const tenantId = $('#invalidate-tenant')?.value || '';
+  const select = $('#invalidate-project');
+  if (!select) return;
+  const options = state.projects.filter((p) => p.tenant_id === tenantId);
+  select.replaceChildren(
+    new Option('— any project —', ''),
+    ...options.map((p) => new Option(`${p.name} — ${p.project_id}`, p.project_id)),
+  );
+}
+
+$('#invalidate-tenant')?.addEventListener('change', invalidateProjectOptions);
+
+$('#speaker-invalidate-form')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const tenant_id = $('#invalidate-tenant')?.value || '';
+    const project_id = $('#invalidate-project')?.value || '';
+    const phone_e164 = ($('#invalidate-phone')?.value || '').trim();
+
+    if (!tenant_id) throw new Error('Select the tenant that owns this speaker.');
+    if (!phone_e164) throw new Error('Enter the speaker phone number in E.164 format.');
+    if (!E164_PATTERN.test(phone_e164)) {
+      throw new Error(`"${phone_e164}" is not E.164 — expected a leading +, a non-zero country digit, then 1-14 digits (e.g. +15551234567).`);
+    }
+
+    const result = await api('/api/v1/admin/speakers/invalidate', {
+      method: 'POST',
+      body: JSON.stringify({ tenant_id, project_id: project_id || undefined, phone_e164 }),
+    });
+
+    const scope = project_id || 'all projects';
+    const status = result?.status === 'invalidated' ? 'active' : 'warn';
+    const rows = `
+      <tr>
+        <td><code>${escapeAdminHtml(phone_e164)}</code></td>
+        <td><code>${escapeAdminHtml(tenant_id)}</code></td>
+        <td>${escapeAdminHtml(scope)}</td>
+        <td><span class="pill ${status}">${escapeAdminHtml(result?.status || 'unknown')}</span></td>
+      </tr>`;
+    const box = $('#speaker-invalidate-result');
+    if (box) {
+      box.innerHTML = `
+        <table class="admin-table">
+          <thead><tr><th>Phone</th><th>Tenant</th><th>Project Scope</th><th>Result</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+    $('#invalidate-phone').value = '';
+
+    showToast(`Invalidated cache for ${phone_e164} (${scope}). Next SMS re-resolves live.`, 'success');
+    await loadSpeakersTab();
+    await loadHealth();
+  });
 });
 
 // ── 3. Tenants Management ───────────────────────────────────────────────────
@@ -1410,6 +1487,144 @@ function getVfarmLiveFarmId() {
     || '';
 }
 
+// ── 8a. Farm layout hierarchy map (inline SVG) ──────────────────────────────
+// Replaces the raw JSON dump for the `layout` section with a tiered box diagram
+// built from the SAME GET /api/v1/admin/vfarm/layout response: farm → zones →
+// locations → sublocations. No new endpoint, no charting library: the SVG string
+// is assembled here and injected with innerHTML, like every other renderer in
+// this file.
+//
+// All text from the API goes through escapeAdminHtml() before it reaches the
+// markup, and no API value is ever placed in an attribute, so a zone named
+// `</text><script>` renders as literal text.
+
+const LAYOUT_MAP = {
+  zoneW: 224,
+  zonePad: 10,
+  zoneHeader: 22,
+  locHeader: 17,
+  locGap: 6,
+  locPad: 4,
+  subH: 19,
+  subGap: 3,
+  subInset: 8,
+  maxRowW: 980,
+};
+
+function truncateLayoutLabel(value, maxChars) {
+  const text = String(value ?? '').trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function layoutBox({ x, y, w, h, cls, label, sublabel, maxLabelChars }) {
+  const labelText = truncateLayoutLabel(label || '—', maxLabelChars);
+  const baseline = y + (sublabel ? 12 : h / 2 + 3.5);
+  const sub = sublabel
+    ? `<text class="lm-sub" x="${x + 7}" y="${y + h - 5}">${escapeAdminHtml(truncateLayoutLabel(sublabel, maxLabelChars))}</text>`
+    : '';
+  return `<g>
+    <rect class="${cls}" x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/>
+    <text class="lm-label" x="${x + 7}" y="${baseline}">${escapeAdminHtml(labelText)}</text>
+    ${sub}
+  </g>`;
+}
+
+function measureVfarmLayoutZone(zone) {
+  const { zoneHeader, locHeader, locGap, locPad, subH, subGap } = LAYOUT_MAP;
+  const locations = Array.isArray(zone?.locations) ? zone.locations : [];
+  const rows = locations.map((loc) => {
+    const sublocations = Array.isArray(loc?.sublocations) ? loc.sublocations : [];
+    const subBlockH = sublocations.length ? sublocations.length * subH + (sublocations.length - 1) * subGap : 0;
+    return { loc, sublocations, height: locHeader + (subBlockH ? subBlockH + locPad : 0) + locPad };
+  });
+  const bodyH = rows.length
+    ? rows.reduce((sum, r) => sum + r.height, 0) + (rows.length - 1) * locGap
+    : locPad;
+  const sublocations = locations.reduce(
+    (sum, l) => sum + (Array.isArray(l?.sublocations) ? l.sublocations.length : 0), 0);
+  return { zone, rows, sublocations, height: zoneHeader + bodyH };
+}
+
+function renderVfarmLayoutZone(measured, x, y) {
+  const { zoneW, zonePad, zoneHeader, locHeader, locGap, locPad, subH, subGap, subInset } = LAYOUT_MAP;
+  const { zone, rows, sublocations } = measured;
+  const locX = x + zonePad;
+  const locW = zoneW - zonePad * 2;
+  const parts = [];
+
+  let cursorY = y + zoneHeader;
+  for (const row of rows) {
+    const { loc, sublocations: subs } = row;
+    parts.push(layoutBox({
+      x: locX, y: cursorY, w: locW, h: row.height,
+      cls: `lm-loc-box${loc?.is_active === false ? ' lm-inactive' : ''}`,
+      label: `${loc?.name || loc?.id || 'location'}${loc?.kind ? ` · ${loc.kind}` : ''}`,
+      sublabel: subs.length
+        ? `${subs.length} sub${subs.length === 1 ? '' : 's'}${loc?.tier_index != null ? ` · tier ${loc.tier_index}` : ''}`
+        : (loc?.tier_index != null ? `tier ${loc.tier_index}` : null),
+      maxLabelChars: 26,
+    }));
+
+    let subY = cursorY + locHeader;
+    for (const sub of subs) {
+      parts.push(layoutBox({
+        x: locX + subInset, y: subY, w: locW - subInset, h: subH,
+        cls: `lm-sub-box${sub?.is_active === false ? ' lm-inactive' : ''}`,
+        label: `${sub?.name || sub?.id || 'sublocation'}${sub?.bay_index != null ? ` · bay ${sub.bay_index}` : ''}`,
+        maxLabelChars: 30,
+      }));
+      subY += subH + subGap;
+    }
+    cursorY += row.height + locGap;
+  }
+
+  parts.unshift(layoutBox({
+    x, y, w: zoneW, h: measured.height,
+    cls: `lm-zone-box${zone?.is_active === false ? ' lm-inactive' : ''}`,
+    label: `${zone?.name || zone?.id || 'zone'}${zone?.kind ? ` · ${zone.kind}` : ''}`,
+    sublabel: `${rows.length} location${rows.length === 1 ? '' : 's'} · ${sublocations} sublocation${sublocations === 1 ? '' : 's'}`,
+    maxLabelChars: 28,
+  }));
+
+  return parts.join('');
+}
+
+function renderVfarmLayoutMap(data) {
+  const zones = Array.isArray(data?.zones) ? data.zones : [];
+
+  if (zones.length === 0) {
+    return '<p class="lm-empty">No layout on this farm — <code>GET /vfarm/layout</code> returned an empty <code>zones</code> array. Register zones, locations, and sublocations in vFarm, then re-run this check.</p>';
+  }
+
+  const { zoneW, zonePad, locGap, maxRowW } = LAYOUT_MAP;
+  const perRow = Math.max(1, Math.floor((maxRowW + locGap) / (zoneW + locGap)));
+  const columns = Math.min(zones.length, perRow);
+
+  // Measure every zone first so each SVG row can be as tall as its tallest box.
+  const measured = zones.map(measureVfarmLayoutZone);
+  const rowTops = [];
+  let svgH = zonePad;
+  for (let i = 0; i < measured.length; i += perRow) {
+    rowTops.push(svgH);
+    const tallest = measured.slice(i, i + perRow).reduce((max, m) => Math.max(max, m.height), 0);
+    svgH += tallest + zonePad;
+  }
+
+  const svgW = columns * zoneW + (columns - 1) * locGap + zonePad * 2;
+  const markup = measured
+    .map((m, i) => renderVfarmLayoutZone(m, zonePad + (i % perRow) * (zoneW + locGap), rowTops[Math.floor(i / perRow)]))
+    .join('');
+
+  const locTotal = measured.reduce((sum, m) => sum + m.rows.length, 0);
+  const subTotal = measured.reduce((sum, m) => sum + m.sublocations, 0);
+  const caption = `${data?.farm_code || data?.farm_id || 'farm'} — ${zones.length} zone(s) · ${locTotal} location(s) · ${subTotal} sublocation(s)`;
+  const safeCaption = escapeAdminHtml(caption);
+
+  return `<p class="lm-caption">${safeCaption}</p>
+    <svg class="lm-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${safeCaption}" viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">${markup}</svg>`;
+}
+
 function setVfarmLiveSectionResult(section, ok, payload, errorMessage) {
   const statusEl = $(`#vfarm-e2e-status-${section}`);
   const jsonEl = $(`#vfarm-e2e-json-${section}`);
@@ -1421,9 +1636,15 @@ function setVfarmLiveSectionResult(section, ok, payload, errorMessage) {
       : `<span class="pill off">✗ FAIL${errorMessage ? `: ${errorMessage}` : ''}</span>`;
   }
   if (jsonEl) {
-    jsonEl.textContent = payload != null
-      ? JSON.stringify(payload, null, 2)
-      : (errorMessage || '—');
+    // `layout` is the one section rendered graphically instead of as raw JSON;
+    // every other section keeps its existing textContent JSON dump untouched.
+    if (section === 'layout' && payload != null) {
+      jsonEl.innerHTML = renderVfarmLayoutMap(payload);
+    } else {
+      jsonEl.textContent = payload != null
+        ? JSON.stringify(payload, null, 2)
+        : (errorMessage || '—');
+    }
   }
 }
 

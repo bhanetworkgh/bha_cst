@@ -5,6 +5,7 @@ import { processOutboundQueue } from './transport/twilio/outbound.js';
 import { DbClient } from './db/client.js';
 
 import { CoreRegistry } from './core/registry.js';
+import { SystemsRegistry } from './systems/registry.js';
 import { CstDashboardPublisher } from './publishers/dashboard.js';
 
 // Validate all required env vars at startup — throws a clear error listing
@@ -16,6 +17,12 @@ const app = createApp();
 await CoreRegistry.initFromDb().catch((err) => {
   Logger.warn(`Failed to initialize CoreRegistry from DB: ${err.message}`);
 });
+
+// `systems` is the FK parent of conversations.system_id and
+// voice_deliveries.system_id and is populated only at runtime, by
+// SystemsRegistry. Wait for those rows to commit before binding the port so a
+// fresh deployment cannot serve a webhook whose parent row does not exist yet.
+await SystemsRegistry.whenPersisted();
 
 const server = app.listen(env.PORT, () => {
   Logger.info(`CS Twin Engine listening on port ${env.PORT}`, {

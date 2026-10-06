@@ -6,8 +6,13 @@ import { voiceInterfaceRouter } from './interfaces/voice/index.js';
 import { webInterfaceRouter } from './interfaces/web/index.js';
 import { adminRouter } from './admin/routes.js';
 import { authRouter, requireAdminAuth } from './admin/auth.js';
+import {
+  requireVfarmAdminSession,
+  requireVfarmAdminSessionOrJwt,
+} from './middleware/vfarm_proxy_auth.js';
 import { DbClient } from './db/client.js';
 import { Logger } from './config/logger.js';
+import { isTestRunner } from './config/runtime.js';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './docs/swagger.js';
 import path from 'node:path';
@@ -42,8 +47,10 @@ export function createApp(): Express {
   const MAX_REQUESTS_PER_WINDOW = 120; // 120 reqs/min per IP
 
   app.use('/webhooks', (req: Request, res: Response, next: NextFunction) => {
-    // Bypass rate limiting in test environment
-    if (process.env.NODE_ENV === 'test') {
+    // Bypass rate limiting inside a test runner. Keyed off the vitest signal
+    // rather than NODE_ENV, which the repo's own .env overwrites with
+    // 'development' — see engine/src/config/runtime.ts.
+    if (isTestRunner()) {
       return next();
     }
 
@@ -82,61 +89,68 @@ export function createApp(): Express {
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
 
   // ── vFarm Public & Dashboard Endpoints ─────────────────────────────────────
-  app.get(['/api/v1/dashboard', '/api/dashboard'], async (req: Request, res: Response) => {
-    try {
-      const adapter = CoreRegistry.getVfarmAdapter();
-      if (!adapter) {
-        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
-        return;
+  // These routes proxy vFarm using CST's own farm key / admin JWT, so they are
+  // authenticated. See middleware/vfarm_proxy_auth.ts for the exact grant model:
+  // a CST admin session (the same authority /api/v1/admin/* already has), or a
+  // fail-closed refusal. There is deliberately no anonymous path.
+  app.get(
+    ['/api/v1/dashboard', '/api/dashboard'],
+    requireVfarmAdminSession,
+    async (req: Request, res: Response) => {
+      try {
+        const adapter = CoreRegistry.getVfarmAdapter();
+        if (!adapter) {
+          res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+          return;
+        }
+        const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
+        const data = await adapter.getDashboardData(farmId);
+        res.status(200).json(data);
+      } catch (err: any) {
+        Logger.error(`Dashboard API error: ${err.message}`);
+        res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
       }
-      const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId() || undefined;
-      const data = await adapter.getDashboardData(farmId);
-      res.status(200).json(data);
-    } catch (err: any) {
-      Logger.error(`Dashboard API error: ${err.message}`);
-      res.status(err.status || 500).json({ error: 'DASHBOARD_ERROR', message: err.message });
-    }
-  });
+    },
+  );
 
-  app.get(['/api/devices', '/api/v1/devices'], async (req: Request, res: Response) => {
-    try {
-      const adapter = CoreRegistry.getVfarmAdapter();
-      if (!adapter) {
-        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
-        return;
+  app.get(
+    ['/api/devices', '/api/v1/devices'],
+    requireVfarmAdminSession,
+    async (req: Request, res: Response) => {
+      try {
+        const adapter = CoreRegistry.getVfarmAdapter();
+        if (!adapter) {
+          res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+          return;
+        }
+        let farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+        if (!farmId) {
+          await adapter.discoverFarms();
+          farmId = adapter.getActiveFarmId();
+        }
+        if (!farmId) {
+          res.status(503).json({ error: 'NO_FARM_AVAILABLE', message: 'No farms discovered. Check vFarm credentials.' });
+          return;
+        }
+        // No fabricated speaker. Authorization is the authenticated CST admin
+        // session checked by requireVfarmAdminSession; this route previously
+        // invented an `owner` identity with permissions ['*'] and every
+        // discovered farm id, which made an anonymous caller look privileged to
+        // the adapter's own farm-scope gate. Farm scope is whatever the
+        // authenticated admin is entitled to, never a synthesized grant.
+        const result = await adapter.listFarmDevices({ farmId });
+        res.status(200).json({
+          farm_id: farmId,
+          total: result.total,
+          count: result.devices.length,
+          devices: result.devices,
+        });
+      } catch (err: any) {
+        Logger.error(`Devices API error: ${err.message}`);
+        res.status(err.status || 500).json({ error: 'DEVICES_ERROR', message: err.message });
       }
-      let farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
-      if (!farmId) {
-        await adapter.discoverFarms();
-        farmId = adapter.getActiveFarmId();
-      }
-      if (!farmId) {
-        res.status(503).json({ error: 'NO_FARM_AVAILABLE', message: 'No farms discovered. Check vFarm credentials.' });
-        return;
-      }
-      const speaker = {
-        person_id: 'api_caller',
-        customer_ref: 'api_caller',
-        tenant_id: process.env.VFARM_TENANT_ID || 'tenant-vfarm-01',
-        project_id: process.env.VFARM_PROJECT_ID_MAIN || 'proj-vfarm-main',
-        phone_e164: process.env.VFARM_ADMIN_PHONE || '+15551234567',
-        is_known: true,
-        role: 'owner' as const,
-        permissions: ['*'],
-        farm_ids: [farmId, ...adapter.getDiscoveredFarmIds()],
-      };
-      const result = await adapter.listFarmDevices({ farmId, speaker });
-      res.status(200).json({
-        farm_id: farmId,
-        total: result.total,
-        count: result.devices.length,
-        devices: result.devices,
-      });
-    } catch (err: any) {
-      Logger.error(`Devices API error: ${err.message}`);
-      res.status(err.status || 500).json({ error: 'DEVICES_ERROR', message: err.message });
-    }
-  });
+    },
+  );
 
   app.get('/api/health', async (_req: Request, res: Response) => {
     const adapter = CoreRegistry.getVfarmAdapter();
@@ -149,46 +163,75 @@ export function createApp(): Express {
     });
   });
 
-  app.get(['/api/v1/farms', '/api/farms'], async (req: Request, res: Response) => {
-    try {
-      const adapter = CoreRegistry.getVfarmAdapter();
-      if (!adapter) {
-        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
-        return;
+  app.get(
+    ['/api/v1/farms', '/api/farms'],
+    requireVfarmAdminSessionOrJwt,
+    async (req: Request, res: Response) => {
+      try {
+        const adapter = CoreRegistry.getVfarmAdapter();
+        if (!adapter) {
+          res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+          return;
+        }
+        // Explicit credential only. In caller_jwt mode `jwt` is defined and is
+        // forwarded verbatim, so discoverFarms() cannot substitute CST's own
+        // admin JWT (see VfarmTenantAdapter.discoverFarms). In admin_session
+        // mode it is undefined, which is the legitimate CST-admin path.
+        const auth = req.vfarmAuth;
+        const jwt = auth?.mode === 'caller_jwt' ? auth.jwt : undefined;
+        const farms = await adapter.discoverFarms(jwt);
+        res.status(200).json({
+          farms,
+          total: farms.length,
+          active_farm_id: adapter.getActiveFarmId(),
+        });
+      } catch (err: any) {
+        // An upstream 401/403 on a caller-supplied JWT must surface as 401, not
+        // 500, and must never trigger a CST-credential retry.
+        const status = err?.status ?? err?.statusCode;
+        if (status === 401 || status === 403) {
+          res.status(401).json({ error: 'UNAUTHORIZED', message: 'vFarm rejected the supplied credentials' });
+          return;
+        }
+        Logger.error(`Farms API error: ${err.message}`);
+        res.status(err.status || 500).json({ error: 'DISCOVERY_ERROR', message: err.message });
       }
-      const jwt = req.header('authorization')?.replace(/^Bearer\s+/i, '') || (req.query.token as string);
-      const farms = await adapter.discoverFarms(jwt);
-      res.status(200).json({
-        farms,
-        total: farms.length,
-        active_farm_id: adapter.getActiveFarmId(),
-      });
-    } catch (err: any) {
-      Logger.error(`Farms API error: ${err.message}`);
-      res.status(err.status || 500).json({ error: 'DISCOVERY_ERROR', message: err.message });
-    }
-  });
+    },
+  );
 
-  app.post(['/api/v1/tokens', '/api/tokens'], async (req: Request, res: Response) => {
-    try {
-      const { farm_id, name } = req.body || {};
-      if (!farm_id) {
-        res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
-        return;
+  app.post(
+    ['/api/v1/tokens', '/api/tokens'],
+    requireVfarmAdminSessionOrJwt,
+    async (req: Request, res: Response) => {
+      try {
+        const { farm_id, name } = req.body || {};
+        if (!farm_id) {
+          res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+          return;
+        }
+        const adapter = CoreRegistry.getVfarmAdapter();
+        if (!adapter) {
+          res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+          return;
+        }
+        // Same explicit-credential rule as /api/farms. A `token` field in the
+        // body is no longer honoured as a credential: it was an unauthenticated
+        // way to influence which identity CST used.
+        const auth = req.vfarmAuth;
+        const jwt = auth?.mode === 'caller_jwt' ? auth.jwt : undefined;
+        const rawKey = await adapter.issueFarmToken(farm_id, jwt, name);
+        res.status(201).json({ status: 'issued', farm_id, raw_key: rawKey });
+      } catch (err: any) {
+        const status = err?.status ?? err?.statusCode;
+        if (status === 401 || status === 403) {
+          res.status(401).json({ error: 'UNAUTHORIZED', message: 'vFarm rejected the supplied credentials' });
+          return;
+        }
+        Logger.error(`Token issuance API error: ${err.message}`);
+        res.status(err.status || 500).json({ error: 'TOKEN_ERROR', message: err.message });
       }
-      const adapter = CoreRegistry.getVfarmAdapter();
-      if (!adapter) {
-        res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
-        return;
-      }
-      const jwt = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.body?.token;
-      const rawKey = await adapter.issueFarmToken(farm_id, jwt, name);
-      res.status(201).json({ status: 'issued', farm_id, raw_key: rawKey });
-    } catch (err: any) {
-      Logger.error(`Token issuance API error: ${err.message}`);
-      res.status(err.status || 500).json({ error: 'TOKEN_ERROR', message: err.message });
-    }
-  });
+    },
+  );
 
   // ── Swagger / OpenAPI Documentation ─────────────────────────────────────────
   app.get('/', (_req: Request, res: Response) => {

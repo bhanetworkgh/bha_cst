@@ -67,6 +67,33 @@ import {
 
 export const VFARM_DEFAULT_BASE_URL = 'https://bhavfarm1.duckdns.org';
 
+/**
+ * Single default request budget for BOTH vFarm HTTP clients.
+ *
+ * These two clients used to carry divergent defaults (VfarmHttpClient 8000ms,
+ * VfarmLiveClient 5000ms) while `VfarmTenantAdapter` fed the same, frequently
+ * unset, `config.timeoutMs` into both. With `VFARM_API_TIMEOUT_MS` unset — which
+ * is the current state of `.env` — the same upstream call could therefore abort
+ * at 8s on one path and 5s on the other.
+ *
+ * 5000ms is kept because it is the value already shipped on the live client and
+ * because it is the *tighter* bound: the retry paths multiply this number
+ * (see the worst-case arithmetic in docs), so lowering the ceiling lowers the
+ * worst case rather than inflating it. Measured live latency is p50 ~235ms /
+ * max ~984ms, so this leaves roughly 5x headroom over observed real calls.
+ * Operators with a slow upstream should set VFARM_API_TIMEOUT_MS explicitly and
+ * confirm the multiplied retry budget still fits their own request timeout.
+ */
+export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
+
+/**
+ * Per-endpoint override for GET /api/v1/system/stats, which scans the whole
+ * platform and measured 13.8-39.0s live on 2026-10-05 — far beyond
+ * VFARM_DEFAULT_TIMEOUT_MS. See getSystemStats() for the measurements and for
+ * why a long budget here does not weaken the hot-path default.
+ */
+export const VFARM_SYSTEM_STATS_TIMEOUT_MS = 60000;
+
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface VfarmLiveClientConfig {
@@ -117,7 +144,7 @@ export class VfarmLiveClient {
     this.baseUrl = config.baseUrl ? config.baseUrl.replace(/\/$/, '') : VFARM_DEFAULT_BASE_URL;
     this.apiKey = (config.apiKey || '').trim();
     this.apiToken = (config.apiToken || '').trim();
-    this.timeoutMs = config.timeoutMs ?? 5_000;
+    this.timeoutMs = config.timeoutMs ?? VFARM_DEFAULT_TIMEOUT_MS;
     this.fetchFn = config.fetchFn ?? fetch;
   }
 
@@ -291,9 +318,21 @@ export class VfarmLiveClient {
     }
     const url = `${this.baseUrl}${path}`;
     // Note: Authorization header carrying apiKey is intentionally not logged
+    //
+    // The bearer token is sent alongside X-Farm-Key (never instead of it), and
+    // only when the caller did not already supply an explicit Authorization
+    // header. Without this, every `request()`-based call — getFarm, getFarmHealth,
+    // listAllDevices, listFarmZones, getFarmLayout, the readings/alerts helpers —
+    // was limited to the single farm the API key is bound to; the live service
+    // answers 403 "API key not valid for this farm" for any other, even though
+    // the same request succeeds with a bearer JWT. This mirrors authHeaders(),
+    // which already sends both, and an explicit caller token still wins.
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.apiToken && !extraHeaders?.['Authorization']
+        ? { 'Authorization': `Bearer ${this.apiToken}` }
+        : {}),
       ...(extraHeaders || {}),
     };
 
@@ -460,9 +499,24 @@ export class VfarmLiveClient {
   /**
    * GET /api/v1/system/stats
    * Returns platform-wide stats. Schema inline ({}) — passthrough.
+   *
+   * Needs its own request budget. This endpoint scans every reading in the
+   * platform, and measured live against bhavfarm1.duckdns.org on 2026-10-05 it
+   * took 13.8s with a bearer token and 39.0s with only the farm key, versus
+   * 234-777ms for /dashboard/summary on the same deployment. At the shared
+   * VFARM_DEFAULT_TIMEOUT_MS of 5000 it therefore failed on every attempt,
+   * every time — the 235ms p50 / 984ms max that justified the 5s default were
+   * measured on other endpoints and never covered this one.
+   *
+   * The budget is deliberately long rather than tuned to the median: it is
+   * called only from the admin panel's read-only live section
+   * (admin/routes.ts:1011), never on the SMS hot path, so it does not feed the
+   * retry multiplication that the tight default exists to bound. An operator who
+   * needs a different ceiling should raise VFARM_API_TIMEOUT_MS, which still
+   * wins for every other endpoint.
    */
   async getSystemStats(): Promise<Record<string, unknown>> {
-    return this.requestPassthrough('/api/v1/system/stats');
+    return this.requestPassthrough('/api/v1/system/stats', VFARM_SYSTEM_STATS_TIMEOUT_MS);
   }
 
   /**
@@ -657,20 +711,35 @@ export class VfarmLiveClient {
   /**
    * Like request() but skips Zod parsing — used for inline-schema ({}) endpoints
    * where the response shape is not enumerated in the OpenAPI spec.
+   *
+   * Sends the same two credentials as request(). It previously sent only
+   * X-Farm-Key, so getDashboardSummary() and getSystemStats() — the only two
+   * callers — had no bearer fallback and would fail 403 "API key not valid for
+   * this farm" against any farm the key is not bound to, even though the same
+   * request succeeds with a bearer JWT. They also do not require a farm key:
+   * neither endpoint is farm-scoped, so demanding one rejected a bearer-only
+   * configuration outright.
    */
-  private async requestPassthrough(path: string): Promise<Record<string, unknown>> {
-    if (!this.apiKey) {
-      throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
+  private async requestPassthrough(
+    path: string,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
+    if (!this.apiKey && !this.apiToken) {
+      throw new Error(
+        'Configuration error: X-Farm-Key or a bearer token is required for vFarm requests',
+      );
     }
+    const budget = timeoutMs ?? this.timeoutMs;
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
-      'X-Farm-Key': this.apiKey,
       'Accept': 'application/json',
+      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.apiToken ? { 'Authorization': `Bearer ${this.apiToken}` } : {}),
     };
     let res: Response;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      const timeoutId = setTimeout(() => controller.abort(), budget);
       try {
         res = await this.fetchFn(url, { headers, signal: controller.signal });
       } finally {
@@ -678,7 +747,7 @@ export class VfarmLiveClient {
       }
     } catch (err: any) {
       const msg = err?.name === 'AbortError'
-        ? `vFarm request timed out after ${this.timeoutMs}ms: ${path}`
+        ? `vFarm request timed out after ${budget}ms: ${path}`
         : `vFarm network error: ${err?.message ?? String(err)}`;
       Logger.warn(msg);
       throw new VfarmNetworkError(msg);

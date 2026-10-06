@@ -81,13 +81,18 @@ export class IntentRouter {
     // platform-wide constant that would blur project boundaries.
     const wsId = identity.workspace_id || identity.project_id || orgId;
 
-    // Create or fetch conversation record scoped to Organization and Workspace
+    // Create or fetch conversation record scoped to Organization and Workspace.
+    // project_id is passed explicitly: the ON CONFLICT target is
+    // (tenant_id, project_id, customer_ref), and a NULL project_id can never match
+    // a unique index (NULL != NULL), which would append a duplicate conversation
+    // row on every repeat message. DbClient resolves system_id from tenant_id.
     const { conversation_id } = await DbClient.getOrCreateConversation(
       orgId,
       identity.system_id,
       identity.customer_ref,
       orgId,
-      wsId
+      wsId,
+      identity.project_id || undefined
     );
 
     // Persist inbound message to transcript

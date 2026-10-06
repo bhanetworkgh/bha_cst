@@ -94,8 +94,123 @@ services:
       - key: VFARM_RESOLVE_ENDPOINT
         sync: false
 
+      # Dead but boot-required: engine/src/config/env.ts:52 validates this as a
+      # required string and nothing in engine/src ever reads it. It must still be
+      # set or getEnv() refuses to boot the process — leave the placeholder empty.
       - key: VFARM_RESOLVE_API_KEY
         sync: false
+
+      # --- vFarm live API credentials ---
+      # VFARM_API_BASE_URL gates live mode entirely: with it unset the adapter
+      # silently stays in mock mode (core/registry.ts:25). The two credential
+      # names below are the preferred pair; VFARM_FARM_KEY / VFARM_JWT are read
+      # as fallbacks (adapters/vfarm/index.ts:72,135).
+      - key: VFARM_API_BASE_URL
+        sync: false
+
+      - key: VFARM_API_FARM_KEY
+        sync: false
+
+      - key: VFARM_API_JWT
+        sync: false
+
+      # Legacy aliases for the two above, still read by core/registry.ts:25-31.
+      # Set these only if you are not using the VFARM_API_* pair.
+      - key: VFARM_BASE_URL
+        sync: false
+
+      - key: VFARM_API_KEY
+        sync: false
+
+      - key: VFARM_API_TOKEN
+        sync: false
+
+      - key: VFARM_FARM_KEY
+        sync: false
+
+      - key: VFARM_JWT
+        sync: false
+
+      # Leave VFARM_API_TIMEOUT_MS unset to use the 5000ms default. Only raise it
+      # if your upstream is slow, and confirm the multiplied retry budget still
+      # fits your own request timeout (see adapters/vfarm/live_client.ts:68).
+      - key: VFARM_API_TIMEOUT_MS
+        sync: false
+
+      # Pin discovery to one farm. Leave unset to discover farms dynamically from
+      # the credentials above. Must be a real vFarm UUID, e.g. the farm the key
+      # is bound to — never a made-up name.
+      - key: VFARM_FARM_ID
+        sync: false
+
+      # Admin credentials for farm discovery. Without both, GET /api/v1/admin/vfarm/farms
+      # answers 503 (admin/routes.ts:777). Never commit real values here.
+      - key: VFARM_ADMIN_EMAIL
+        sync: false
+
+      - key: VFARM_ADMIN_PASSWORD
+        sync: false
+
+      # Must be the real organization UUID for this deployment. The code default
+      # is a hardcoded dev org (core/registry.ts:87) that upstream rejects with
+      # 422, so leaving this unset in production breaks org member lookups.
+      - key: VFARM_TENANT_ORG_ID
+        sync: false
+
+      - key: VFARM_WORKSPACE_ID
+        sync: false
+
+      - key: VFARM_PROJECT_ID_MAIN
+        value: proj-vfarm-main
+
+      - key: VFARM_DEFAULT_UNIT_ID
+        value: unit_default
+
+      # --- Engine Dashboard event publishing ---
+      # Unset means publishing is silently disabled (publishers/dashboard.ts:47).
+      - key: ENGINE_DASHBOARD_URL
+        sync: false
+
+      - key: ENGINE_DASHBOARD_KEY
+        sync: false
+
+      # --- Admin login (only consulted when there is no database pool) ---
+      - key: CST_ADMIN_EMAIL
+        sync: false
+
+      - key: CST_ADMIN_PASSWORD_HASH
+        sync: false
+
+      - key: CST_ADMIN_NAME
+        value: CST Super Admin
+
+      # --- ElevenLabs voice clone ---
+      # All optional and fail closed: without ELEVENLABS_API_KEY the clone is
+      # unconfigured, and without a voice id a generic fallback is refused
+      # (audio/voice_router.ts:114). voice_enabled stays false unless
+      # VFARM_ELEVENLABS_VOICE_ID is set for the system.
+      - key: ELEVENLABS_API_KEY
+        sync: false
+
+      - key: ELEVENLABS_BASE_URL
+        value: https://api.elevenlabs.io/v1
+
+      - key: ELEVENLABS_MODEL_ID
+        value: eleven_turbo_v2_5
+
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+
+      - key: VFARM_ELEVENLABS_VOICE_ID
+        sync: false
+
+      # --- Notifications ---
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+
+      # --- Service identity (health payload label) ---
+      - key: SERVICE_NAME
+        value: bha-cst-engine
 
       # --- BHARAG RAG & Incidents ---
       - key: BHARAG_API_URL
@@ -120,6 +235,9 @@ services:
       - key: S3_MEDIA_BUCKET_URL
         sync: false
 
+      # Dead: engine/src/config/env.ts:76,78 declare these with defaults and
+      # nothing in engine/src ever reads them. Harmless to set, but an operator
+      # filling them in is not changing any behaviour.
       - key: AWS_S3_BUCKET_NAME
         sync: false
 
@@ -129,3 +247,12 @@ services:
       # --- Optional: Public webhook base URL (set after first deploy) ---
       - key: PUBLIC_WEBHOOK_URL
         sync: false
+
+      # ── Deliberately absent ──────────────────────────────────────────────────
+      # These gate test-runner behaviour and must never be set on a deployed
+      # service; each one would weaken the code that is meant to fail closed.
+      #   VFARM_LIVE_TEST  — core/registry.ts:20, opts into live calls from tests
+      #   VITEST           — config/runtime.ts:22, the test-runner detector
+      #   CST_DB_TESTS     — config/runtime.ts:41, opens a real pool from tests
+      # Authentication is likewise never bypassed by an env var: there is no
+      # VFARM_ADMIN_* auth fallback and no NODE_ENV-based auth bypass.

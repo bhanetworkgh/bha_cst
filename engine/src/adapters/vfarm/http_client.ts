@@ -1,4 +1,7 @@
 import { Logger } from '../../config/logger.js';
+// Shared with VfarmLiveClient so one unset VFARM_API_TIMEOUT_MS cannot produce
+// two different abort deadlines for the same upstream. See the constant's docs.
+import { VFARM_DEFAULT_TIMEOUT_MS } from './live_client.js';
 import {
   orgMemberListSchema,
   farmUserListSchema,
@@ -52,7 +55,7 @@ export interface VfarmHttpClientOptions {
   fetchFn?: typeof fetch;
 }
 
-const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_TIMEOUT_MS = VFARM_DEFAULT_TIMEOUT_MS;
 
 /**
  * Small authenticated HTTP client for the verified vFarm REST endpoints.
