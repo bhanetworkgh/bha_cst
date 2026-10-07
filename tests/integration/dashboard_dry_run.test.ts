@@ -88,11 +88,28 @@ const deliveryEvent = createCstDeliveryEventV1({
 interface SinkEvent {
   specversion?: string;
   id?: string;
-  type: string;
+  event_type?: string;
   tenant_id?: string;
   project_id?: string;
   correlation_id?: string;
-  data: Record<string, any>;
+  channel?: string;
+  customer?: Record<string, any>;
+  customer_ref?: string;
+  turn_id?: string;
+  direction?: string;
+  status?: string;
+  intent?: string;
+  text?: string;
+  reply_text?: string;
+  latency_ms?: number;
+  delivery_id?: string;
+  provider_sid?: string;
+  to?: string;
+  from?: string;
+  delivery_latency_ms?: number;
+  segments?: number;
+  delivered_at?: string;
+  retry_count?: number;
 }
 
 let server: http.Server;
@@ -259,8 +276,8 @@ describe('Dashboard dry-run acceptance (Phase 4 matrix)', () => {
     // The record persisted: the sink now holds exactly one more event.
     expect(after).toBe(before + 1);
     expect(received).toHaveLength(1);
-    expect(received[0].type).toBe('cst.turn');
-    expect(received[0].data.turn_id).toBe('SM_DRYRUN_1');
+    expect(received[0].event_type).toBe('cst.turn');
+    expect(received[0].turn_id).toBe('SM_DRYRUN_1');
     expect(received[0].tenant_id).toBe(TENANT);
     expect(received[0].project_id).toBe(PROJECT);
   });
@@ -340,7 +357,7 @@ describe('Dashboard dry-run acceptance (Phase 4 matrix)', () => {
     expect(requestCount).toBe(3);
     // Exactly one persisted record despite three attempts.
     expect(received).toHaveLength(1);
-    expect(received[0].data.turn_id).toBe('SM_DRYRUN_1');
+    expect(received[0].turn_id).toBe('SM_DRYRUN_1');
   });
 
   // ── 7. no configuration / no-op ────────────────────────────────────
@@ -410,9 +427,9 @@ describe('Dashboard dry-run acceptance (Phase 4 matrix)', () => {
 
       // Allow the fire-and-forget first event to land.
       await new Promise((r) => setTimeout(r, 100));
-      const deliveredEvents = received.filter((e) => e.type === 'cst.delivery');
+      const deliveredEvents = received.filter((e) => e.event_type === 'cst.delivery');
       expect(deliveredEvents).toHaveLength(1);
-      expect(deliveredEvents[0].data.status).toBe('delivered');
+      expect(deliveredEvents[0].status).toBe('delivered');
     } finally {
       setActiveDashboardPublisher(null);
     }
@@ -425,14 +442,14 @@ describe('Dashboard dry-run acceptance (Phase 4 matrix)', () => {
     await publisher.publish(turnEvent);
     await publisher.publish(deliveryEvent);
 
-    const turn = received.find((e) => e.type === 'cst.turn');
-    const delivery = received.find((e) => e.type === 'cst.delivery');
+    const turn = received.find((e) => e.event_type === 'cst.turn');
+    const delivery = received.find((e) => e.event_type === 'cst.delivery');
     expect(turn).toBeDefined();
     expect(delivery).toBeDefined();
     // The join key matches exactly.
-    expect(turn!.data.turn_id).toBe(delivery!.data.turn_id);
-    expect(turn!.data.turn_id).toBe('SM_DRYRUN_1');
-    expect(delivery!.data.turn_id).toBe('SM_DRYRUN_1');
+    expect(turn!.turn_id).toBe(delivery!.turn_id);
+    expect(turn!.turn_id).toBe('SM_DRYRUN_1');
+    expect(delivery!.turn_id).toBe('SM_DRYRUN_1');
   });
 });
 

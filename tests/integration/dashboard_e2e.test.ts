@@ -27,14 +27,37 @@ const SINK_KEY = 'e2e-sink-key';
 interface SinkEvent {
   specversion: string;
   id: string;
-  type: string;
+  event_type: string;
   source: string;
   time: string;
   tenant_id: string;
   project_id: string;
   correlation_id: string;
+  channel: string;
   customer?: Record<string, any>;
-  data: Record<string, any>;
+  customer_ref?: string;
+  phone_e164?: string;
+  role?: string;
+  farm_ids?: string[];
+  turn_id?: string;
+  direction?: string;
+  status?: string;
+  intent?: string;
+  text?: string;
+  reply_text?: string;
+  latency_ms?: number;
+  duration?: Record<string, any>;
+  delivery_id?: string;
+  provider_sid?: string;
+  to?: string;
+  from?: string;
+  delivery_latency_ms?: number;
+  segments?: number;
+  delivered_at?: string;
+  retry_count?: number;
+  error_code?: string | number;
+  error_message?: string;
+  incident_id?: string | null;
 }
 
 let server: http.Server;
@@ -160,10 +183,10 @@ async function settle(ms = 700) {
 }
 
 function turns(): SinkEvent[] {
-  return received.filter((e) => e.type === 'cst.turn');
+  return received.filter((e) => e.event_type === 'cst.turn');
 }
 function deliveries(): SinkEvent[] {
-  return received.filter((e) => e.type === 'cst.delivery');
+  return received.filter((e) => e.event_type === 'cst.delivery');
 }
 
 describe('Engine Dashboard E2E — required cst.turn statuses', () => {
@@ -180,11 +203,11 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     expect(turns()).toHaveLength(1);
     const t = turns()[0];
     expect(t.specversion).toBe('cst.event.v1');
-    expect(t.data.status).toBe('ok');
-    expect(t.data.turn_id).toBe('SM_E2E_OK');
+    expect(t.status).toBe('ok');
+    expect(t.turn_id).toBe('SM_E2E_OK');
     expect(t.tenant_id).toBe(TENANT);
     expect(t.project_id).toBe(PROJECT);
-    expect(t.data.reply_text).toContain('Clean the filter mesh');
+    expect(t.reply_text).toContain('Clean the filter mesh');
     vi.restoreAllMocks();
   });
 
@@ -196,7 +219,8 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     await settle();
 
     expect(turns()).toHaveLength(1);
-    expect(turns()[0].data.status).toBe('onboarding');
+    expect(turns().length).toBeGreaterThan(0);
+    expect(turns()[0].status).toBe('onboarding');
     // Onboarding must never leak farm scope.
     expect(turns()[0].customer?.farm_ids).toEqual([]);
     expect(JSON.stringify(turns()[0])).not.toContain('farm_e2e_1');
@@ -210,7 +234,7 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     await settle();
 
     expect(turns()).toHaveLength(1);
-    expect(turns()[0].data.status).toBe('refused');
+    expect(turns()[0].status).toBe('refused');
     expect(turns()[0].tenant_id).toBe(TENANT);
     expect(turns()[0].project_id).toBe(PROJECT);
   });
@@ -223,7 +247,7 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     await settle();
 
     expect(turns()).toHaveLength(1);
-    expect(turns()[0].data.status).toBe('step_up_required');
+    expect(turns()[0].status).toBe('step_up_required');
   });
 
   it('delivers status "error" when escalation ticketing fails, and does not invent an incident id', async () => {
@@ -246,9 +270,9 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
 
     expect(turns()).toHaveLength(1);
     const t = turns()[0];
-    expect(t.data.status).toBe('error');
+    expect(t.status).toBe('error');
     // No synthetic incident id may reach the Dashboard.
-    expect(t.data.incident_id ?? null).toBeNull();
+    expect(t.incident_id ?? null).toBeNull();
     expect(JSON.stringify(t)).not.toContain('inc_vfarm_');
     vi.restoreAllMocks();
   });
@@ -282,7 +306,7 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     }
     await settle(1200);
 
-    const statuses = new Set(turns().map((t) => t.data.status));
+    const statuses = new Set(turns().map((t) => t.status));
     for (const required of ['ok', 'refused', 'step_up_required', 'onboarding', 'error']) {
       expect(statuses, `missing required status ${required}`).toContain(required);
     }
@@ -290,7 +314,7 @@ describe('Engine Dashboard E2E — required cst.turn statuses', () => {
     for (const t of turns()) {
       expect(t.tenant_id).toBe(TENANT);
       expect(t.project_id).toBe(PROJECT);
-      expect(t.data.turn_id).toBe(t.correlation_id);
+      expect(t.turn_id).toBe(t.correlation_id);
     }
     vi.restoreAllMocks();
   });
@@ -346,10 +370,10 @@ describe('Engine Dashboard E2E — cst.delivery correlation', () => {
     await settle();
 
     const t = turns()[0];
-    const d = deliveries().find((e) => e.data.status === 'delivered')!;
+    const d = deliveries().find((e) => e.status === 'delivered')!;
     expect(d).toBeDefined();
-    expect(t.data.turn_id).toBe(d.data.turn_id);
-    expect(d.data.turn_id).toBe(turnId);
+    expect(t.turn_id).toBe(d.turn_id);
+    expect(d.turn_id).toBe(turnId);
     expect(d.tenant_id).toBe(TENANT);
     expect(d.project_id).toBe(PROJECT);
     vi.restoreAllMocks();
@@ -375,7 +399,7 @@ describe('Engine Dashboard E2E — fire-and-forget and retry', () => {
 
     await settle();
     expect(turns()).toHaveLength(1);
-    expect(turns()[0].data.status).toBe('ok');
+    expect(turns()[0].status).toBe('ok');
     vi.restoreAllMocks();
   });
 
@@ -391,7 +415,7 @@ describe('Engine Dashboard E2E — fire-and-forget and retry', () => {
     expect(requestCount).toBeGreaterThanOrEqual(3);
     // Exactly one event recorded: retries must not duplicate.
     expect(turns()).toHaveLength(1);
-    expect(turns()[0].data.turn_id).toBe('SM_RETRY_1');
+    expect(turns()[0].turn_id).toBe('SM_RETRY_1');
     vi.restoreAllMocks();
   });
 

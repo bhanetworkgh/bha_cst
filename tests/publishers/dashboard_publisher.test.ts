@@ -121,7 +121,8 @@ describe('Task 2 — Dashboard Publisher (CstDashboardPublisher)', () => {
       expect(capturedHeaders['x-dashboard-key']).toBe('dash-key-12345');
       expect(capturedHeaders['x-cst-specversion']).toBe('cst.event.v1');
       expect(capturedBody.specversion).toBe('cst.event.v1');
-      expect(capturedBody.data.turn_id).toBe('turn_101');
+      expect(capturedBody.event_type).toBe('cst.turn');
+      expect(capturedBody.turn_id).toBe('turn_101');
     });
 
     it('sends a cst.delivery event independently', async () => {

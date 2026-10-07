@@ -129,7 +129,7 @@ npm run dev
 # Run TypeScript compiler check
 npm run typecheck
 
-# Run Vitest test suite (471 tests across 49 test files)
+# Run Vitest test suite (472 tests across 50 test files)
 npm test
 ```
 

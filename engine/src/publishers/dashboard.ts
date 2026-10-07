@@ -213,7 +213,7 @@ export class CstDashboardPublisher {
       'x-cst-specversion': CST_EVENT_SPEC_VERSION,
     };
 
-    const body = JSON.stringify(event);
+    const body = JSON.stringify(serializeForDashboard(event));
     let delayMs = this.initialRetryDelayMs;
     let lastError = 'UNKNOWN_ERROR';
     let lastStatus: number | undefined;
@@ -300,6 +300,52 @@ export class CstDashboardPublisher {
       eventId,
     };
   }
+}
+
+/**
+ * Serializes a CstEventV1 envelope into the flat JSON shape the Engine
+ * Dashboard ingestion API expects.
+ *
+ * The CST event contract stores the discriminator (`type`) at the top
+ * level and its payload under `data`, with `customer` as a nested object.
+ * The Dashboard API expects `event_type` at the top level and flattens
+ * the data/customer fields inline so they are directly indexable.
+ *
+ * Verified against the live Dashboard at https://dashboard.bhanetwork.org.
+ */
+export function serializeForDashboard(event: CstEventV1 | Record<string, unknown>): Record<string, unknown> {
+  if (!event || typeof event !== 'object' || !('type' in event) || typeof (event as any).type !== 'string') {
+    return event as Record<string, unknown>;
+  }
+
+  const { type, data, customer, ...envelope } = event as CstEventV1;
+  const result: Record<string, unknown> = {
+    ...envelope,
+    event_type: type,
+  };
+
+  if (data && typeof data === 'object') {
+    Object.assign(result, data);
+    const totalMs = (data as any)?.duration?.total_ms;
+    if (totalMs !== undefined) {
+      if (type === 'cst.turn') {
+        (result as any).latency_ms = totalMs;
+      } else if (type === 'cst.delivery') {
+        (result as any).delivery_latency_ms = totalMs;
+      }
+    }
+  }
+
+  if (customer && typeof customer === 'object') {
+    (result as any).customer_ref = (customer as any).customer_ref;
+    (result as any).phone_e164 = (customer as any).phone_e164;
+    (result as any).role = (customer as any).role;
+    if ((customer as any).farm_ids) (result as any).farm_ids = (customer as any).farm_ids;
+    if ((customer as any).person_id) (result as any).person_id = (customer as any).person_id;
+    (result as any).customer = customer;
+  }
+
+  return result;
 }
 
 /**
