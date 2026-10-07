@@ -65,7 +65,7 @@ import {
   type ImageAnalysis,
 } from './schemas.js';
 
-export const VFARM_DEFAULT_BASE_URL = 'https://bhavfarm1.duckdns.org';
+export const VFARM_DEFAULT_BASE_URL = 'https://vfarm.bhanetwork.org';
 
 /**
  * Single default request budget for BOTH vFarm HTTP clients.

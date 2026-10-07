@@ -19,7 +19,7 @@ import {
   resetMonotonicStore,
   PublishDeliveryParams,
 } from '../../engine/src/publishers/delivery.js';
-import { dashboardPublisher } from '../../engine/src/publishers/dashboard.js';
+import { dashboardPublisher, setActiveDashboardPublisher } from '../../engine/src/publishers/dashboard.js';
 import {
   CstDeliveryEventV1,
   CstDeliveryEventV1Schema,
@@ -52,6 +52,7 @@ describe('Task 5 — cst.delivery: Delivery Event Publishing', () => {
   beforeEach(() => {
     capturedEvents.length = 0;
     resetMonotonicStore();
+    setActiveDashboardPublisher(null);
 
     vi.spyOn(dashboardPublisher, 'publishFireAndForget').mockImplementation((event: any) => {
       capturedEvents.push(event as CstDeliveryEventV1);
@@ -61,6 +62,7 @@ describe('Task 5 — cst.delivery: Delivery Event Publishing', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     resetMonotonicStore();
+    setActiveDashboardPublisher(null);
   });
 
   // ─── Status coverage ────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@
  */
 
 import { Logger } from '../config/logger.js';
-import { CstEventV1, CST_EVENT_SPEC_VERSION } from '../contracts/events.js';
+import { CstEventV1, CST_EVENT_SPEC_VERSION, safeParseCstEventV1 } from '../contracts/events.js';
 
 export interface DashboardPublisherOptions {
   dashboardUrl?: string;
@@ -21,6 +21,13 @@ export interface DashboardPublisherOptions {
   maxRetries?: number;
   initialRetryDelayMs?: number;
   backoffMultiplier?: number;
+  /**
+   * Dry-run mode (cst-e2e/DASHBOARD_FLOW.md §5). When true the publisher
+   * validates the event against the cst.event.v1 contract and logs the
+   * serialized payload locally, but makes NO remote HTTP request, so the
+   * Dashboard persists nothing. Defaults to `DRY_RUN === 'true'`.
+   */
+  dryRun?: boolean;
   fetchFn?: typeof fetch;
 }
 
@@ -30,6 +37,9 @@ export interface PublishResult {
   attempts: number;
   error?: string;
   eventId?: string;
+  /** True when the event was validated and logged locally without any
+   *  remote request (dry-run mode). */
+  dryRun?: boolean;
 }
 
 export class CstDashboardPublisher {
@@ -41,6 +51,7 @@ export class CstDashboardPublisher {
   private readonly maxRetries: number;
   private readonly initialRetryDelayMs: number;
   private readonly backoffMultiplier: number;
+  private readonly dryRun: boolean;
   private readonly fetchFn: typeof fetch;
 
   constructor(options: DashboardPublisherOptions = {}) {
@@ -50,7 +61,17 @@ export class CstDashboardPublisher {
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.backoffMultiplier = options.backoffMultiplier ?? 2;
+    this.dryRun = options.dryRun ?? process.env.DRY_RUN === 'true';
     this.fetchFn = options.fetchFn ?? globalThis.fetch;
+  }
+
+  /**
+   * True when the publisher is in dry-run mode: events are validated and
+   * logged locally but never sent to the remote Dashboard (no production
+   * records are written). See cst-e2e/DASHBOARD_FLOW.md §5.
+   */
+  public isDryRun(): boolean {
+    return this.dryRun;
   }
 
   /**
@@ -136,6 +157,41 @@ export class CstDashboardPublisher {
       };
     }
 
+    // Dry-run (DASHBOARD_FLOW.md §5): validate the event against the
+    // cst.event.v1 contract and log the serialized payload locally, but
+    // make NO remote HTTP request, so the Dashboard writes no production
+    // record. A structurally invalid event is reported as a validation
+    // failure rather than silently accepted — dry-run must not become a
+    // way to ship malformed events.
+    if (this.dryRun) {
+      const parsed = safeParseCstEventV1(event);
+      if (!parsed.success) {
+        const issues = parsed.error.issues
+          .map((i) => `${i.path.join('.')}: ${i.message}`)
+          .join('; ');
+        Logger.warn(
+          `[CstDashboardPublisher] Dry-run validation failed for event ${eventId}: ${issues}`
+        );
+        return {
+          success: false,
+          attempts: 0,
+          error: 'VALIDATION_FAILED',
+          eventId,
+          dryRun: true,
+        };
+      }
+      Logger.info(
+        `[CstDashboardPublisher] Dry-run: event ${eventId} (${(event as any).type}) validated against cst.event.v1; no remote request made.`
+      );
+      Logger.info(`[CstDashboardPublisher] Dry-run payload: ${JSON.stringify(event)}`);
+      return {
+        success: true,
+        attempts: 0,
+        eventId,
+        dryRun: true,
+      };
+    }
+
     return this.sendWithRetry(event, eventId);
   }
 
@@ -157,7 +213,7 @@ export class CstDashboardPublisher {
       'x-cst-specversion': CST_EVENT_SPEC_VERSION,
     };
 
-    const body = JSON.stringify(event);
+    const body = JSON.stringify(serializeForDashboard(event));
     let delayMs = this.initialRetryDelayMs;
     let lastError = 'UNKNOWN_ERROR';
     let lastStatus: number | undefined;
@@ -244,6 +300,52 @@ export class CstDashboardPublisher {
       eventId,
     };
   }
+}
+
+/**
+ * Serializes a CstEventV1 envelope into the flat JSON shape the Engine
+ * Dashboard ingestion API expects.
+ *
+ * The CST event contract stores the discriminator (`type`) at the top
+ * level and its payload under `data`, with `customer` as a nested object.
+ * The Dashboard API expects `event_type` at the top level and flattens
+ * the data/customer fields inline so they are directly indexable.
+ *
+ * Verified against the live Dashboard at https://dashboard.bhanetwork.org.
+ */
+export function serializeForDashboard(event: CstEventV1 | Record<string, unknown>): Record<string, unknown> {
+  if (!event || typeof event !== 'object' || !('type' in event) || typeof (event as any).type !== 'string') {
+    return event as Record<string, unknown>;
+  }
+
+  const { type, data, customer, ...envelope } = event as CstEventV1;
+  const result: Record<string, unknown> = {
+    ...envelope,
+    event_type: type,
+  };
+
+  if (data && typeof data === 'object') {
+    Object.assign(result, data);
+    const totalMs = (data as any)?.duration?.total_ms;
+    if (totalMs !== undefined) {
+      if (type === 'cst.turn') {
+        (result as any).latency_ms = totalMs;
+      } else if (type === 'cst.delivery') {
+        (result as any).delivery_latency_ms = totalMs;
+      }
+    }
+  }
+
+  if (customer && typeof customer === 'object') {
+    (result as any).customer_ref = (customer as any).customer_ref;
+    (result as any).phone_e164 = (customer as any).phone_e164;
+    (result as any).role = (customer as any).role;
+    if ((customer as any).farm_ids) (result as any).farm_ids = (customer as any).farm_ids;
+    if ((customer as any).person_id) (result as any).person_id = (customer as any).person_id;
+    (result as any).customer = customer;
+  }
+
+  return result;
 }
 
 /**

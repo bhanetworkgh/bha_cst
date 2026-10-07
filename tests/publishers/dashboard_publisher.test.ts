@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   CstDashboardPublisher,
   PublishResult,
+  setActiveDashboardPublisher,
 } from '../../engine/src/publishers/dashboard.js';
 import {
   createCstTurnEventV1,
@@ -43,12 +44,14 @@ describe('Task 2 — Dashboard Publisher (CstDashboardPublisher)', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    setActiveDashboardPublisher(null);
     CstDashboardPublisher.resetConfigLogging();
     delete process.env.ENGINE_DASHBOARD_URL;
     delete process.env.ENGINE_DASHBOARD_KEY;
   });
 
   afterEach(() => {
+    setActiveDashboardPublisher(null);
     process.env = { ...originalEnv };
   });
 
