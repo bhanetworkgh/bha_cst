@@ -202,7 +202,8 @@ describe('Task 3 — cst.turn: Wire Publisher after CoreEngine.processEnvelope()
       };
 
       const res = await CoreEngine.processEnvelope(envelope, unknownSpeaker);
-      expect(res.reply_text).toBe(testProject.onboarding_reply);
+      expect(res.reply_text).toContain(testProject.onboarding_reply);
+      expect(res.reply_text).toContain('To opt in, reply YES');
 
       expect(publishedEvents).toHaveLength(1);
       const turn = publishedEvents[0];

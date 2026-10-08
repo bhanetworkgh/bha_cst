@@ -58,7 +58,8 @@ describe('Isolation Test 5: Unknown Sender Safe Onboarding Response Path', () =>
     const sent = sentMessageParams as SendSmsParams | null;
     expect(sent?.to).toBe(unknownSenderPhone);
     const systemConfig = SystemsRegistry.getSystemByTenantId('tenant-vfarm-01');
-    expect(sent?.body).toBe(systemConfig?.onboarding_reply);
+    expect(sent?.body).toContain(systemConfig?.onboarding_reply);
+    expect(sent?.body).toContain('To opt in, reply YES');
 
     // 2. Verify the unknown sender was NOT auto-registered in the customer registry
     const customerRecord = DbClient.lookupCustomerByPhone(unknownSenderPhone, 'tenant-vfarm-01');

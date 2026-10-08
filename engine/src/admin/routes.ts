@@ -2,8 +2,14 @@ import { Router, Request, Response } from 'express';
 import { CoreRegistry } from '../core/registry.js';
 import { Tenant, Project, ServiceNumberBinding, SpeakerRecord } from '../core/types.js';
 import { VfarmTenantAdapter } from '../adapters/vfarm/index.js';
-import { DbClient } from '../db/client.js';
+import { DbClient, ConsentStatus } from '../db/client.js';
 import { Logger } from '../config/logger.js';
+import {
+  recordConsent,
+  recordOptOut,
+  getConsentStatus,
+} from '../consent/service.js';
+import { getConsentWording, CONSENT_WORDING_VERSION } from '../consent/wording.js';
 
 export const adminRouter = Router();
 
@@ -1469,6 +1475,261 @@ adminRouter.get('/vfarm/customers', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     Logger.error(`Admin GET vfarm/customers error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── 11. SMS Consent Spine (/api/v1/admin/sms-consent/*) ────────────────────────
+// Consent is strictly separate from vFarm identity/farm authorization.
+// These endpoints allow operators to inspect and manage SMS consent state.
+
+/**
+ * GET /api/v1/admin/sms-consent/wording
+ * Returns the canonical consent wording and version.
+ * Every UI surface must use this exact wording when collecting consent.
+ */
+adminRouter.get('/sms-consent/wording', (_req: Request, res: Response) => {
+  const wording = getConsentWording();
+  res.status(200).json({
+    version: wording.version,
+    text: wording.text,
+    consents_version: CONSENT_WORDING_VERSION,
+  });
+});
+
+/**
+ * POST /api/v1/admin/sms-consent
+ * Grant or revoke SMS consent for a phone number.
+ *
+ * Body:
+ *   tenant_id: string (required)
+ *   project_id: string (optional)
+ *   phone_e164: string (required, E.164)
+ *   action: 'grant' | 'revoke'  (required)
+ *   source: string (optional, defaults based on action)
+ *   correlation_id: string (optional)
+ *
+ * The server stamps the canonical wording version/snapshot from
+ * getConsentWording() — client-supplied wording is ignored.
+ */
+adminRouter.post('/sms-consent', async (req: Request, res: Response) => {
+  try {
+    const { tenant_id, project_id, phone_e164, action, source, correlation_id } = req.body;
+
+    if (!tenant_id || !phone_e164 || !action) {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: 'Missing required fields: tenant_id, phone_e164, action (grant|revoke)',
+      });
+      return;
+    }
+
+    if (action !== 'grant' && action !== 'revoke') {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: `Invalid action "${action}". Must be "grant" or "revoke".`,
+      });
+      return;
+    }
+
+    const wording = getConsentWording();
+
+    let record: any;
+    let auditAction: string;
+
+    if (action === 'grant') {
+      record = await recordConsent(tenant_id, phone_e164, {
+        projectId: project_id,
+        source: source || 'admin_grant',
+        correlationId: correlation_id,
+        actor: 'admin',
+      });
+      auditAction = 'consent_granted';
+    } else {
+      record = await recordOptOut(tenant_id, phone_e164, {
+        projectId: project_id,
+        source: source || 'admin_revoke',
+        correlationId: correlation_id,
+        actor: 'admin',
+        reason: 'Admin revoked SMS consent via Admin Panel',
+      });
+      auditAction = 'consent_revoked';
+    }
+
+    Logger.info(
+      `Admin SMS consent ${auditAction}: phone=${phone_e164} tenant=${tenant_id}${project_id ? ` project=${project_id}` : ''}`,
+      {
+        tenant_id,
+        phone_e164,
+        action: auditAction,
+        correlation_id,
+      },
+    );
+
+    res.status(201).json({
+      status: auditAction,
+      tenant_id,
+      project_id: project_id || null,
+      phone_e164: record.phone_e164,
+      consent_status: record.consent_status,
+      consented_at: record.consented_at,
+      opted_out_at: record.opted_out_at,
+      wording_version: record.wording_version,
+      wording_snapshot: record.wording_snapshot,
+      source: record.source,
+      consent_id: record.id,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin POST sms-consent error: ${err.message}`);
+    res.status(err.message?.includes('Invalid phone') ? 400 : 500).json({
+      error: err.message?.includes('Invalid phone') ? 'BAD_REQUEST' : 'INTERNAL_SERVER_ERROR',
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * GET /api/v1/admin/sms-consent/:phoneE164?tenant_id=…&project_id=…
+ * Returns the current consent state for a phone number.
+ */
+adminRouter.get('/sms-consent/:phoneE164', async (req: Request, res: Response) => {
+  try {
+    const { phoneE164 } = req.params;
+    const tenantId = req.query.tenant_id as string;
+    const projectId = req.query.project_id as string | undefined;
+
+    if (!tenantId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'Missing required query param: tenant_id' });
+      return;
+    }
+
+    const { status, record } = await getConsentStatus(tenantId, phoneE164, projectId);
+
+    const wording = getConsentWording();
+
+    res.status(200).json({
+      status,
+      consent: record ? {
+        id: record.id,
+        tenant_id: record.tenant_id,
+        project_id: record.project_id,
+        phone_e164: record.phone_e164,
+        consent_status: record.consent_status,
+        consented_at: record.consented_at,
+        opted_out_at: record.opted_out_at,
+        wording_version: record.wording_version,
+        wording_snapshot: record.wording_snapshot,
+        source: record.source,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+      } : null,
+      canonical_wording: {
+        version: wording.version,
+        text: wording.text,
+      },
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET sms-consent error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/sms-consent
+ * List consent records with optional filters:
+ *   tenant_id, project_id, status (opted_in|opted_out|not_consented), search
+ */
+adminRouter.get('/sms-consent', async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.query.tenant_id as string | undefined;
+    const projectId = req.query.project_id as string | undefined;
+    const status = (req.query.status as string || undefined) as ConsentStatus | undefined;
+    const search = req.query.search as string | undefined;
+
+    // Validate status param
+    if (status && !['opted_in', 'opted_out', 'not_consented'].includes(status)) {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: `Invalid status "${status}". Must be one of: opted_in, opted_out, not_consented`,
+      });
+      return;
+    }
+
+    const consents = await DbClient.getAllSmsConsents(
+      tenantId,
+      projectId,
+      status,
+      search,
+    );
+
+    const maskPhone = (phone: string): string => {
+      if (!phone || phone.length < 5) return phone;
+      const digits = phone.replace(/\D/g, '');
+      if (digits.length <= 4) return phone.slice(0, -2) + '**';
+      return phone.slice(0, -digits.slice(-4).length) + '*' + digits.slice(-4);
+    };
+
+    res.status(200).json({
+      status: 'ok',
+      count: consents.length,
+      consents: consents.map((c) => ({
+        id: c.id,
+        tenant_id: c.tenant_id,
+        project_id: c.project_id,
+        phone_e164_masked: maskPhone(c.phone_e164),
+        phone_e164: c.phone_e164,
+        consent_status: c.consent_status,
+        consented_at: c.consented_at,
+        opted_out_at: c.opted_out_at,
+        wording_version: c.wording_version,
+        source: c.source,
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+      })),
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET sms-consent list error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/sms-consent/:phoneE164/history?tenant_id=…&project_id=…
+ * Returns the audit history for a consent record.
+ */
+adminRouter.get('/sms-consent/:phoneE164/history', async (req: Request, res: Response) => {
+  try {
+    const { phoneE164 } = req.params;
+    const tenantId = req.query.tenant_id as string;
+    const projectId = req.query.project_id as string | undefined;
+
+    if (!tenantId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'Missing required query param: tenant_id' });
+      return;
+    }
+
+    const history = await DbClient.getSmsConsentAuditForPhone(phoneE164, tenantId, projectId);
+
+    res.status(200).json({
+      status: 'ok',
+      phone_e164: phoneE164,
+      tenant_id: tenantId,
+      project_id: projectId || null,
+      count: history.length,
+      history: history.map((h) => ({
+        action: h.action,
+        previous_status: h.previous_status,
+        new_status: h.new_status,
+        wording_version: h.wording_version,
+        source: h.source,
+        actor: h.actor,
+        reason: h.reason,
+        correlation_id: h.correlation_id,
+        created_at: h.created_at,
+      })),
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET sms-consent history error: ${err.message}`);
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });

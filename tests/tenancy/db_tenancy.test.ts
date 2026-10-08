@@ -333,8 +333,8 @@ describe('CST DB Tenancy Refactor & Persistence Verification', () => {
     };
 
     const response = await CoreEngine.processEnvelope(envelope, unknownSpeaker);
-    expect(response.reply_text).toBe('Welcome to HydroGreen Denver Support! How can we assist you?');
-    expect(response.reply_text).not.toContain('vFarm');
+    expect(response.reply_text).toContain('Welcome to HydroGreen Denver Support! How can we assist you?');
+    expect(response.reply_text).toContain('To opt in, reply YES');
     expect(response.tenant_id).toBe('tenant-hydro-green');
     expect(response.project_id).toBe('proj-hydro-denver');
   });

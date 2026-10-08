@@ -7,6 +7,11 @@ caller is resolved through **vFarm** — the vFarm org member directory is the
 single source of truth for speakers. This document explains how to register
 a phone number that CST currently treats as unknown.
 
+This document also references the **SMS Consent Spine** — a separate
+opt-in/opt-out mechanism for SMS that is distinct from vFarm identity and
+farm authorization. See [docs/sms-consent-spine.md](sms-consent-spine.md)
+for the full consent documentation.
+
 ## Why CST can't register users directly
 
 Identity resolution lives in **`engine/src/identity/resolver.ts`**. The
@@ -106,3 +111,26 @@ tests/authorization/authorization_stepup.test.ts
 | Route handling | `engine/src/router/index.ts` |
 | Authorization logic | `engine/src/identity/stepup.ts` |
 | Test helper for seeded customers | `tests/helpers/seed_customers.ts` |
+
+## SMS Consent (separate from identity)
+
+Even after a phone number is registered in vFarm and recognized by CST, the
+phone may not consent to receiving SMS. The consent spine is a **separate**
+path:
+
+```
+phone → CST SMS consent      → opted_in / opted_out / not_consented  (consent spine)
+phone → vFarm person_id       → farm grants → farm authorization     (identity resolver)
+```
+
+- A phone can be a valid vFarm member (authorized) but **not** consented —
+  outbound SMS to this phone is blocked.
+- A phone can be consenting but **unknown** in vFarm — it may still receive
+  the safe generic onboarding reply (which is how CST collects consent).
+
+See [docs/sms-consent-spine.md](sms-consent-spine.md) for details on:
+- The canonical consent wording (`cst_sms_consent_v1`)
+- STOP keyword handling (Twilio canonical set)
+- Consent API endpoints (`POST/GET /api/v1/admin/sms-consent/*`)
+- Consent enforcement in the outbound SMS path
+- Admin Panel consent management

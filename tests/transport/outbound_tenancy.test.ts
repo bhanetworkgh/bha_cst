@@ -87,7 +87,7 @@ describe('Item 4 — outbound sending DID resolves through project -> service_nu
       return { sid: 'SM_BOUND_001', status: 'sent' };
     });
 
-    await DbClient.saveOutboundMessage({ ...msg({ correlation_id: 'corr_bound' }), id: 'o1' });
+    await DbClient.saveOutboundMessage({ ...msg({ correlation_id: 'corr_bound' }), id: 'o1', consent_exempt: true });
     await processOutboundQueue();
 
     expect(sent).toHaveLength(1);
@@ -173,6 +173,7 @@ describe('Item 9 — capability is re-checked immediately before sending', () =>
       body: 'capability intact',
       correlation_id: 'corr_cap_ok',
       status: 'pending',
+      consent_exempt: true,
     });
     await processOutboundQueue();
 
@@ -478,6 +479,7 @@ describe('Item 5/6 — cst.turn and cst.delivery share the same turn_id end to e
       correlation_id: turnId,
       turn_id: turnId,
       status: 'pending',
+      consent_exempt: true,
     });
 
     const delivered: any[] = [];

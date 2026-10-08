@@ -8,6 +8,8 @@ import { DbClient } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
 import { processOutboundQueue } from '../../transport/twilio/outbound.js';
 import { OutboundMessage } from '../../transport/twilio/types.js';
+import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse } from '../../consent/service.js';
+import { getConsentWording } from '../../consent/wording.js';
 
 export const smsInterfaceRouter = Router();
 
@@ -147,6 +149,104 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
     // Async pipeline processing
     setImmediate(async () => {
       try {
+        // Check for STOP/keywords BEFORE any Core Engine processing or vFarm identity
+        // resolution. Per the consent spine contract, STOP handling must work for
+        // numbers with no vFarm identity — an unknown caller texting "STOP" must be
+        // honored immediately. We use the canonical Twilio STOP keyword set from
+        // the wording module (stop, stopall, unsubscribe, quit, end, cancel).
+        const isOptOut = isOptOutMessage(normalizedMsg.body);
+        if (isOptOut) {
+          await recordOptOut(
+            binding.tenant_id,
+            normalizedMsg.from_e164,
+            {
+              projectId: binding.project_id,
+              source: 'sms_stop_keyword',
+              correlationId: normalizedMsg.message_id,
+              actor: 'sender',
+              reason: `Recipient sent STOP keyword from canonical set: ${[...STOP_KEYWORDS].join(', ')}`,
+            },
+          );
+
+          Logger.audit({
+            timestamp: new Date().toISOString(),
+            tenant_id: binding.tenant_id,
+            actor: normalizedMsg.from_e164,
+            role: 'sender',
+            entry_point: 'webhook',
+            tool_or_route: '/webhooks/twilio/sms',
+            outcome: 'refused',
+            reason: `SMS STOP keyword received. Phone opted out of SMS.`,
+            correlation_id: normalizedMsg.message_id,
+          });
+
+          // Send a confirmation reply (consent_exempt — opt-out confirmation is allowed)
+          const confirmationReply: OutboundMessage = {
+            tenant_id: binding.tenant_id,
+            project_id: binding.project_id,
+            from_e164: normalizedMsg.to_e164,
+            to_e164: normalizedMsg.from_e164,
+            body: 'You have been unsubscribed. Reply START to re-subscribe. Msg&data rates may apply.',
+            correlation_id: normalizedMsg.message_id,
+            turn_id: normalizedMsg.message_id,
+            status: 'pending',
+            consent_exempt: true,
+          };
+          await DbClient.saveOutboundMessage(confirmationReply);
+          await processOutboundQueue();
+          return;
+        }
+
+        // Check for affirmative consent response (YES / I AGREE)
+        const isConsentResp = isConsentResponse(normalizedMsg.body);
+        if (isConsentResp) {
+          const { status: consentStatus } = await getConsentStatus(
+            binding.tenant_id,
+            normalizedMsg.from_e164,
+            binding.project_id,
+          );
+
+          // Allow re-opt-in if not opted_out (including not_consented or already opted_in cases)
+          if (consentStatus !== 'opted_out') {
+            await recordConsent(binding.tenant_id, normalizedMsg.from_e164, {
+              projectId: binding.project_id,
+              source: 'sms_yes',
+              correlationId: normalizedMsg.message_id,
+              actor: 'sender',
+            });
+
+            Logger.audit({
+              timestamp: new Date().toISOString(),
+              tenant_id: binding.tenant_id,
+              actor: normalizedMsg.from_e164,
+              role: 'sender',
+              entry_point: 'webhook',
+              tool_or_route: '/webhooks/twilio/sms',
+              outcome: 'ok',
+              reason: `Customer replied with affirmative consent response`,
+              correlation_id: normalizedMsg.message_id,
+            });
+
+            const consentWording = getConsentWording();
+            const confirmationReply: OutboundMessage = {
+              tenant_id: binding.tenant_id,
+              project_id: binding.project_id,
+              from_e164: normalizedMsg.to_e164,
+              to_e164: normalizedMsg.from_e164,
+              body: `You're opted in to Customer Service Twin SMS for vFarm monitoring, account verification, subscription/appointment confirmations, and 1:1 support.\n\nReply STOP at any time to opt out.`,
+              correlation_id: normalizedMsg.message_id,
+              turn_id: normalizedMsg.message_id,
+              status: 'pending',
+              consent_exempt: true,
+            };
+            await DbClient.saveOutboundMessage(confirmationReply);
+            await processOutboundQueue();
+            return;
+          }
+
+          // If opted_out, let it fall through to CoreEngine (they'll get onboarding with consent wording)
+        }
+
         // Construct uniform MessageEnvelope
         const envelope: MessageEnvelope = {
           tenant_id: binding.tenant_id,
@@ -174,6 +274,14 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // Save outbound message and process queue.
         // IMPORTANT: correlation_id = envelope.correlation_id = MessageSid = cst.turn.turn_id
         // This is the critical join key between cst.turn and cst.delivery on the dashboard.
+        //
+        // consent_exempt: The safe generic onboarding reply (status === 'onboarding')
+        // is what CST uses to collect SMS consent from a new caller. Blocking it
+        // when the caller has not yet opted in would create a deadlock — the
+        // caller can never receive the consent prompt. All other reply types
+        // (status, knowledge, images, etc.) go through the normal consent gate
+        // in processOutboundQueue.
+        const isOnboarding = engineResponse.status === 'onboarding';
         const outboundRecord: OutboundMessage = {
           tenant_id: binding.tenant_id,
           project_id: binding.project_id,
@@ -184,6 +292,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           correlation_id: envelope.correlation_id,   // = MessageSid = turn_id
           turn_id: envelope.correlation_id,           // explicit join key for cst.delivery
           status: 'pending',
+          consent_exempt: isOnboarding,
         };
 
         await DbClient.saveOutboundMessage(outboundRecord);

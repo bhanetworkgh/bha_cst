@@ -29,6 +29,13 @@ export interface OutboundMessage {
   segments?: number;
   created_at?: string;
   updated_at?: string;
+  /**
+   * When true, the outbound queue's SMS-consent gate is bypassed.
+   * Only safe onboarding/reply messages use this — never operational SMS.
+   * Rationale: the safe generic onboarding reply is how CST collects consent;
+   * blocking it would create a deadlock (can't message to ask to message).
+   */
+  consent_exempt?: boolean;
 }
 
 export interface IdentityContext {

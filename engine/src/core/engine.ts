@@ -13,6 +13,7 @@ import {
   CustomerPayload,
 } from '../contracts/events.js';
 import { randomUUID } from 'crypto';
+import { getConsentWording } from '../consent/wording.js';
 
 // Connectors
 import { VfarmConnector } from '../connectors/vfarm.js';
@@ -305,20 +306,25 @@ export class CoreEngine {
           correlation_id,
         });
 
-        const durationMs = Date.now() - startTime;
-        const res: EnvelopeResponse = {
-          reply_text: onboardingReply,
-          reply: onboardingReply,
-          correlation_id,
-          channel,
-          tenant_id,
-          project_id,
-          speaker_ref,
-          conversation_id: conversationId,
-          intent: detectedIntent,
-          reason,
-          duration_ms: durationMs,
-        };
+      // Append canonical consent wording with explicit opt-in/opt-out instructions
+      const consentWording = getConsentWording();
+      const consentInstruction = `\n\n${consentWording.text}\n\nTo opt in, reply YES. Reply STOP at any time to opt out.`;
+
+      const durationMs = Date.now() - startTime;
+      const res: EnvelopeResponse = {
+        reply_text: onboardingReply + consentInstruction,
+        reply: onboardingReply + consentInstruction,
+        correlation_id,
+        channel,
+        tenant_id,
+        project_id,
+        speaker_ref,
+        conversation_id: conversationId,
+        intent: detectedIntent,
+        reason,
+        status: 'onboarding',
+        duration_ms: durationMs,
+      };
 
         this.publishTurn({
           envelope,

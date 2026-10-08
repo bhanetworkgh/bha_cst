@@ -7,6 +7,7 @@ import { verifyTwilioSignature } from './signature.js';
 import { Router, Request, Response } from 'express';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
 import { publishDelivery } from '../../publishers/delivery.js';
+import { canSendSms } from '../../consent/service.js';
 
 
 export const outboundRouter = Router();
@@ -199,6 +200,33 @@ export async function processOutboundQueue(): Promise<void> {
         },
       });
       continue;
+    }
+
+    // Step 1d: SMS consent enforcement — opt-out/no-consent recipients are blocked.
+    // Consent is a separate dimension from identity: a valid vFarm member who
+    // opted out must not receive SMS. Onboarding replies and system notifications
+    // marked consent_exempt bypass this check (the safe generic onboarding reply
+    // is how CST initially collects consent — blocking it would deadlock).
+    if (!msg.consent_exempt) {
+      const consentCheck = await canSendSms(msg.tenant_id, msg.to_e164, msg.project_id);
+      if (!consentCheck.allowed) {
+        const reason = consentCheck.reason;
+        await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: msg.tenant_id,
+          actor: 'outbound_worker',
+          role: 'transport_worker',
+          entry_point: 'api',
+          tool_or_route: 'processOutboundQueue',
+          outcome: 'refused',
+          reason,
+          correlation_id: msg.correlation_id,
+          commercial_impact:
+            'An outbound SMS was blocked because the recipient has not consented to or has opted out of SMS. The customer will not receive this message.',
+        });
+        continue;
+      }
     }
 
     // Step 1c: Resolve the sending DID through the binding chain.

@@ -64,8 +64,62 @@ export interface VoiceDeliveryRecord {
   created_at?: string;
 }
 
+export interface VoiceDeliveryRecord {
+  id?: string;
+  system_id?: string;
+  project_id?: string;
+  tenant_id: string;
+  conversation_id?: string;
+  message_id?: string;
+  status: 'synthesized' | 'sent' | 'failed' | 'refused';
+  voice_id?: string;
+  model_id?: string;
+  character_count: number;
+  audio_bytes: number;
+  mime_type?: string;
+  error_code?: string;
+  error_message?: string;
+  correlation_id?: string;
+  delivered_at?: string;
+  created_at?: string;
+}
+
+export type ConsentStatus = 'opted_in' | 'opted_out' | 'not_consented';
+
+export interface SmsConsentRecord {
+  id: string;
+  tenant_id: string;
+  project_id: string | null;
+  phone_e164: string;
+  consent_status: ConsentStatus;
+  consented_at: string | null;
+  opted_out_at: string | null;
+  wording_version: string;
+  wording_snapshot: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SmsConsentAuditRow {
+  id: string;
+  consent_id: string;
+  tenant_id: string;
+  project_id: string | null;
+  phone_e164: string;
+  action: string;
+  previous_status: ConsentStatus | null;
+  new_status: ConsentStatus;
+  wording_version: string | null;
+  wording_snapshot: string | null;
+  source: string | null;
+  actor: string;
+  reason: string | null;
+  correlation_id: string | null;
+  created_at: string;
+}
+
 export class DbClient {
-  private static pool: pg.Pool | null = null;
 
   // In-memory stores for unit testing / fast fallback
   private static messagesInStore:       Map<string, InboundMessage>      = new Map();
@@ -78,6 +132,9 @@ export class DbClient {
   private static bindingsStore:         Map<string, ServiceNumberBinding>= new Map();
   private static tenantsStore:          Map<string, Tenant>              = new Map();
   private static alertAuditStore:       AlertAuditRow[]                  = [];
+  private static smsConsentsStore:      Map<string, SmsConsentRecord>    = new Map();
+  private static smsConsentAuditStore:  SmsConsentAuditRow[]             = [];
+  private static pool: pg.Pool | null = null;
 
   static getPool(): pg.Pool | null {
     if (this.pool) return this.pool;
@@ -138,6 +195,8 @@ export class DbClient {
     this.bindingsStore.clear();
     this.tenantsStore.clear();
     this.alertAuditStore.splice(0);
+    this.smsConsentsStore.clear();
+    this.smsConsentAuditStore.splice(0);
   }
 
   /**
@@ -810,6 +869,8 @@ export class DbClient {
     this.customersStore.clear();
     this.voiceDeliveriesStore.clear();
     this.alertAuditStore = [];
+    this.smsConsentsStore.clear();
+    this.smsConsentAuditStore.splice(0);
   }
 
   static resetDurableStores(): void {
@@ -1788,6 +1849,413 @@ export class DbClient {
 
   static getAllVoiceDeliveries(): VoiceDeliveryRecord[] {
     return Array.from(this.voiceDeliveriesStore.values());
+  }
+
+  // ── SMS Consent Persistence (sms_consents + sms_consent_audit) ─────────────
+
+  private static consentStoreKey(tenantId: string, phoneE164: string, projectId?: string): string {
+    const projKey = projectId || '';
+    return `${tenantId}:${projKey}:${phoneE164.trim()}`;
+  }
+
+  /**
+   * Record or update an SMS consent (opt-in or opt-out) row.
+   * Uses upsert semantics: if a record exists for this tenant/project/phone,
+   * it is updated; otherwise a new one is created.
+   * An audit row is always inserted.
+   */
+  static async recordSmsConsent(params: {
+    tenant_id: string;
+    project_id?: string | null;
+    phone_e164: string;
+    consent_status: ConsentStatus;
+    consented_at?: string | null;
+    opted_out_at?: string | null;
+    wording_version: string;
+    wording_snapshot: string;
+    source: string;
+    actor: string;
+    correlation_id?: string | null;
+    reason?: string;
+  }): Promise<SmsConsentRecord> {
+    const now = new Date().toISOString();
+    const cleanPhone = params.phone_e164.trim();
+    const projId = params.project_id || null;
+    const key = this.consentStoreKey(params.tenant_id, cleanPhone, projId || undefined);
+
+    const existing = this.smsConsentsStore.get(key);
+
+    const record: SmsConsentRecord = {
+      id: existing?.id || `smsc_${randomUUID()}`,
+      tenant_id: params.tenant_id,
+      project_id: projId,
+      phone_e164: cleanPhone,
+      consent_status: params.consent_status,
+      consented_at: params.consent_status === 'opted_in' ? (params.consented_at || now) : (params.consented_at || existing?.consented_at || null),
+      opted_out_at: params.consent_status === 'opted_out' ? (params.opted_out_at || now) : (existing?.opted_out_at || null),
+      wording_version: params.wording_version,
+      wording_snapshot: params.wording_snapshot,
+      source: params.source,
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+
+    this.smsConsentsStore.set(key, record);
+
+    // ── Audit row ───────────────────────────────────────────────────────────
+    const auditRow: SmsConsentAuditRow = {
+      id: `smsca_${randomUUID()}`,
+      consent_id: record.id,
+      tenant_id: params.tenant_id,
+      project_id: projId,
+      phone_e164: cleanPhone,
+      action: params.consent_status === 'opted_in' ? 'consent_granted' : 'consent_revoked',
+      previous_status: existing?.consent_status || null,
+      new_status: params.consent_status,
+      wording_version: params.wording_version,
+      wording_snapshot: params.wording_snapshot,
+      source: params.source,
+      actor: params.actor,
+      reason: params.reason || null,
+      correlation_id: params.correlation_id || null,
+      created_at: now,
+    };
+    this.smsConsentAuditStore.push(auditRow);
+
+    // ── Postgres write ──────────────────────────────────────────────────────
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `INSERT INTO sms_consents
+             (id, tenant_id, project_id, phone_e164, consent_status, consented_at, opted_out_at,
+              wording_version, wording_snapshot, source, created_at, updated_at)
+           SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+           WHERE $3 IS NOT NULL
+           ON CONFLICT (tenant_id, COALESCE(project_id, ''), phone_e164)
+           DO UPDATE SET
+             consent_status   = EXCLUDED.consent_status,
+             consented_at     = CASE
+                                  WHEN EXCLUDED.consent_status = 'opted_in'
+                                  THEN COALESCE(EXCLUDED.consented_at, sms_consents.consented_at)
+                                  ELSE sms_consents.consented_at
+                                END,
+             opted_out_at     = CASE
+                                  WHEN EXCLUDED.consent_status = 'opted_out'
+                                  THEN COALESCE(EXCLUDED.opted_out_at, NOW())
+                                  ELSE sms_consents.opted_out_at
+                                END,
+             wording_version  = EXCLUDED.wording_version,
+             wording_snapshot = EXCLUDED.wording_snapshot,
+             source           = EXCLUDED.source,
+             updated_at       = NOW()`,
+          [
+            record.id,
+            params.tenant_id,
+            projId,
+            cleanPhone,
+            params.consent_status,
+            record.consented_at,
+            record.opted_out_at,
+            params.wording_version,
+            params.wording_snapshot,
+            params.source,
+            record.created_at,
+            now,
+          ],
+        );
+      } catch (err: any) {
+        Logger.error(`DbClient.recordSmsConsent Postgres Error: ${err.message}`);
+      }
+
+      try {
+        await pool.query(
+          `INSERT INTO sms_consent_audit
+             (id, consent_id, tenant_id, project_id, phone_e164, action, previous_status,
+              new_status, wording_version, wording_snapshot, source, actor, reason,
+              correlation_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          [
+            auditRow.id,
+            auditRow.consent_id,
+            auditRow.tenant_id,
+            auditRow.project_id,
+            auditRow.phone_e164,
+            auditRow.action,
+            auditRow.previous_status,
+            auditRow.new_status,
+            auditRow.wording_version,
+            auditRow.wording_snapshot,
+            auditRow.source,
+            auditRow.actor,
+            auditRow.reason,
+            auditRow.correlation_id,
+            auditRow.created_at,
+          ],
+        );
+      } catch (err: any) {
+        Logger.error(`DbClient.recordSmsConsent audit Postgres Error: ${err.message}`);
+      }
+    }
+
+    return record;
+  }
+
+  /**
+   * Record an opt-out (STOP) for a phone number.
+   * Creates the consent record if it does not exist, or updates it to opted_out.
+   */
+  static async recordSmsOptOut(params: {
+    tenant_id: string;
+    project_id?: string | null;
+    phone_e164: string;
+    opted_out_at: string;
+    wording_version: string;
+    wording_snapshot: string;
+    source: string;
+    actor: string;
+    correlation_id?: string | null;
+    reason?: string;
+  }): Promise<SmsConsentRecord> {
+    return this.recordSmsConsent({
+      tenant_id: params.tenant_id,
+      project_id: params.project_id,
+      phone_e164: params.phone_e164,
+      consent_status: 'opted_out',
+      consented_at: null,
+      opted_out_at: params.opted_out_at || new Date().toISOString(),
+      wording_version: params.wording_version,
+      wording_snapshot: params.wording_snapshot,
+      source: params.source,
+      actor: params.actor,
+      correlation_id: params.correlation_id,
+      reason: params.reason,
+    });
+  }
+
+  /**
+   * Look up the current SMS consent record for a phone within a tenant (and
+   * optionally project). Returns null when no consent record exists.
+   *
+   * Tenant/project isolation: queries are always scoped — cross-tenant or
+   * cross-project reads are never possible through this interface.
+   */
+  static async lookupSmsConsent(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<SmsConsentRecord | null> {
+    const cleanPhone = phoneE164.trim();
+    if (!cleanPhone) return null;
+
+    const projectFilter = projectId || null;
+    const memKey = this.consentStoreKey(tenantId, cleanPhone, projectFilter || undefined);
+    const memRecord = this.smsConsentsStore.get(memKey);
+    if (memRecord) return memRecord;
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT id, tenant_id, project_id, phone_e164, consent_status, consented_at,
+                  opted_out_at, wording_version, wording_snapshot, source, created_at, updated_at
+           FROM sms_consents
+           WHERE tenant_id = $1
+             AND COALESCE(project_id, '') = $2::text
+             AND phone_e164 = $3
+           ORDER BY updated_at DESC
+           LIMIT 1`,
+          [tenantId, projectFilter || '', cleanPhone],
+        );
+        if (res.rows.length > 0) {
+          const row = res.rows[0];
+          const record: SmsConsentRecord = {
+            id: row.id,
+            tenant_id: row.tenant_id,
+            project_id: row.project_id,
+            phone_e164: row.phone_e164,
+            consent_status: row.consent_status as ConsentStatus,
+            consented_at: row.consented_at,
+            opted_out_at: row.opted_out_at,
+            wording_version: row.wording_version,
+            wording_snapshot: row.wording_snapshot,
+            source: row.source,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          };
+          this.smsConsentsStore.set(memKey, record);
+          return record;
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.lookupSmsConsent Postgres Error: ${err.message}`);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if a phone number is opted out of SMS for a tenant/project.
+   * Returns true only when the most recent consent state is opted_out.
+   */
+  static async isPhoneOptedOut(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<boolean> {
+    const record = await this.lookupSmsConsent(phoneE164, tenantId, projectId);
+    return record?.consent_status === 'opted_out';
+  }
+
+  /**
+   * Check if a phone number has explicitly opted in to SMS.
+   * Returns true only when the most recent consent state is opted_in.
+   */
+  static async isPhoneSmsConsented(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<boolean> {
+    const record = await this.lookupSmsConsent(phoneE164, tenantId, projectId);
+    return record?.consent_status === 'opted_in';
+  }
+
+  /**
+   * Retrieve all SMS consent records with optional filtering.
+   */
+  static async getAllSmsConsents(
+    tenantId?: string,
+    projectId?: string,
+    status?: ConsentStatus,
+    search?: string,
+  ): Promise<SmsConsentRecord[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const conditions: string[] = [];
+        const params: any[] = [];
+
+        if (tenantId) {
+          params.push(tenantId);
+          conditions.push(`tenant_id = $${params.length}`);
+        }
+        if (projectId) {
+          params.push(projectId);
+          conditions.push(`COALESCE(project_id, '') = $${params.length}::text`);
+        }
+        if (status) {
+          params.push(status);
+          conditions.push(`consent_status = $${params.length}`);
+        }
+        if (search) {
+          params.push(`%${search.trim().toLowerCase()}%`);
+          conditions.push(
+            `(LOWER(phone_e164) LIKE $${params.length} OR LOWER(source) LIKE $${params.length})`,
+          );
+          params.push(`%${search.trim().toLowerCase()}%`);
+          conditions.push(
+            `(LOWER(phone_e164) LIKE $${params.length} OR LOWER(source) LIKE $${params.length})`,
+          );
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        const res = await pool.query(
+          `SELECT id, tenant_id, project_id, phone_e164, consent_status, consented_at,
+                  opted_out_at, wording_version, wording_snapshot, source, created_at, updated_at
+           FROM sms_consents
+           ${whereClause}
+           ORDER BY tenant_id, phone_e164, updated_at DESC`,
+          params,
+        );
+        return res.rows.map((row) => ({
+          id: row.id,
+          tenant_id: row.tenant_id,
+          project_id: row.project_id,
+          phone_e164: row.phone_e164,
+          consent_status: row.consent_status as ConsentStatus,
+          consented_at: row.consented_at,
+          opted_out_at: row.opted_out_at,
+          wording_version: row.wording_version,
+          wording_snapshot: row.wording_snapshot,
+          source: row.source,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        }));
+      } catch (err: any) {
+        Logger.error(`DbClient.getAllSmsConsents Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory fallback
+    const results: SmsConsentRecord[] = [];
+    for (const record of this.smsConsentsStore.values()) {
+      if (tenantId && record.tenant_id !== tenantId) continue;
+      if (projectId && record.project_id !== projectId) continue;
+      if (status && record.consent_status !== status) continue;
+      if (search) {
+        const s = search.trim().toLowerCase();
+        if (!record.phone_e164.toLowerCase().includes(s) && !record.source.toLowerCase().includes(s)) continue;
+      }
+      results.push({ ...record });
+    }
+    return results;
+  }
+
+  /**
+   * Retrieve audit history for a phone number (all consent changes).
+   */
+  static async getSmsConsentAuditForPhone(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string,
+  ): Promise<SmsConsentAuditRow[]> {
+    const cleanPhone = phoneE164.trim();
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        let query = `
+          SELECT id, consent_id, tenant_id, project_id, phone_e164, action,
+                 previous_status, new_status, wording_version, wording_snapshot,
+                 source, actor, reason, correlation_id, created_at
+          FROM sms_consent_audit
+          WHERE tenant_id = $1 AND phone_e164 = $2`;
+        const params: any[] = [tenantId, cleanPhone];
+
+        if (projectId) {
+          params.push(projectId);
+          query += ` AND COALESCE(project_id, '') = $${params.length}::text`;
+        }
+
+        query += ` ORDER BY created_at DESC`;
+        const res = await pool.query(query, params);
+        return res.rows.map((row) => ({
+          id: row.id,
+          consent_id: row.consent_id,
+          tenant_id: row.tenant_id,
+          project_id: row.project_id,
+          phone_e164: row.phone_e164,
+          action: row.action,
+          previous_status: row.previous_status as ConsentStatus | null,
+          new_status: row.new_status as ConsentStatus,
+          wording_version: row.wording_version,
+          wording_snapshot: row.wording_snapshot,
+          source: row.source,
+          actor: row.actor,
+          reason: row.reason,
+          correlation_id: row.correlation_id,
+          created_at: row.created_at,
+        }));
+      } catch (err: any) {
+        Logger.error(`DbClient.getSmsConsentAuditForPhone Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory fallback
+    return [...this.smsConsentAuditStore]
+      .filter((r) => r.tenant_id === tenantId && r.phone_e164 === cleanPhone)
+      .filter((r) => !projectId || r.project_id === projectId || r.project_id === null)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
 }
 

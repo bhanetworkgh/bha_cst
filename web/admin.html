@@ -50,8 +50,9 @@
       <button class="admin-tab" data-tab="projects" role="tab">4 · Projects &amp; Capabilities</button>
       <button class="admin-tab" data-tab="numbers" role="tab">5 · Numbers &amp; DIDs</button>
       <button class="admin-tab" data-tab="audit" role="tab">6 · Fail-Closed Audit &amp; Activity</button>
-      <button class="admin-tab" data-tab="vfarm-live" role="tab">7 · vFarm Live E2E</button>
-      <button class="admin-tab" data-tab="turn-stream" role="tab">8 · Turn Stream</button>
+      <button class="admin-tab" data-tab="sms-consent" role="tab">7 · SMS Consent</button>
+      <button class="admin-tab" data-tab="vfarm-live" role="tab">8 · vFarm Live E2E</button>
+      <button class="admin-tab" data-tab="turn-stream" role="tab">9 · Turn Stream</button>
     </nav>
 
     <!-- Alert / Banner Container -->
@@ -705,12 +706,110 @@
       </div>
     </section>
 
-    <!-- ──────────────────────────────────────────────────────────────────────── -->
-    <!-- 6. FAIL-CLOSED AUDIT & ACTIVITY -->
-    <!-- ──────────────────────────────────────────────────────────────────────── -->
-    <section id="tab-audit" class="admin-panel hidden">
-      <div class="panel-block">
-        <div class="panel-heading">
+     <!-- ──────────────────────────────────────────────────────────────────────── -->
+     <!-- 7. SMS CONSENT SPINE -->
+     <!-- ──────────────────────────────────────────────────────────────────────── -->
+     <section id="tab-sms-consent" class="admin-panel hidden">
+       <div class="panel-block">
+         <div class="panel-heading">
+           <div>
+             <span class="section-label">CONSENT SPINE (§11)</span>
+             <h3>SMS Consent Management</h3>
+           </div>
+           <div class="heading-controls">
+             <button id="btn-consent-refresh" class="ghost-button small">↻ Refresh</button>
+           </div>
+         </div>
+         <p class="admin-note">
+           Consent is strictly separate from vFarm identity &amp; farm authorization. Use this view to
+           inspect consent state, grant/revoke consent, and audit consent history. The canonical
+           consent wording version is <code>cst_sms_consent_v1</code>.
+         </p>
+
+         <!-- Canonical Wording Display -->
+         <div class="panel-block">
+           <div class="panel-heading">
+             <div>
+               <span class="section-label">CANONICAL WORDING</span>
+               <h3>CST SMS Consent Text (cst_sms_consent_v1)</h3>
+             </div>
+           </div>
+           <div id="consent-wording-display" class="admin-table-wrap">
+             <div class="wording-card">
+               <span class="wording-version-pill">Version: <strong id="consent-wording-version">—</strong></span>
+               <blockquote id="consent-wording-text" class="wording-text">Loading consent wording…</blockquote>
+             </div>
+           </div>
+         </div>
+
+         <!-- Consent Lookup & Grant/Revoke -->
+         <div class="filter-toolbar" style="margin-bottom: 16px;">
+           <div class="filter-group">
+             <label for="consent-tenant-select">Tenant</label>
+             <select id="consent-tenant-select"><option value="">Select tenant…</option></select>
+           </div>
+           <div class="filter-group">
+             <label for="consent-project-input">Project (optional)</label>
+             <input id="consent-project-input" placeholder="proj-vfarm-main">
+           </div>
+           <div class="filter-group">
+             <label for="consent-phone-input">Phone (E.164)</label>
+             <input id="consent-phone-input" placeholder="+15551234567">
+           </div>
+           <div class="filter-group" style="justify-content: flex-end;">
+             <button id="btn-consent-grant" class="primary-button small-btn">Grant Consent</button>
+             <button id="btn-consent-revoke" class="primary-button small-btn danger-button">Revoke Consent</button>
+           </div>
+         </div>
+
+         <!-- Consent Lookup Result -->
+         <div id="consent-lookup-result" class="panel-block">
+           <div class="panel-heading">
+             <div>
+               <span class="section-label">CURRENT CONSENT STATE</span>
+               <h3>Consent lookup result</h3>
+             </div>
+           </div>
+           <div id="consent-state-display" class="admin-table-wrap">
+             <p class="muted">Enter a tenant + phone and click a button to look up or modify consent.</p>
+           </div>
+         </div>
+
+         <!-- Consent Audit History -->
+         <div class="panel-block">
+           <div class="panel-heading">
+             <div>
+               <span class="section-label">AUDIT TRAIL</span>
+               <h3>Consent history for selected phone</h3>
+             </div>
+           </div>
+           <div id="consent-audit-list" class="admin-table-wrap">
+             <p class="muted">No history loaded. Look up a phone to see consent audit records.</p>
+           </div>
+         </div>
+       </div>
+
+       <!-- All Consent Records -->
+       <div class="panel-block">
+         <div class="panel-heading">
+           <div>
+             <span class="section-label">ALL CONSENT RECORDS</span>
+             <h3>SMS consent records across all tenants</h3>
+           </div>
+         </div>
+         <p class="admin-note">
+           Phone numbers are masked for privacy. Click a row to load its consent state and audit history.
+         </p>
+         <div id="consent-records-list" class="admin-table-wrap"></div>
+       </div>
+     </section>
+
+     <!-- ──────────────────────────────────────────────────────────────────────── -->
+     <!-- 6. FAIL-CLOSED AUDIT & ACTIVITY -->
+     <!-- ──────────────────────────────────────────────────────────────────────── -->
+     <section id="tab-audit" class="admin-panel hidden">
+       <div class="panel-block">
+         <div class="panel-heading">
           <div>
             <span class="section-label">SECURITY LEDGER (SECTION 7 &amp; 9)</span>
             <h3>Real-Time Fail-Closed &amp; Ingress Decisions</h3>

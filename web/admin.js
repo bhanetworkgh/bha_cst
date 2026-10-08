@@ -137,6 +137,10 @@ function activateTab(tab) {
   // Tab-specific lazy refreshes
   if (tab === 'speakers') guarded(loadSpeakersTab);
   if (tab === 'audit') loadAuditLogs();
+  if (tab === 'sms-consent') {
+    loadConsentWordings();
+    loadAllConsentRecords();
+  }
   if (tab === 'overview') {
     loadHealth();
     loadVfarmPanel();
@@ -162,6 +166,7 @@ function fillTenantSelects() {
     '#speaker-filter-tenant',
     '#add-user-tenant',
     '#turn-stream-filter-tenant',
+    '#consent-tenant-select',
   ];
 
   selects.forEach((selector) => {
@@ -2038,6 +2043,214 @@ async function refreshAll() {
   await loadVfarmPanel();
   showToast('All platform data refreshed.', 'info');
 }
+
+// ── SMS Consent Spine ─────────────────────────────────────────────────────────
+
+let consentWordings = { version: '—', text: 'Loading…' };
+
+async function loadConsentWordings() {
+  try {
+    const resp = await api('/api/v1/admin/sms-consent/wording');
+    consentWordings = { version: resp.version, text: resp.text };
+    $('#consent-wording-version').textContent = resp.version || '—';
+    $('#consent-wording-text').textContent = resp.text || 'No wording available.';
+  } catch (err) {
+    $('#consent-wording-version').textContent = 'error';
+    $('#consent-wording-text').textContent = `Failed to load wording: ${err.message}`;
+  }
+}
+
+async function loadAllConsentRecords() {
+  try {
+    const tenantSelect = $('#consent-tenant-select');
+    const tenantId = tenantSelect?.value;
+    const projectId = $('#consent-project-input')?.value || undefined;
+    const params = new URLSearchParams();
+    if (tenantId) params.set('tenant_id', tenantId);
+    if (projectId) params.set('project_id', projectId);
+
+    const resp = await api(`/api/v1/admin/sms-consent?${params.toString()}`);
+    const container = $('#consent-records-list');
+    if (!resp.consents || resp.consents.length === 0) {
+      container.innerHTML = '<p class="muted">No consent records found for this filter.</p>';
+      return;
+    }
+    container.innerHTML = '';
+    const table = document.createElement('table');
+    table.className = 'admin-table';
+    table.innerHTML = `
+      <thead><tr>
+        <th>Phone (masked)</th>
+        <th>Status</th>
+        <th>Consented At</th>
+        <th>Opted Out At</th>
+        <th>Project</th>
+        <th>Word. Version</th>
+        <th>Source</th>
+      </tr></thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector('tbody');
+    resp.consents.forEach((c) => {
+      const row = document.createElement('tr');
+      row.className = 'consent-row';
+      row.innerHTML = `
+        <td>${escapeAdminHtml(c.phone_e164_masked)}</td>
+        <td><span class="pill ${c.consent_status === 'opted_in' ? 'on' : c.consent_status === 'opted_out' ? 'off' : 'off'}">${c.consent_status || 'not_consented'}</span></td>
+        <td>${c.consented_at ? new Date(c.consented_at).toLocaleString() : '—'}</td>
+        <td>${c.opted_out_at ? new Date(c.opted_out_at).toLocaleString() : '—'}</td>
+        <td>${escapeAdminHtml(c.project_id || 'all projects')}</td>
+        <td>${escapeAdminHtml(c.wording_version || '—')}</td>
+        <td>${escapeAdminHtml(c.source || '—')}</td>
+      `;
+      row.addEventListener('click', () => {
+        $('#consent-phone-input').value = c.phone_e164;
+        $('#consent-tenant-select').value = c.tenant_id;
+        $('#consent-project-input').value = c.project_id || '';
+        loadConsentState();
+        loadConsentAudit();
+      });
+      tbody.appendChild(row);
+    });
+    container.innerHTML = '';
+    container.appendChild(table);
+  } catch (err) {
+    $('#consent-records-list').innerHTML = `<p class="muted">Failed to load consent records: ${err.message}</p>`;
+  }
+}
+
+async function loadConsentState() {
+  const tenantId = $('#consent-tenant-select')?.value;
+  const phone = $('#consent-phone-input')?.value;
+  const projectId = $('#consent-project-input')?.value || undefined;
+  const display = $('#consent-state-display');
+
+  if (!tenantId || !phone) {
+    display.innerHTML = '<p class="muted">Enter a tenant and phone number to look up consent state.</p>';
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    if (projectId) params.set('project_id', projectId);
+    const resp = await api(`/api/v1/admin/sms-consent/${encodeURIComponent(phone)}?${params.toString()}`);
+    display.innerHTML = resp.consent
+      ? `<table class="admin-table"><tbody>
+          <tr><th>Status</th><td><span class="pill ${resp.consent.consent_status === 'opted_in' ? 'on' : 'off'}">${resp.consent.consent_status}</span></td></tr>
+          <tr><th>Consented At</th><td>${resp.consent.consented_at ? new Date(resp.consent.consented_at).toLocaleString() : '—'}</td></tr>
+          <tr><th>Opted Out At</th><td>${resp.consent.opted_out_at ? new Date(resp.consent.opted_out_at).toLocaleString() : '—'}</td></tr>
+          <tr><th>Word. Version</th><td>${escapeAdminHtml(resp.consent.wording_version || '—')}</td></tr>
+          <tr><th>Word. Snapshot</th><td class="wording-text">${escapeAdminHtml(resp.consent.wording_snapshot || '—')}</td></tr>
+          <tr><th>Source</th><td>${escapeAdminHtml(resp.consent.source || '—')}</td></tr>
+        </tbody></table>`
+      : '<p class="muted">No consent record found for this phone. The phone is NOT consented — outbound SMS will be blocked until consent is granted.</p>';
+  } catch (err) {
+    display.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+  }
+}
+
+async function loadConsentAudit() {
+  const tenantId = $('#consent-tenant-select')?.value;
+  const phone = $('#consent-phone-input')?.value;
+  const projectId = $('#consent-project-input')?.value || undefined;
+  const container = $('#consent-audit-list');
+
+  if (!tenantId || !phone) {
+    container.innerHTML = '<p class="muted">Look up a phone to see consent history.</p>';
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({ tenant_id: tenantId });
+    if (projectId) params.set('project_id', projectId);
+    const resp = await api(`/api/v1/admin/sms-consent/${encodeURIComponent(phone)}/history?${params.toString()}`);
+    if (!resp.history || resp.history.length === 0) {
+      container.innerHTML = '<p class="muted">No consent audit records.</p>';
+      return;
+    }
+    const table = document.createElement('table');
+    table.className = 'admin-table';
+    table.innerHTML = `
+      <thead><tr>
+        <th>Timestamp</th>
+        <th>Action</th>
+        <th>Previous → New</th>
+        <th>Actor</th>
+        <th>Source</th>
+        <th>Reason</th>
+        <th>Correlation ID</th>
+      </tr></thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector('tbody');
+    resp.history.forEach((h) => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${new Date(h.created_at).toLocaleString()}</td>
+        <td>${escapeAdminHtml(h.action)}</td>
+        <td>${escapeAdminHtml(h.previous_status || '—')} → ${escapeAdminHtml(h.new_status)}</td>
+        <td>${escapeAdminHtml(h.actor)}</td>
+        <td>${escapeAdminHtml(h.source)}</td>
+        <td>${escapeAdminHtml(h.reason || '—')}</td>
+        <td>${escapeAdminHtml(h.correlation_id)}</td>
+      `;
+      tbody.appendChild(row);
+    });
+    container.innerHTML = '';
+    container.appendChild(table);
+  } catch (err) {
+    container.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+  }
+}
+
+async function updateConsent(action) {
+  const tenantId = $('#consent-tenant-select')?.value;
+  const phone = $('#consent-phone-input')?.value;
+  const projectId = $('#consent-project-input')?.value || undefined;
+
+  if (!tenantId || !phone) {
+    showError('Please enter a tenant and phone number.');
+    return;
+  }
+
+  try {
+    const resp = await api('/api/v1/admin/sms-consent', {
+      method: 'POST',
+      body: JSON.stringify({ tenant_id: tenantId, project_id: projectId, phone_e164: phone, action }),
+    });
+    showToast(`SMS consent ${action === 'grant' ? 'granted' : 'revoked'} for ${phone}.`, 'info');
+    await loadConsentState();
+    await loadConsentAudit();
+    await loadAllConsentRecords();
+  } catch (err) {
+    showError(`Failed to ${action} consent: ${err.message}`);
+  }
+}
+
+// Consent UI event wiring
+$('#consent-tenant-select')?.addEventListener('change', () => {
+  loadAllConsentRecords();
+  $('#consent-project-input')?.value && loadConsentState();
+  $('#consent-phone-input')?.value && loadConsentState();
+});
+$('#consent-phone-input')?.addEventListener('input', () => {
+  if ($('#consent-phone-input').value && $('#consent-tenant-select').value) {
+    loadConsentState();
+    loadConsentAudit();
+  }
+});
+$('#consent-project-input')?.addEventListener('input', () => {
+  if ($('#consent-phone-input').value && $('#consent-tenant-select').value) {
+    loadConsentState();
+    loadConsentAudit();
+  }
+});
+$('#btn-consent-refresh')?.addEventListener('click', () => {
+  loadConsentWordings();
+  loadAllConsentRecords();
+});
+$('#btn-consent-grant')?.addEventListener('click', () => updateConsent('grant'));
+$('#btn-consent-revoke')?.addEventListener('click', () => updateConsent('revoke'));
 
 // Boot refresh only when a session token is already present. Without this the
 // console fires an admin API call before the auth guard has redirected an

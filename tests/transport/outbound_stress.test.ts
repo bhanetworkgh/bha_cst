@@ -50,6 +50,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
         body: `${id}: Stress test message payload ${i}`,
         correlation_id: `corr_stress_${i}`,
         status: 'pending',
+        consent_exempt: true,
       });
     }
 
@@ -120,6 +121,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       body: `${msgId}: Single race item`,
       correlation_id: 'corr_race_single_001',
       status: 'pending',
+      consent_exempt: true,
     });
 
     // Launch all workers simultaneously against the single queue item
@@ -148,6 +150,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       body: `${msgId}: Direct atomic claim race item`,
       correlation_id: 'corr_race_direct_claim',
       status: 'pending',
+      consent_exempt: true,
     });
 
     // 20 simulated workers all racing to claim the exact same item ID simultaneously
@@ -191,6 +194,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
         status: 'queued',
         retry_count: 1,
         next_retry_at: new Date(Date.now() - 5000).toISOString(), // Eligible for immediate processing
+        consent_exempt: true,
       });
     }
 
@@ -239,6 +243,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       correlation_id: 'corr_retry_temp_fail',
       status: 'pending',
       max_retries: 3,
+      consent_exempt: true,
     });
 
     await processOutboundQueue();
@@ -275,6 +280,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       correlation_id: 'corr_retry_perm_fail',
       status: 'pending',
       max_retries: 3,
+      consent_exempt: true,
     });
 
     await processOutboundQueue();
@@ -307,6 +313,7 @@ describe('Outbound Queue Concurrency and Stress Testing', () => {
       correlation_id: 'corr_retry_exhaust',
       status: 'pending',
       max_retries: 3,
+      consent_exempt: true,
     });
 
     await processOutboundQueue();

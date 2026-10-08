@@ -113,6 +113,11 @@ describe('Outbound Transport Unit Tests', () => {
       return { sid: 'SM_RETRY_SUCCESS', status: 'sent' };
     });
 
+    // Pre-record consent so the consent gate doesn't block this operational SMS
+    await import('../../engine/src/consent/service.js').then(m => m.recordConsent(
+      'tenant-vfarm-01', '+15551234567', { projectId: 'proj-vfarm-main', source: 'test' },
+    ));
+
     await DbClient.saveOutboundMessage({
       tenant_id: 'tenant-vfarm-01',
       project_id: 'proj-vfarm-main',

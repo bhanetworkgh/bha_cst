@@ -37,6 +37,15 @@ describe('Definition of Done: Twilio Transport E2E Roundtrip', () => {
     const validReceivingNumber = '+19715885823'; // vFarm system #1 number
     const messageId = 'SM_E2E_ROUNDTRIP_001';
 
+    // Pre-record SMS consent for the known sender so the outbound consent gate
+    // allows the reply through. Consent is separate from vFarm identity — the
+    // test is exercising the transport path, not the consent flow.
+    const { recordConsent } = await import('../../engine/src/consent/service.js');
+    await recordConsent('tenant-vfarm-01', knownSender, {
+      projectId: 'proj-vfarm-main',
+      source: 'e2e_test_setup',
+    });
+
     // 1. Send simulated Twilio webhook request
     const res = await request(app)
       .post('/webhooks/twilio/sms')
