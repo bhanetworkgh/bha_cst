@@ -138,6 +138,80 @@ export function isSmsCapabilityEnabled(msg: OutboundMessage): boolean {
 }
 
 /**
+ * Guard for the `consent_exempt` bypass. The flag must never be usable by a
+ * customer-originated sender — it is reserved for platform messages only
+ * (onboarding replies, opt-out confirmations). If a message claims exempt
+ * status but its `from_e164` is not a service number bound to the exact
+ * tenant/project sending it, refuse the message.
+ *
+ * @param resolvedFromE164 The resolved sending number from the binding chain,
+ *  if available. If provided, this takes precedence over `msg.from_e164`.
+ */
+export function validateConsentExempt(
+  msg: OutboundMessage,
+  resolvedFromE164: string | null = null
+): boolean {
+  if (!msg.consent_exempt) return true;
+
+  // Use the resolved sending number (project-bound DID) if available;
+  // otherwise fall back to the raw queued from_e164 for backward compatibility.
+  const fromE164 = resolvedFromE164 || (msg.from_e164 || '').trim();
+  const fromBinding = CoreRegistry.resolveServiceNumber(fromE164);
+  if (!fromBinding) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: msg.tenant_id,
+      actor: 'outbound_worker',
+      role: 'transport_worker',
+      entry_point: 'api',
+      tool_or_route: 'validateConsentExempt',
+      outcome: 'refused',
+      reason: `Outbound consent_exempt bypass refused: ${fromE164} is not a bound service number`,
+      correlation_id: msg.correlation_id,
+      commercial_impact:
+        'An outbound SMS was blocked because it requested the consent-exempt bypass from an untrusted originating number. The bypass may have been set in error or exploited by a caller.',
+    });
+    return false;
+  }
+
+  if (fromBinding.capability !== 'sms') {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: msg.tenant_id,
+      actor: 'outbound_worker',
+      role: 'transport_worker',
+      entry_point: 'api',
+      tool_or_route: 'validateConsentExempt',
+      outcome: 'refused',
+      reason: `Outbound consent_exempt bypass refused: ${fromE164} is bound to capability "${fromBinding.capability}", not "sms"`,
+      correlation_id: msg.correlation_id,
+      commercial_impact:
+        'An outbound SMS was blocked because it requested the consent-exempt bypass through a non-SMS service number.',
+    });
+    return false;
+  }
+
+  if (fromBinding.tenant_id !== msg.tenant_id || fromBinding.project_id !== msg.project_id) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: msg.tenant_id,
+      actor: 'outbound_worker',
+      role: 'transport_worker',
+      entry_point: 'api',
+      tool_or_route: 'validateConsentExempt',
+      outcome: 'refused',
+      reason: `Outbound consent_exempt bypass refused: ${fromE164} is bound to tenant "${fromBinding.tenant_id}" project "${fromBinding.project_id}", not the sender's "${msg.tenant_id}" / "${msg.project_id}"`,
+      correlation_id: msg.correlation_id,
+      commercial_impact:
+        'An outbound SMS was blocked because it requested the consent-exempt bypass from a service number not bound to this tenant+project (scope mismatch).',
+    });
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Worker function to process pending & queued outbound messages.
  * Manages status transitions: pending/queued -> sending -> sent | failed | refused
  * Concurrency-safe: uses atomic queue claiming so multiple workers can process concurrently
@@ -202,6 +276,29 @@ export async function processOutboundQueue(): Promise<void> {
       continue;
     }
 
+    // Step 1b: Re-check the current project capability (may have been disabled
+    // after the message was queued). Disabled => do not send, fail with reason.
+    if (!isSmsCapabilityEnabled(msg)) {
+      const reason = !msg.project_id
+        ? 'Outbound send refused: message has no project_id, so no project service number binding can be authorized'
+        : 'Outbound send refused: SMS capability is currently disabled for this project';
+      await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: msg.tenant_id,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'processOutboundQueue',
+        outcome: 'refused',
+        reason,
+        correlation_id: msg.correlation_id,
+        commercial_impact:
+          'A queued customer reply was not delivered. The customer will not receive an answer on this channel; confirm the project SMS capability and service-number binding.',
+      });
+      continue;
+    }
+
     // Step 1d: SMS consent enforcement — opt-out/no-consent recipients are blocked.
     // Consent is a separate dimension from identity: a valid vFarm member who
     // opted out must not receive SMS. Onboarding replies and system notifications
@@ -244,6 +341,32 @@ export async function processOutboundQueue(): Promise<void> {
         outcome: 'refused',
         reason,
         correlation_id: msg.correlation_id,
+      });
+      continue;
+    }
+
+    // Step 1c.5: Guard the consent_exempt bypass — validate the resolved
+    // sending number (project-bound DID) against the binding chain. This runs
+    // after resolveOutboundSendingNumber so platform messages queued without
+    // an explicit from_e164 (onboarding replies, STOP confirmations) can be
+    // authorized from their project-bound service number. This closes a
+    // potential bypass where a caller could set consent_exempt on an outbound
+    // to a service number they control.
+    if (!validateConsentExempt(msg, resolvedFromNumber)) {
+      const reason = 'Outbound send refused: consent_exempt bypass validation failed';
+      await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: msg.tenant_id,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'processOutboundQueue',
+        outcome: 'refused',
+        reason,
+        correlation_id: msg.correlation_id,
+        commercial_impact:
+          'An outbound SMS was blocked because the consent-exempt bypass was requested from an untrusted originating number.',
       });
       continue;
     }

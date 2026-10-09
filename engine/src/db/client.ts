@@ -134,6 +134,11 @@ export class DbClient {
   private static alertAuditStore:       AlertAuditRow[]                  = [];
   private static smsConsentsStore:      Map<string, SmsConsentRecord>    = new Map();
   private static smsConsentAuditStore:  SmsConsentAuditRow[]             = [];
+  /**
+   * In-memory store for active consent prompts (sms_consent_prompts).
+   * Accessed by the consent service for fast prompt lookups during YES/START handling.
+   */
+  static smsConsentPromptsStore: Map<string, any> = new Map();
   private static pool: pg.Pool | null = null;
 
   static getPool(): pg.Pool | null {
@@ -197,6 +202,7 @@ export class DbClient {
     this.alertAuditStore.splice(0);
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
+    this.smsConsentPromptsStore.clear();
   }
 
   /**
@@ -871,6 +877,7 @@ export class DbClient {
     this.alertAuditStore = [];
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
+    this.smsConsentPromptsStore.clear();
   }
 
   static resetDurableStores(): void {
@@ -1858,6 +1865,11 @@ export class DbClient {
     return `${tenantId}:${projKey}:${phoneE164.trim()}`;
   }
 
+  static consentPromptStoreKey(tenantId: string, phoneE164: string, projectId?: string): string {
+    const projKey = projectId || '';
+    return `${tenantId}:${projKey}:${phoneE164.trim()}`;
+  }
+
   /**
    * Record or update an SMS consent (opt-in or opt-out) row.
    * Uses upsert semantics: if a record exists for this tenant/project/phone,
@@ -1926,29 +1938,31 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // Use INSERT with VALUES to handle both tenant-only (null project_id) and project-scoped cases.
+        // ON CONFLICT will update only when there is a conflict with (tenant_id, COALESCE(project_id, ''), phone_e164).
+        // This ensures new records are inserted regardless of null project_id.
         await pool.query(
           `INSERT INTO sms_consents
              (id, tenant_id, project_id, phone_e164, consent_status, consented_at, opted_out_at,
-              wording_version, wording_snapshot, source, created_at, updated_at)
-           SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
-           WHERE $3 IS NOT NULL
-           ON CONFLICT (tenant_id, COALESCE(project_id, ''), phone_e164)
-           DO UPDATE SET
-             consent_status   = EXCLUDED.consent_status,
-             consented_at     = CASE
-                                  WHEN EXCLUDED.consent_status = 'opted_in'
-                                  THEN COALESCE(EXCLUDED.consented_at, sms_consents.consented_at)
-                                  ELSE sms_consents.consented_at
-                                END,
-             opted_out_at     = CASE
-                                  WHEN EXCLUDED.consent_status = 'opted_out'
-                                  THEN COALESCE(EXCLUDED.opted_out_at, NOW())
-                                  ELSE sms_consents.opted_out_at
-                                END,
-             wording_version  = EXCLUDED.wording_version,
-             wording_snapshot = EXCLUDED.wording_snapshot,
-             source           = EXCLUDED.source,
-             updated_at       = NOW()`,
+               wording_version, wording_snapshot, source, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (tenant_id, COALESCE(project_id, ''), phone_e164)
+            DO UPDATE SET
+              consent_status   = EXCLUDED.consent_status,
+              consented_at     = CASE
+                                   WHEN EXCLUDED.consent_status = 'opted_in'
+                                   THEN COALESCE(EXCLUDED.consented_at, sms_consents.consented_at)
+                                   ELSE sms_consents.consented_at
+                                 END,
+              opted_out_at     = CASE
+                                   WHEN EXCLUDED.consent_status = 'opted_out'
+                                   THEN COALESCE(EXCLUDED.opted_out_at, NOW())
+                                   ELSE sms_consents.opted_out_at
+                                 END,
+              wording_version  = EXCLUDED.wording_version,
+              wording_snapshot = EXCLUDED.wording_snapshot,
+              source           = EXCLUDED.source,
+              updated_at       = NOW()`,
           [
             record.id,
             params.tenant_id,

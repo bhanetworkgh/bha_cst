@@ -7,23 +7,45 @@
  *   - Querying consent state (opted_in | opted_out | not_consented)
  *   - Enforcing consent at the outbound SMS boundary
  *
- * CST identity (phone → vFarm member → farm authorization) and CST consent
- * (phone → SMS consent status) are deliberately separate:
+ * CST identity (phone -> vFarm member -> farm authorization) and CST consent
+ * (phone -> SMS consent status) are deliberately separate:
  *
- *   phone → CST SMS consent      → opted_in / opted_out / not_consented  (this module)
- *   phone → vFarm person_id       → farm grants → farm authorization     (IdentityResolver + adapters)
+ *   phone -> CST SMS consent      -> opted_in / opted_out / not_consented  (this module)
+ *   phone -> vFarm person_id       -> farm grants -> farm authorization     (IdentityResolver + adapters)
  *
  * A phone can be a valid vFarm member (authorized) but not consented (SMS blocked).
  * A phone can be consented but unknown in vFarm (no farm data, but SMS may proceed
- *   for onboarding replies — which are always safe/generic).
+ *   for onboarding replies -- which are always safe/generic).
  */
 
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
-import { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse } from './wording.js';
+import { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse, isResubscribeRequest, CONSENT_RESUBSCRIBE_KEYWORDS } from './wording.js';
 import { randomUUID } from 'crypto';
 
 export type ConsentStatus = 'opted_in' | 'opted_out' | 'not_consented';
+
+/**
+ * A consent prompt is the canonical wording sent to a phone number before
+ * explicit YES/I AGREE consent can be recorded. Prompts expire after a fixed
+ * window so stale prompts cannot grant consent later.
+ */
+export const CONSENT_PROMPT_TTL_SECONDS = 24 * 60 * 60;
+
+export type PromptType = 'onboarding' | 'resubscribe';
+
+export interface ConsentPrompt {
+  id: string;
+  consent_id: string | null;
+  phone_e164: string;
+  tenant_id: string;
+  project_id: string | null;
+  prompt_type: PromptType;
+  wording_version: string;
+  wording_snapshot: string;
+  sent_at: string;
+  expires_at: string;
+}
 
 export interface ConsentRecord {
   id: string;
@@ -74,7 +96,7 @@ function isValidE164(phoneE164: string): boolean {
  * Record an explicit opt-in for a phone number.
  *
  * The canonical wording snapshot and version are stamped server-side from
- * `getConsentWording()` — the client cannot supply a fake wording_version.
+ * `getConsentWording()` -- the client cannot supply a fake wording_version.
  */
 export async function recordConsent(
   tenantId: string,
@@ -113,7 +135,7 @@ export async function recordConsent(
 
 /**
  * Record an opt-out (STOP) for a phone number.
- * Works even if no prior consent record exists — the phone is marked
+ * Works even if no prior consent record exists -- the phone is marked
  * opted_out so CST never sends SMS to it regardless of identity resolution.
  */
 export async function recordOptOut(
@@ -233,12 +255,244 @@ export async function canSendSms(
   };
 }
 
+export { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse, CONSENT_RESUBSCRIBE_KEYWORDS, isResubscribeRequest };
+
+export async function getConsentPrompt(
+  phoneE164: string,
+  tenantId: string,
+  projectId?: string
+): Promise<ConsentPrompt | null> {
+  const cleanPhone = (phoneE164 || '').trim();
+  if (!cleanPhone) return null;
+
+  const memKey = DbClient.consentPromptStoreKey(tenantId, cleanPhone, projectId || undefined);
+  const memPrompt = DbClient.smsConsentPromptsStore.get(memKey);
+  if (memPrompt) return memPrompt;
+
+  const pool = DbClient.getPool();
+  if (pool) {
+    try {
+      const res = await pool.query(
+        `SELECT id, consent_id, phone_e164, tenant_id, project_id, prompt_type,
+                wording_version, wording_snapshot, sent_at, expires_at
+         FROM sms_consent_prompts
+         WHERE phone_e164 = $1 AND tenant_id = $2 AND (project_id = $3 OR ($3 IS NULL AND project_id IS NULL))
+           AND expires_at > NOW()
+         ORDER BY sent_at DESC
+         LIMIT 1`,
+        [cleanPhone, tenantId, projectId || null]
+      );
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        const prompt: ConsentPrompt = {
+          id: row.id,
+          consent_id: row.consent_id,
+          phone_e164: row.phone_e164,
+          tenant_id: row.tenant_id,
+          project_id: row.project_id,
+          prompt_type: row.prompt_type,
+          wording_version: row.wording_version,
+          wording_snapshot: row.wording_snapshot,
+          sent_at: row.sent_at,
+          expires_at: row.expires_at,
+        };
+        DbClient.smsConsentPromptsStore.set(memKey, prompt);
+        return prompt;
+      }
+    } catch (err: any) {
+      Logger.error(`DbClient.getConsentPrompt Postgres Error: ${err.message}`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Record a consent prompt (onboarding or resubscribe).
+ * Overwrites any previous active prompt for the same phone/tenant/project.
+ */
+export async function recordConsentPrompt(
+  phoneE164: string,
+  tenantId: string,
+  promptType: PromptType,
+  opts?: {
+    projectId?: string;
+    correlationId?: string;
+    actor?: string;
+  }
+): Promise<ConsentPrompt> {
+  const cleanPhone = (phoneE164 || '').trim();
+  if (!cleanPhone) throw new Error(`Invalid phone number: ${phoneE164}`);
+
+  const wording = getConsentWording();
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + CONSENT_PROMPT_TTL_SECONDS * 1000).toISOString();
+
+  const projId = opts?.projectId || null;
+  const memKey = DbClient.consentPromptStoreKey(tenantId, cleanPhone, projId || undefined);
+
+  const prompt: ConsentPrompt = {
+    id: `prompt_${randomUUID()}`, // match DB's pattern but explicit for consistency
+    consent_id: null,
+    phone_e164: cleanPhone,
+    tenant_id: tenantId,
+    project_id: projId,
+    prompt_type: promptType,
+    wording_version: wording.version,
+    wording_snapshot: wording.text,
+    sent_at: now,
+    expires_at: expiresAt,
+  };
+
+  DbClient.smsConsentPromptsStore.set(memKey, prompt);
+
+  const pool = DbClient.getPool();
+  if (pool) {
+    try {
+      await pool.query(
+        `INSERT INTO sms_consent_prompts
+           (id, phone_e164, tenant_id, project_id, prompt_type,
+            wording_version, wording_snapshot, sent_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (tenant_id, COALESCE(project_id, ''), phone_e164)
+         DO UPDATE SET
+           prompt_type      = EXCLUDED.prompt_type,
+           wording_version  = EXCLUDED.wording_version,
+           wording_snapshot = EXCLUDED.wording_snapshot,
+           sent_at          = EXCLUDED.sent_at,
+           expires_at       = EXCLUDED.expires_at`,
+        [
+          prompt.id,
+          prompt.phone_e164,
+          prompt.tenant_id,
+          projId,
+          prompt.prompt_type,
+          prompt.wording_version,
+          prompt.wording_snapshot,
+          prompt.sent_at,
+          prompt.expires_at,
+        ]
+      );
+    } catch (err: any) {
+      Logger.error(`DbClient.recordConsentPrompt Postgres Error: ${err.message}`);
+    }
+  }
+
+  return prompt;
+}
+
+/**
+ * Activate a consent prompt by linking it to a consent record (when YES/I AGREE received).
+ * Returns the activated prompt (with consent_id) and the consent record.
+ */
+export async function activateConsentViaPrompt(
+  promptId: string,
+  tenantId: string,
+  phoneE164: string,
+  opts: {
+    projectId?: string;
+    source?: string;
+    correlationId?: string;
+    actor?: string;
+  } = {}
+): Promise<{ prompt: ConsentPrompt; consent: ConsentRecord }> {
+  const cleanPhone = (phoneE164 || '').trim();
+  if (!cleanPhone) throw new Error(`Invalid phone number: ${phoneE164}`);
+
+  // Get the prompt from in-memory store (fast path) or look up in DB
+  const memKey = DbClient.consentPromptStoreKey(tenantId, cleanPhone, opts.projectId || undefined);
+  let prompt = DbClient.smsConsentPromptsStore.get(memKey);
+
+  if (!prompt) {
+    const pool = DbClient.getPool();
+    if (!pool) throw new Error('Database pool unavailable');
+    try {
+      const res = await pool.query(
+        `SELECT id, phone_e164, tenant_id, project_id, prompt_type,
+                wording_version, wording_snapshot, sent_at, expires_at
+         FROM sms_consent_prompts
+         WHERE id = $1 AND tenant_id = $2
+           AND (project_id = $3 OR ($3 IS NULL AND project_id IS NULL))
+           AND expires_at > NOW()`,
+        [promptId, tenantId, opts.projectId || null]
+      );
+      if (res.rows.length === 0) throw new Error('Prompt not found or expired');
+      const row = res.rows[0];
+      prompt = {
+        id: row.id,
+        consent_id: null,
+        phone_e164: row.phone_e164,
+        tenant_id: row.tenant_id,
+        project_id: row.project_id,
+        prompt_type: row.prompt_type,
+        wording_version: row.wording_version,
+        wording_snapshot: row.wording_snapshot,
+        sent_at: row.sent_at,
+        expires_at: row.expires_at,
+      };
+      DbClient.smsConsentPromptsStore.set(memKey, prompt);
+    } catch (err: any) {
+      Logger.error(`DbClient.getConsentPrompt for activation Postgres Error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  if (prompt.consent_id) throw new Error('Prompt already activated');
+
+  // Create the consent record using recordConsent
+  const consent = await recordConsent(tenantId, cleanPhone, {
+    projectId: opts.projectId,
+    source: opts.source || 'prompt_activation',
+    correlationId: opts.correlationId,
+    actor: opts.actor || 'customer',
+    explicitVersion: prompt.wording_version,
+  });
+
+  // Link prompt to consent (in-memory)
+  prompt.consent_id = consent.id;
+  DbClient.smsConsentPromptsStore.set(memKey, prompt);
+
+  // Link prompt to consent (Postgres)
+  const pool = DbClient.getPool();
+  if (pool) {
+    try {
+      await pool.query(
+        `UPDATE sms_consent_prompts
+           SET consent_id = $1
+         WHERE id = $2
+           AND tenant_id = $3
+           AND (project_id = $4 OR ($4 IS NULL AND project_id IS NULL))`,
+        [consent.id, promptId, tenantId, opts.projectId || null]
+      );
+    } catch (err: any) {
+      Logger.error(`DbClient.activatePrompt Postgres Error: ${err.message}`);
+    }
+  }
+
+  return { prompt, consent };
+}
+
+/**
+ * Check if a consent prompt is still valid (not expired).
+ * Should be called before accepting an affirmative response.
+ */
+export async function isConsentPromptValid(
+  phoneE164: string,
+  tenantId: string,
+  projectId?: string
+): Promise<boolean> {
+  const prompt = await getConsentPrompt(phoneE164, tenantId, projectId);
+  if (!prompt) return false;
+  const now = new Date().toISOString();
+  return prompt.expires_at > now && prompt.consent_id === null;
+}
+
 /**
  * Handle an inbound message that may be a STOP / opt-out keyword.
  *
  * - Detects STOP keywords via `isOptOutMessage`
  * - Records opt-out (creates or updates the consent record)
- * - Returns audit-friendly details
+ * - Returns data needed to send confirmation reply
  */
 export async function handleInboundConsentMessage(
   tenantId: string,
@@ -246,7 +500,7 @@ export async function handleInboundConsentMessage(
   body: string,
   projectId?: string,
   correlationId?: string,
-): Promise<{ isOptOut: boolean; record: ConsentRecord | null; reason: string } | null> {
+): Promise<{ isOptOut: boolean; record: ConsentRecord | null; reason: string; confirmationBody: string | null } | null> {
   if (!isOptOutMessage(body)) {
     return null;
   }
@@ -268,7 +522,53 @@ export async function handleInboundConsentMessage(
     isOptOut: true,
     record,
     reason: 'Recipient opted out of SMS via STOP keyword',
+    confirmationBody: 'You have been unsubscribed. Reply START to re-subscribe. Msg&data rates may apply.',
   };
 }
 
-export { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse };
+/**
+ * Handle an inbound message that may be a re-subscription request (START).
+ *
+ * - Detects START keywords via `isResubscribeRequest`
+ * - Records resubscribe prompt (creates/updates active prompt)
+ * - Returns data needed to send consent prompt reply
+ */
+export async function handleInboundResubscribeMessage(
+  tenantId: string,
+  phoneE164: string,
+  body: string,
+  projectId?: string,
+  correlationId?: string,
+): Promise<{ isResubscribe: boolean; prompt: ConsentPrompt | null; reason: string; promptBody: string | null } | null> {
+  if (!isResubscribeRequest(body)) {
+    return null;
+  }
+
+  const { status } = await getConsentStatus(tenantId, phoneE164, projectId);
+  if (status !== 'opted_out') {
+    return null; // Let the Core Engine handle non-STOP cases; START from other states is invalid
+  }
+
+  Logger.info(`START keyword received from ${phoneE164} in tenant ${tenantId} (re-subscribe request)`, {
+    tenant_id: tenantId,
+    phone_e164: phoneE164,
+    correlation_id: correlationId,
+  });
+
+  const prompt = await recordConsentPrompt(phoneE164, tenantId, 'resubscribe', {
+    projectId,
+    correlationId,
+    actor: 'customer',
+  });
+
+  // The promptBody is the canonical consent wording (what we ask them to agree to)
+  const wording = getConsentWording();
+  const promptBody = `${wording.text}\n\nReply STOP at any time to opt out.`;
+
+  return {
+    isResubscribe: true,
+    prompt,
+    reason: 'Customer requested re-subscription via START keyword',
+    promptBody: promptBody,
+  };
+}

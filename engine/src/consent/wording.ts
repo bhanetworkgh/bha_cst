@@ -82,6 +82,10 @@ export const CONSENT_AFFIRMATIVE_KEYWORDS: ReadonlySet<string> = new Set([
   'iagree',
 ]);
 
+export const CONSENT_RESUBSCRIBE_KEYWORDS: ReadonlySet<string> = new Set([
+  'start',
+]);
+
 /**
  * Returns true if the inbound message body is an affirmative consent response.
  * Supports only a narrowly defined set (YES, I AGREE) and requires exact match
@@ -93,3 +97,16 @@ export function isConsentResponse(body: string): boolean {
   if (!normalized) return false;
   return CONSENT_AFFIRMATIVE_KEYWORDS.has(normalized);
 }
+
+/**
+ * Returns true if the inbound message body is a re-subscription request.
+ * Supports only a narrowly defined set (START) and requires exact match
+ * (case-insensitive, trimmed) to avoid treating "starting soon" or other
+ * messages as a re-subscribe request.
+ */
+export function isResubscribeRequest(body: string): boolean {
+  const normalized = (body || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return CONSENT_RESUBSCRIBE_KEYWORDS.has(normalized);
+}
+
