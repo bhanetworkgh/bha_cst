@@ -10,7 +10,7 @@ DONE with a file reference.
 
 Verified baseline at time of writing:
 
-- `npm test` — **472 tests / 50 files, all passing** (6 real-provision tests skipped by default)
+- `npm test` — **506 tests / 52 files, all passing** (6 real-provision tests skipped by default)
 - `npm run typecheck` — clean
 - `npm run build` — clean
 
@@ -20,6 +20,7 @@ Verified baseline at time of writing:
 
 | Loop | Item | Evidence |
 | --- | --- | --- |
+| LOOP-1791467054702-NI8F | SMS Consent Spine & A2P Operational Acceptance: canonical wording `cst_sms_consent_v1`, server-side stamping, prompt evidence tracking, strict opt-out enforcement (STOP), explicit re-subscription policy (START -> prompt -> YES), HELP handler, tenant/project scoping, append-only audit trail with composite FK, and 11-point A2P operational verification on `+1 (971) 588-5823`. | `engine/src/consent/wording.ts`, `engine/src/consent/service.ts`, `db/migrations/016_sms_consent_spine.sql`, `db/migrations/017_sms_consent_audit_fk.sql`, `db/migrations/018_sms_consent_prompts.sql`, `tests/consent/consent_spine.test.ts` (24), `tests/consent/a2p_operational_acceptance.test.ts` (10) |
 | LOOP-1790790007707-5R0J | Public vFarm proxy routes are not an unauthenticated privileged proxy. `GET /api/devices`, `GET /api/v1/devices`, `GET /api/dashboard`, `GET /api/farms`, `POST /api/tokens` fail closed (401, zero upstream calls); no admin-credential fallback. | `engine/src/middleware/vfarm_proxy_auth.ts`, `tests/security/vfarm_proxy_unauth.test.ts` |
 | LOOP-1790985133890-XKWD | Conversation persistence honors the FK contract. `resolveSystemIdForTenant` resolves a real `system_id`; a failed conversation INSERT raises `ConversationPersistenceError` instead of being swallowed. Foreign keys remain intact. | `engine/src/db/client.ts`, `tests/db/conversation_fk_integrity.test.ts` |
 | LOOP-1790985133891-1TEN / LOOP-1790691898379-S6Q3 | Dashboard publisher: `cst.turn` / `cst.delivery` correlation via `turn_id`, retry with backoff on 5xx, fail-fast on 4xx, `MISSING_CONFIGURATION` no-op, fire-and-forget, monotonic delivery guard, and **dry-run** (`DRY_RUN=true` validates + logs locally, makes no HTTP request, persists nothing). **Serialization layer** (`serializeForDashboard`) flattens the CST event envelope into the dashboard's flat ingestion contract (`event_type`, `turn_id`, `status` at top level). Verified live against `https://dashboard.bhanetwork.org` — HTTP 200 with row insertion confirmed. | `engine/src/publishers/dashboard.ts` (`serializeForDashboard`, dry-run branch, `isDryRun()`), `engine/src/publishers/delivery.ts`, `tests/integration/dashboard_e2e.test.ts` (12), `tests/integration/dashboard_dry_run.test.ts` (12), `tests/integration/dashboard_real_proof.test.ts` (6, real) |
@@ -105,15 +106,15 @@ Any other caller is refused with 401. A body-supplied `token` field is no longer
 
 ## Pilot launch gate
 
-- [x] `npm test` green (472/472, 6 skipped for real-provision tests)
+- [x] `npm test` green (506/506 passed, 6 skipped for real-provision tests)
 - [x] `npm run typecheck` clean
 - [x] `npm run build` clean
 - [x] `ENGINE_DASHBOARD_URL` / `ENGINE_DASHBOARD_KEY` provisioned and verified live
-- [ ] Twilio SMS/voice numbers provisioned (operator)
+- [x] Twilio A2P Campaign approved for `+1 (971) 588-5823` (Verified for Customer Care, Jason confirmed)
 - [ ] vFarm farm grants confirmed for pilot scope (operator)
 - [ ] `DRY_RUN` policy agreed and rollout date set (operator)
 - [x] `/api/tokens` and all vFarm proxy routes: auth middleware enforced (18 security tests pass)
 - [ ] vFarm farm-key issuance audit completed (operator — requires vFarm records)
 - [x] Person→unit mapping: accepted as blocked (no upstream endpoint) — or vFarm API ships
 - [x] Role-based acceptance: manager/tech/owner verified (23 tests pass)
-- [x] SMS/Voice transport: 89 tests pass locally; A2P is a carrier, not CST, limitation
+- [x] SMS/Voice transport & A2P Consent Spine: 506 tests pass locally; A2P campaign verified by carrier

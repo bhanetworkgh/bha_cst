@@ -867,6 +867,17 @@ export class DbClient {
     return Array.from(this.messagesOutStore.values());
   }
 
+  static lookupOutboundMessageByProviderSid(
+    providerSid: string
+  ): OutboundMessage | null {
+    for (const msg of this.messagesOutStore.values()) {
+      if (msg.provider_sid === providerSid) {
+        return msg;
+      }
+    }
+    return null;
+  }
+
   static clearAll(): void {
     this.messagesInStore.clear();
     this.messagesOutStore.clear();
@@ -1904,7 +1915,7 @@ export class DbClient {
       phone_e164: cleanPhone,
       consent_status: params.consent_status,
       consented_at: params.consent_status === 'opted_in' ? (params.consented_at || now) : (params.consented_at || existing?.consented_at || null),
-      opted_out_at: params.consent_status === 'opted_out' ? (params.opted_out_at || now) : (existing?.opted_out_at || null),
+      opted_out_at: params.consent_status === 'opted_out' ? (params.opted_out_at || now) : null,
       wording_version: params.wording_version,
       wording_snapshot: params.wording_snapshot,
       source: params.source,
@@ -1957,7 +1968,7 @@ export class DbClient {
               opted_out_at     = CASE
                                    WHEN EXCLUDED.consent_status = 'opted_out'
                                    THEN COALESCE(EXCLUDED.opted_out_at, NOW())
-                                   ELSE sms_consents.opted_out_at
+                                   ELSE NULL
                                  END,
               wording_version  = EXCLUDED.wording_version,
               wording_snapshot = EXCLUDED.wording_snapshot,

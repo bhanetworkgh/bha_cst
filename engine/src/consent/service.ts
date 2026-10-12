@@ -20,7 +20,19 @@
 
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
-import { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse, isResubscribeRequest, CONSENT_RESUBSCRIBE_KEYWORDS } from './wording.js';
+import {
+  CONSENT_WORDING_VERSION,
+  getConsentWording,
+  STOP_KEYWORDS,
+  isOptOutMessage,
+  CONSENT_AFFIRMATIVE_KEYWORDS,
+  isConsentResponse,
+  isResubscribeRequest,
+  CONSENT_RESUBSCRIBE_KEYWORDS,
+  HELP_KEYWORDS,
+  HELP_RESPONSE_TEXT,
+  isHelpMessage,
+} from './wording.js';
 import { randomUUID } from 'crypto';
 
 export type ConsentStatus = 'opted_in' | 'opted_out' | 'not_consented';
@@ -255,7 +267,19 @@ export async function canSendSms(
   };
 }
 
-export { CONSENT_WORDING_VERSION, getConsentWording, STOP_KEYWORDS, isOptOutMessage, CONSENT_AFFIRMATIVE_KEYWORDS, isConsentResponse, CONSENT_RESUBSCRIBE_KEYWORDS, isResubscribeRequest };
+export {
+  CONSENT_WORDING_VERSION,
+  getConsentWording,
+  STOP_KEYWORDS,
+  isOptOutMessage,
+  CONSENT_AFFIRMATIVE_KEYWORDS,
+  isConsentResponse,
+  CONSENT_RESUBSCRIBE_KEYWORDS,
+  isResubscribeRequest,
+  HELP_KEYWORDS,
+  HELP_RESPONSE_TEXT,
+  isHelpMessage,
+};
 
 export async function getConsentPrompt(
   phoneE164: string,
@@ -572,3 +596,34 @@ export async function handleInboundResubscribeMessage(
     promptBody: promptBody,
   };
 }
+
+/**
+ * Handle an inbound message that may be a HELP request.
+ *
+ * - Detects HELP/INFO keywords via `isHelpMessage`
+ * - Returns data needed to send canonical HELP reply
+ */
+export async function handleInboundHelpMessage(
+  tenantId: string,
+  phoneE164: string,
+  body: string,
+  projectId?: string,
+  correlationId?: string,
+): Promise<{ isHelp: boolean; reason: string; helpBody: string } | null> {
+  if (!isHelpMessage(body)) {
+    return null;
+  }
+
+  Logger.info(`HELP keyword received from ${phoneE164} in tenant ${tenantId}`, {
+    tenant_id: tenantId,
+    phone_e164: phoneE164,
+    correlation_id: correlationId,
+  });
+
+  return {
+    isHelp: true,
+    reason: 'Customer requested assistance via HELP keyword',
+    helpBody: HELP_RESPONSE_TEXT,
+  };
+}
+

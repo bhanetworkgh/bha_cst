@@ -8,7 +8,7 @@ import { DbClient } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
 import { processOutboundQueue } from '../../transport/twilio/outbound.js';
 import { OutboundMessage } from '../../transport/twilio/types.js';
-import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt } from '../../consent/service.js';
+import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
 import { getConsentWording } from '../../consent/wording.js';
 
 export const smsInterfaceRouter = Router();
@@ -179,6 +179,31 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           return;
         }
 
+        // Check for HELP keywords (help, info)
+        const helpResult = await handleInboundHelpMessage(
+          binding.tenant_id,
+          normalizedMsg.from_e164,
+          normalizedMsg.body,
+          binding.project_id,
+          normalizedMsg.message_id,
+        );
+        if (helpResult) {
+          const helpReply: OutboundMessage = {
+            tenant_id: binding.tenant_id,
+            project_id: binding.project_id,
+            from_e164: normalizedMsg.to_e164,
+            to_e164: normalizedMsg.from_e164,
+            body: helpResult.helpBody,
+            correlation_id: normalizedMsg.message_id,
+            turn_id: normalizedMsg.message_id,
+            status: 'pending',
+            consent_exempt: true,
+          };
+          await DbClient.saveOutboundMessage(helpReply);
+          await processOutboundQueue();
+          return;
+        }
+
         // Check for re-subscription request (START) from opted_out phones.
         // This records a new consent prompt and sends the canonical consent wording.
         const resubscribeResult = await handleInboundResubscribeMessage(
@@ -206,21 +231,18 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           return;
         }
 
-        // Check for affirmative consent response (YES / I AGREE).
-        // Now requires a valid active consent prompt — any YES without a prior
-        // prompt is ignored (does not record consent).
-        const isConsentResp = isConsentResponse(normalizedMsg.body);
-        if (isConsentResp) {
-          const { status: consentStatus } = await getConsentStatus(
-            binding.tenant_id,
-            normalizedMsg.from_e164,
-            binding.project_id,
-          );
+        // Check current consent status before further processing
+        const { status: consentStatus } = await getConsentStatus(
+          binding.tenant_id,
+          normalizedMsg.from_e164,
+          binding.project_id,
+        );
 
-          // Only attempt consent activation if the user is opted_out (re-subscribe flow)
-          // or not_consented (initial onboarding flow). Already opted_in = no-op.
-          if (consentStatus === 'opted_out' || consentStatus === 'not_consented') {
-            // Validate that a consent prompt was actually sent to this phone.
+        // If phone has opted out, only valid affirmative response to an active prompt is accepted.
+        // Any other message from an opted_out caller MUST NOT trigger replies or bypass STOP.
+        if (consentStatus === 'opted_out') {
+          const isConsentResp = isConsentResponse(normalizedMsg.body);
+          if (isConsentResp) {
             const hasValidPrompt = await isConsentPromptValid(
               normalizedMsg.from_e164,
               binding.tenant_id,
@@ -228,20 +250,86 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
             );
 
             if (hasValidPrompt) {
-              // Activate consent by linking to the prompt
               const prompt = await getConsentPrompt(
                 normalizedMsg.from_e164,
                 binding.tenant_id,
                 binding.project_id,
               );
               if (prompt) {
-                const { consent } = await activateConsentViaPrompt(
+                await activateConsentViaPrompt(
                   prompt.id,
                   binding.tenant_id,
                   normalizedMsg.from_e164,
                   {
                     projectId: binding.project_id,
-                    source: consentStatus === 'opted_out' ? 'resubscribe_yes' : 'onboarding_yes',
+                    source: 'resubscribe_yes',
+                    correlationId: normalizedMsg.message_id,
+                    actor: 'sender',
+                  },
+                );
+
+                Logger.audit({
+                  timestamp: new Date().toISOString(),
+                  tenant_id: binding.tenant_id,
+                  actor: normalizedMsg.from_e164,
+                  role: 'sender',
+                  entry_point: 'webhook',
+                  tool_or_route: '/webhooks/twilio/sms',
+                  outcome: 'ok',
+                  reason: `Customer replied with affirmative consent response (prompt=${prompt.id})`,
+                  correlation_id: normalizedMsg.message_id,
+                });
+
+                const confirmationReply: OutboundMessage = {
+                  tenant_id: binding.tenant_id,
+                  project_id: binding.project_id,
+                  from_e164: normalizedMsg.to_e164,
+                  to_e164: normalizedMsg.from_e164,
+                  body: `You're opted in to Customer Service Twin SMS for vFarm monitoring, account verification, subscription/appointment confirmations, and 1:1 support.\n\nReply STOP at any time to opt out.`,
+                  correlation_id: normalizedMsg.message_id,
+                  turn_id: normalizedMsg.message_id,
+                  status: 'pending',
+                  consent_exempt: true,
+                };
+                await DbClient.saveOutboundMessage(confirmationReply);
+                await processOutboundQueue();
+                return;
+              }
+            }
+          }
+
+          Logger.info(`Inbound SMS ignored: sender ${normalizedMsg.from_e164} is opted_out; no reply sent`, {
+            tenant_id: binding.tenant_id,
+            phone_e164: normalizedMsg.from_e164,
+            correlation_id: normalizedMsg.message_id,
+          });
+          return;
+        }
+
+        // For non-opted-out callers (not_consented), check for affirmative consent response (YES / I AGREE)
+        if (consentStatus === 'not_consented') {
+          const isConsentResp = isConsentResponse(normalizedMsg.body);
+          if (isConsentResp) {
+            const hasValidPrompt = await isConsentPromptValid(
+              normalizedMsg.from_e164,
+              binding.tenant_id,
+              binding.project_id,
+            );
+
+            if (hasValidPrompt) {
+              const prompt = await getConsentPrompt(
+                normalizedMsg.from_e164,
+                binding.tenant_id,
+                binding.project_id,
+              );
+              if (prompt) {
+                await activateConsentViaPrompt(
+                  prompt.id,
+                  binding.tenant_id,
+                  normalizedMsg.from_e164,
+                  {
+                    projectId: binding.project_id,
+                    source: 'onboarding_yes',
                     correlationId: normalizedMsg.message_id,
                     actor: 'sender',
                   },
@@ -276,16 +364,12 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
               }
             }
 
-            // No valid prompt — silently ignore the YES (no consent recorded, no reply).
-            // This prevents accidental consent when a user sends "yes" to something else.
             Logger.info(`Affirmative response ignored — no valid consent prompt for ${normalizedMsg.from_e164}`, {
               tenant_id: binding.tenant_id,
               phone_e164: normalizedMsg.from_e164,
               correlation_id: normalizedMsg.message_id,
             });
           }
-
-          // If opted_in already, or no valid prompt, fall through to CoreEngine.
         }
 
         // Construct uniform MessageEnvelope
@@ -323,6 +407,21 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // (status, knowledge, images, etc.) go through the normal consent gate
         // in processOutboundQueue.
         const isOnboarding = engineResponse.status === 'onboarding';
+
+        if (isOnboarding) {
+          // Record an onboarding consent prompt so affirmative reply (YES) can activate consent
+          await recordConsentPrompt(
+            normalizedMsg.from_e164,
+            binding.tenant_id,
+            'onboarding',
+            {
+              projectId: binding.project_id,
+              correlationId: normalizedMsg.message_id,
+              actor: 'platform',
+            },
+          );
+        }
+
         const outboundRecord: OutboundMessage = {
           tenant_id: binding.tenant_id,
           project_id: binding.project_id,

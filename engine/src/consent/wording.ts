@@ -110,3 +110,25 @@ export function isResubscribeRequest(body: string): boolean {
   return CONSENT_RESUBSCRIBE_KEYWORDS.has(normalized);
 }
 
+export const HELP_KEYWORDS: ReadonlySet<string> = new Set([
+  'help',
+  'info',
+]);
+
+export const HELP_RESPONSE_TEXT =
+  'Customer Service Twin for vFarm support. Reply STOP to cancel, START to resubscribe. For help contact support@bhanetwork.org. Msg&data rates may apply.';
+
+/**
+ * Returns true if the inbound message body is a help request.
+ * Matches HELP or INFO exact or standalone word tokens.
+ */
+export function isHelpMessage(body: string): boolean {
+  const normalized = (body || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (HELP_KEYWORDS.has(normalized)) return true;
+  for (const kw of HELP_KEYWORDS) {
+    if (new RegExp(`\\b${kw}\\b`).test(normalized)) return true;
+  }
+  return false;
+}
+

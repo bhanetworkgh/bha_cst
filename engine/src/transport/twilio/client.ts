@@ -26,14 +26,35 @@ export class TwilioClientWrapper {
     this.mockSendHandler = handler;
   }
 
-  /** List of permanent non-retriable Twilio error codes (e.g. invalid phone number, geo permission denied, auth failure) */
+  /**
+   * Permanent non-retriable Twilio error codes.
+   *
+   * These errors indicate a permanent delivery impossibility — retrying will
+   * never succeed and would only burn API quota. The outbound worker immediately
+   * classifies a message as permanently failed when one of these codes is thrown.
+   *
+   * Voice & SMS geo-permission codes:
+   *   21215 — Outbound call/SMS blocked by Twilio Geo-Permissions for this
+   *            destination country (e.g. Pakistan +92 voice is blocked by default).
+   *            OPERATOR ACTION REQUIRED: enable the country in the Twilio Console
+   *            under Voice > Settings > Geo-Permissions before retrying.
+   *
+   * SMS carrier codes:
+   *   30005 — Unknown handset. The destination carrier returned a permanent
+   *            rejection. For international long-code SMS (e.g. Pakistan Jazz),
+   *            this indicates carrier-level filtering that cannot be retried.
+   *   30008 — Unknown error — permanent carrier delivery failure with no retry path.
+   */
   private static nonRetriableErrorCodes = new Set([
     20003, // Authentication Error
     21211, // Invalid 'To' Phone Number
+    21215, // Geo-Permission denied (e.g. voice/SMS to Pakistan blocked by account settings)
     21408, // Permission to send an SMS has not been enabled for the region
     21614, // To number is not a valid mobile number
     21610, // Message cannot be sent to unverified number (Trial accounts)
-    30007, // Carrier violation
+    30005, // Unknown handset — permanent carrier rejection (incl. international long-code SMS)
+    30007, // Carrier violation (A2P filter)
+    30008, // Unknown permanent carrier failure
   ]);
 
   static isNonRetriableError(err: any): boolean {

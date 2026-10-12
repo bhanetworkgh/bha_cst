@@ -65,7 +65,7 @@ const DEFAULT_TIMEOUT_MS = VFARM_DEFAULT_TIMEOUT_MS;
 export class VfarmHttpClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
-  private readonly apiToken?: string;
+  private apiToken?: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
 
@@ -75,6 +75,10 @@ export class VfarmHttpClient {
     this.apiToken = options.apiToken;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn || fetch;
+  }
+
+  public setApiToken(apiToken: string): void {
+    this.apiToken = apiToken;
   }
 
   private buildHeaders(): Record<string, string> {

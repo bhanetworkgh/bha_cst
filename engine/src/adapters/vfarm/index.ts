@@ -188,8 +188,9 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
     const res = await this.liveClient.login(email, password);
     this.adminJwt = res.token;
-    // Keep the live client's bearer token in step with the refreshed JWT.
+    // Keep the live client and http client bearer tokens in step with the refreshed JWT.
     this.liveClient.setApiToken(res.token);
+    this.httpClient?.setApiToken(res.token);
     return res.token;
   }
 
@@ -226,6 +227,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       if (res.token) {
         this.adminJwt = res.token;
         this.liveClient.setApiToken(res.token);
+        this.httpClient?.setApiToken(res.token);
         Logger.info('VfarmTenantAdapter: JWT refreshed via auto-relogin');
         return res.token;
       }
@@ -724,6 +726,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
     let orgMembers;
     try {
+      await this.ensureAdminToken();
       orgMembers = await this.httpClient.listOrganizationMembers(orgId);
     } catch (err: any) {
       Logger.warn(`vFarm pullSpeakers: live org-members check failed for org ${orgId}, returning last-known local directory: ${err?.message}`);
@@ -825,6 +828,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // Live mode: re-verify the locally-registered speaker against the
     // authoritative vFarm organization-members list before trusting it.
     if (this.httpClient) {
+      await this.ensureAdminToken();
       const project = this.projectsMap.get(params.projectId);
       const orgId = project?.tenant_org_id;
       if (orgId) {

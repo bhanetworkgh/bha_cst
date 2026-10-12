@@ -6,20 +6,24 @@
 -- that does not exist. The previous migration (016) created only an index
 -- on the column, which left audit rows free to point at arbitrary ids.
 
+-- Ensure sms_consents has unique constraint on (id, tenant_id) for composite FK
+CREATE UNIQUE INDEX IF NOT EXISTS unq_sms_consents_id_tenant
+  ON sms_consents (id, tenant_id);
+
 ALTER TABLE sms_consent_audit
   ADD CONSTRAINT fk_sms_consent_audit_consent
-  FOREIGN KEY (consent_id) REFERENCES sms_consents(id)
+  FOREIGN KEY (consent_id, tenant_id) REFERENCES sms_consents(id, tenant_id)
   ON DELETE CASCADE;
 
--- Also enforce tenant/project consistency on the audit side: the audit
--- row's tenant_id and project_id must match the consent record it points at.
--- This prevents an audit row from being written under one tenant while the
--- consent record it references belongs to another.
+-- Enforce append-only protection on sms_consent_audit
+CREATE OR REPLACE FUNCTION enforce_sms_consent_audit_append_only()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'sms_consent_audit is append-only: updates and deletes are prohibited';
+END;
+$$;
 
-ALTER TABLE sms_consent_audit
-  ADD CONSTRAINT ck_sms_consent_audit_tenant_match
-  CHECK (
-    tenant_id = (
-      SELECT c.tenant_id FROM sms_consents c WHERE c.id = consent_id
-    )
-  );
+DROP TRIGGER IF EXISTS trg_sms_consent_audit_append_only ON sms_consent_audit;
+CREATE TRIGGER trg_sms_consent_audit_append_only
+  BEFORE UPDATE OR DELETE ON sms_consent_audit
+  FOR EACH ROW EXECUTE FUNCTION enforce_sms_consent_audit_append_only();

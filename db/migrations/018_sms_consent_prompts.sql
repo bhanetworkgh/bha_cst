@@ -22,22 +22,20 @@ CREATE TABLE IF NOT EXISTS sms_consent_prompts (
   expires_at        TIMESTAMPTZ  NOT NULL
 );
 
--- One active (non-expired) prompt per (tenant, project, phone). A new prompt
--- invalidates older ones for the same destination, matching the single-source
+-- One active prompt record per (tenant, project, phone). A new prompt
+-- upserts the record for the same destination, matching the single-source
 -- "what was the last thing we told the customer" contract.
 CREATE UNIQUE INDEX IF NOT EXISTS unq_sms_consent_prompts_active
-  ON sms_consent_prompts (tenant_id, COALESCE(project_id, ''), phone_e164)
-  WHERE expires_at > NOW();
+  ON sms_consent_prompts (tenant_id, COALESCE(project_id, ''), phone_e164);
 
 -- FK to the consent record this prompt ultimately led to (nullable until YES).
 CREATE INDEX IF NOT EXISTS idx_sms_consent_prompts_consent
   ON sms_consent_prompts(consent_id)
   WHERE consent_id IS NOT NULL;
 
--- Look up active prompt for an inbound YES by phone+tenant+project.
+-- Look up prompt for an inbound YES by phone+tenant+project.
 CREATE INDEX IF NOT EXISTS idx_sms_consent_prompts_active_lookup
-  ON sms_consent_prompts (tenant_id, COALESCE(project_id, ''), phone_e164, expires_at)
-  WHERE expires_at > NOW();
+  ON sms_consent_prompts (tenant_id, COALESCE(project_id, ''), phone_e164, expires_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sms_consent_prompts_phone ON sms_consent_prompts(phone_e164);
 CREATE INDEX IF NOT EXISTS idx_sms_consent_prompts_tenant ON sms_consent_prompts(tenant_id);

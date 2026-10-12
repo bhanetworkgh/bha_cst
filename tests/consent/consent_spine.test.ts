@@ -16,6 +16,11 @@ import {
   getConsentStatus,
   canSendSms,
   handleInboundConsentMessage,
+  handleInboundHelpMessage,
+  handleInboundResubscribeMessage,
+  isConsentPromptValid,
+  getConsentPrompt,
+  activateConsentViaPrompt,
 } from '../../engine/src/consent/service.js';
 import {
   CONSENT_WORDING_VERSION,
@@ -23,6 +28,8 @@ import {
   getConsentWording,
   STOP_KEYWORDS,
   isOptOutMessage,
+  HELP_KEYWORDS,
+  isHelpMessage,
 } from '../../engine/src/consent/wording.js';
 import { DbClient } from '../../engine/src/db/client.js';
 
@@ -260,5 +267,95 @@ describe('Audit Trail', () => {
     expect(audit[1].action).toBe('consent_revoked');
     expect(audit[0].wording_version).toBe(CONSENT_WORDING_VERSION);
     expect(audit[1].wording_version).toBe(CONSENT_WORDING_VERSION);
+  });
+});
+
+describe('HELP Keywords and Inbound Response', () => {
+  it('detects HELP and INFO keywords', () => {
+    expect(HELP_KEYWORDS.has('help')).toBe(true);
+    expect(HELP_KEYWORDS.has('info')).toBe(true);
+    expect(isHelpMessage('help')).toBe(true);
+    expect(isHelpMessage('HELP')).toBe(true);
+    expect(isHelpMessage('Info')).toBe(true);
+    expect(isHelpMessage('i need help please')).toBe(true);
+    expect(isHelpMessage('helpful')).toBe(false);
+  });
+
+  it('handleInboundHelpMessage returns canonical help wording', async () => {
+    const res = await handleInboundHelpMessage(
+      TENANT_A,
+      '+15551112222',
+      'help',
+      PROJECT_A,
+      'corr_help_001',
+    );
+    expect(res).not.toBeNull();
+    expect(res!.isHelp).toBe(true);
+    expect(res!.helpBody).toContain('Customer Service Twin for vFarm support');
+    expect(res!.helpBody).toContain('support@bhanetwork.org');
+    expect(res!.helpBody).toContain('STOP');
+  });
+});
+
+describe('Re-subscribe and Prompt Evidence Lifecycle', () => {
+  beforeEach(() => {
+    DbClient.clearAll();
+  });
+
+  it('handleInboundResubscribeMessage only generates prompt if caller is opted_out', async () => {
+    // When caller is not opted out, START returns null
+    const noPrompt = await handleInboundResubscribeMessage(
+      TENANT_A,
+      '+15551112222',
+      'START',
+      PROJECT_A,
+    );
+    expect(noPrompt).toBeNull();
+
+    // After caller opts out, START generates prompt and returns canonical wording
+    await recordOptOut(TENANT_A, '+15551112222', { projectId: PROJECT_A });
+    const promptRes = await handleInboundResubscribeMessage(
+      TENANT_A,
+      '+15551112222',
+      'START',
+      PROJECT_A,
+      'corr_resub_001',
+    );
+    expect(promptRes).not.toBeNull();
+    expect(promptRes!.isResubscribe).toBe(true);
+    expect(promptRes!.promptBody).toContain(CONSENT_WORDING_TEXT);
+
+    // Verify prompt validity
+    const isValid = await isConsentPromptValid(
+      '+15551112222',
+      TENANT_A,
+      PROJECT_A,
+    );
+    expect(isValid).toBe(true);
+
+    // Affirmative activation
+    const activePrompt = await getConsentPrompt(
+      '+15551112222',
+      TENANT_A,
+      PROJECT_A,
+    );
+    expect(activePrompt).not.toBeNull();
+
+    const activation = await activateConsentViaPrompt(
+      activePrompt!.id,
+      TENANT_A,
+      '+15551112222',
+      { projectId: PROJECT_A, source: 'resubscribe_yes' },
+    );
+    expect(activation.consent.consent_status).toBe('opted_in');
+    expect(activation.consent.opted_out_at).toBeNull();
+
+    const currentStatus = await getConsentStatus(
+      TENANT_A,
+      '+15551112222',
+      PROJECT_A,
+    );
+    expect(currentStatus.status).toBe('opted_in');
+    expect(currentStatus.record?.opted_out_at).toBeNull();
   });
 });

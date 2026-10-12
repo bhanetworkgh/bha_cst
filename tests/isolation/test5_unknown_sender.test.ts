@@ -45,7 +45,7 @@ describe('Isolation Test 5: Unknown Sender Safe Onboarding Response Path', () =>
         MessageSid: 'SM_TEST_5_NEW_CONTACT',
         From: unknownSenderPhone,
         To: validReceivingNumber,
-        Body: 'Hello, I need help with my new farm',
+        Body: 'Hello, I need assistance with my new farm',
       });
 
     expect(res.status).toBe(204);
