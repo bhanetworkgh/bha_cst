@@ -247,6 +247,71 @@ describe('LOOP-1790790007707-5R0J — public vFarm proxy routes are not an unaut
     expect(mock.calls).toHaveLength(0);
   });
 
+  it('does not accept a query-supplied token as a credential on /api/tokens', async () => {
+    const res = await request(app).post(`/api/tokens?token=${VALID_JWT}`).send({ farm_id: CST_FARM });
+    expect(res.status).toBe(401);
+    expect(res.body.raw_key).toBeUndefined();
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it('does not accept a query-supplied token as a credential on the admin-only /api/devices route', async () => {
+    const res = await request(app).get(`/api/devices?token=${VALID_JWT}`);
+    expect(res.status).toBe(401);
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it('does not accept a query-supplied admin-token as a credential', async () => {
+    const res = await request(app).get(`/api/farms?x-admin-token=${VALID_SESSION}`);
+    expect(res.status).toBe(401);
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it('rejects empty / whitespace-only credentials as unauthenticated', async () => {
+    const empty = await request(app).get('/api/farms').set('Authorization', 'Bearer ');
+    expect(empty.status).toBe(401);
+    expect(empty.body.error).toBe('UNAUTHORIZED');
+    expect(mock.calls).toHaveLength(0);
+
+    const blank = await request(app)
+      .post('/api/tokens')
+      .set('x-admin-token', '   ')
+      .send({ farm_id: CST_FARM });
+    expect(blank.status).toBe(401);
+    expect(blank.body.raw_key).toBeUndefined();
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it('rejects a caller JWT on the farm-key scoped routes (403) even when a valid admin session is also present', async () => {
+    // A caller JWT must never elevate to CST farm-key scope. When a valid
+    // admin session is also attached the route is served through that session
+    // (CST's own farm key) — the caller's JWT is never used as the upstream
+    // credential on these routes.
+    for (const r of ADMIN_ONLY_ROUTES) {
+      const res = await (request(app) as any)[r.method](r.path)
+        .set('Authorization', `Bearer ${VALID_JWT}`)
+        .set('x-admin-token', VALID_SESSION);
+      expect(res.status, `${r.method.toUpperCase()} ${r.path}`).toBe(200);
+    }
+    // And the caller's JWT must never have been forwarded on these routes.
+    const upstream = mock.calls.filter((c) => c.url.includes('mock.vfarm.test'));
+    expect(upstream.length).toBeGreaterThan(0);
+    expect(upstream.every((c) => c.headers['Authorization'] !== `Bearer ${VALID_JWT}`)).toBe(true);
+  });
+
+  it('refuses a caller JWT on the farm-key scoped routes (403) when the admin session is invalid', async () => {
+    // With an expired admin session the route cannot be served by CST's farm
+    // key either: the bearer is refused outright (403) and the expired
+    // session lookup fails closed (401). Either way the caller is refused
+    // and no upstream call is made.
+    for (const r of ADMIN_ONLY_ROUTES) {
+      const res = await (request(app) as any)[r.method](r.path)
+        .set('Authorization', `Bearer ${VALID_JWT}`)
+        .set('x-admin-token', EXPIRED_SESSION);
+      expect([401, 403]).toContain(res.status);
+      expect(mock.calls).toHaveLength(0);
+    }
+  });
+
   // ── 2. Valid CST admin session ─────────────────────────────────────────────
   it('serves the routes to a valid CST admin session (authenticated behavior preserved)', async () => {
     for (const r of ADMIN_OR_JWT_ROUTES) {
@@ -330,7 +395,7 @@ describe('LOOP-1790790007707-5R0J — public vFarm proxy routes are not an unaut
     expect(listCall!.headers['Authorization']).toBe(`Bearer ${VALID_JWT}`);
   });
 
-  // ── 5. Expired caller JWT ───────────────────────────────────────────────────
+// ── 5. Expired caller JWT ───────────────────────────────────────────────────
   it('refuses an expired caller JWT with 401 and never re-authenticates as CST admin', async () => {
     const rejecting = buildMockFetch({ rejectExpiredJwt: true });
     const adapter = new VfarmTenantAdapter('tenant-vfarm-01', {

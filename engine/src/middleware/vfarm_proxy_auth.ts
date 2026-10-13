@@ -98,9 +98,17 @@ export function __registerInMemoryAdminSession(
 function readBearer(req: Request): string | null {
   const header = req.header('authorization');
   if (!header) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  const raw = match ? match[1] : header.trim();
-  return raw ? raw.trim() : null;
+  const trimmed = header.trim();
+  if (!trimmed) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(trimmed);
+  if (match) {
+    const raw = match[1].trim();
+    return raw.length > 0 ? raw : null;
+  }
+  // Bare-token form is accepted only when it is not the literal "Bearer"
+  // prefix itself, which would otherwise be treated as a valid credential.
+  if (trimmed.toLowerCase() === 'bearer') return null;
+  return trimmed;
 }
 
 function auditRefused(req: Request, reason: string, actor: string): void {

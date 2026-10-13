@@ -10,9 +10,18 @@ DONE with a file reference.
 
 Verified baseline at time of writing:
 
-- `npm test` — **506 tests / 52 files, all passing** (6 real-provision tests skipped by default)
-- `npm run typecheck` — clean
-- `npm run build` — clean
+- `npm test` — **551 tests / 56 files, all passing** (6 real-provision tests skipped by default in `dashboard_real_proof.test.ts`; 557 total)
+- `npm run typecheck` — clean (0 errors)
+- `npm run build` — clean (dist/ generated + 7 web assets)
+- Authoritative Audit: `docs/cst-v1-readiness-audit.md`
+- Pilot Plan: `docs/cst-v1-pilot-execution-plan.md`
+- Operations Runbook: `docs/cst-v1-operations-runbook.md`
+- VJU6 Proposed Record: `docs/vju6-proposed-verification-record.md`
+
+---
+
+## RELEASE RULE: LIVE PILOT TRAFFIC IS NO-GO
+Live CST pilot traffic remains **NO-GO** until deployed availability (Render 503 resolution), staging database migrations (017/018), vFarm operational key audit, and custom-domain DNS/TLS are completed and verified on host.
 
 ---
 
@@ -106,7 +115,7 @@ Any other caller is refused with 401. A body-supplied `token` field is no longer
 
 ## Pilot launch gate
 
-- [x] `npm test` green (506/506 passed, 6 skipped for real-provision tests)
+- [x] `npm test` green (551/551 tests passed, 6 skipped for real-provision tests)
 - [x] `npm run typecheck` clean
 - [x] `npm run build` clean
 - [x] `ENGINE_DASHBOARD_URL` / `ENGINE_DASHBOARD_KEY` provisioned and verified live
@@ -117,4 +126,4 @@ Any other caller is refused with 401. A body-supplied `token` field is no longer
 - [ ] vFarm farm-key issuance audit completed (operator — requires vFarm records)
 - [x] Person→unit mapping: accepted as blocked (no upstream endpoint) — or vFarm API ships
 - [x] Role-based acceptance: manager/tech/owner verified (23 tests pass)
-- [x] SMS/Voice transport & A2P Consent Spine: 506 tests pass locally; A2P campaign verified by carrier
+- [x] SMS/Voice transport & A2P Consent Spine: 551 tests pass locally; A2P campaign verified by carrier

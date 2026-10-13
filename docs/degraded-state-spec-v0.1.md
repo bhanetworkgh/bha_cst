@@ -157,9 +157,9 @@ Compliance with this spec is a merge requirement for any PR touching sensor conn
 
 | File | Role |
 |---|---|
-| [`engine/src/connectors/vfarm.ts`](file:///Users/HaMi/Documents/Jason/customer%20twin/engine/src/connectors/vfarm.ts) | Reference implementation of degraded state |
-| [`engine/src/config/logger.ts`](file:///Users/HaMi/Documents/Jason/customer%20twin/engine/src/config/logger.ts) | `Logger.infra()` — structured infra log emitter |
-| [`engine/src/transport/twilio/types.ts`](file:///Users/HaMi/Documents/Jason/customer%20twin/engine/src/transport/twilio/types.ts) | `VfarmUnitStatus` interface |
+| [`engine/src/connectors/vfarm.ts`](engine/src/connectors/vfarm.ts) | Reference implementation of degraded state |
+| [`engine/src/config/logger.ts`](engine/src/config/logger.ts) | `Logger.infra()` — structured infra log emitter |
+| [`engine/src/transport/twilio/types.ts`](engine/src/transport/twilio/types.ts) | `VfarmUnitStatus` interface |
 
 ---
 

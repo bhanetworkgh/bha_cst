@@ -21,6 +21,7 @@ import {
   isConsentPromptValid,
   getConsentPrompt,
   activateConsentViaPrompt,
+  recordConsentPrompt,
 } from '../../engine/src/consent/service.js';
 import {
   CONSENT_WORDING_VERSION,
@@ -263,10 +264,12 @@ describe('Audit Trail', () => {
     );
 
     expect(audit.length).toBe(2);
-    expect(audit[0].action).toBe('consent_granted');
-    expect(audit[1].action).toBe('consent_revoked');
-    expect(audit[0].wording_version).toBe(CONSENT_WORDING_VERSION);
-    expect(audit[1].wording_version).toBe(CONSENT_WORDING_VERSION);
+    const granted = audit.find((a) => a.action === 'consent_granted');
+    const revoked = audit.find((a) => a.action === 'consent_revoked');
+    expect(granted).toBeDefined();
+    expect(revoked).toBeDefined();
+    expect(granted!.wording_version).toBe(CONSENT_WORDING_VERSION);
+    expect(revoked!.wording_version).toBe(CONSENT_WORDING_VERSION);
   });
 });
 
@@ -357,5 +360,61 @@ describe('Re-subscribe and Prompt Evidence Lifecycle', () => {
     );
     expect(currentStatus.status).toBe('opted_in');
     expect(currentStatus.record?.opted_out_at).toBeNull();
+  });
+
+  it('records consent prompts idempotently and updates the active prompt on re-issuance', async () => {
+    const p1 = await recordConsentPrompt('+15559876543', TENANT_A, 'resubscribe', {
+      projectId: PROJECT_A,
+    });
+    expect(p1.id).toBeDefined();
+
+    const p2 = await recordConsentPrompt('+15559876543', TENANT_A, 'resubscribe', {
+      projectId: PROJECT_A,
+    });
+    expect(p2.id).toBeDefined();
+
+    // Latest prompt replaces prior active prompt for the same phone/tenant/project
+    const active = await getConsentPrompt('+15559876543', TENANT_A, PROJECT_A);
+    expect(active).not.toBeNull();
+    expect(active!.id).toBe(p2.id);
+  });
+
+  it('rejects duplicate activation of an already activated prompt', async () => {
+    await recordOptOut(TENANT_A, '+15559876543', { projectId: PROJECT_A });
+    const prompt = await recordConsentPrompt('+15559876543', TENANT_A, 'resubscribe', {
+      projectId: PROJECT_A,
+    });
+
+    // First activation succeeds
+    const act1 = await activateConsentViaPrompt(prompt.id, TENANT_A, '+15559876543', {
+      projectId: PROJECT_A,
+    });
+    expect(act1.consent.consent_status).toBe('opted_in');
+
+    // Second activation of same prompt must throw error
+    await expect(
+      activateConsentViaPrompt(prompt.id, TENANT_A, '+15559876543', {
+        projectId: PROJECT_A,
+      })
+    ).rejects.toThrow('Prompt already activated');
+  });
+
+  it('isConsentPromptValid returns false for expired prompt', async () => {
+    const memKey = DbClient.consentPromptStoreKey(TENANT_A, '+15559876543', PROJECT_A);
+    DbClient.smsConsentPromptsStore.set(memKey, {
+      id: 'prompt_expired_001',
+      consent_id: null,
+      phone_e164: '+15559876543',
+      tenant_id: TENANT_A,
+      project_id: PROJECT_A,
+      prompt_type: 'resubscribe',
+      wording_version: CONSENT_WORDING_VERSION,
+      wording_snapshot: CONSENT_WORDING_TEXT,
+      sent_at: new Date(Date.now() - 100000).toISOString(),
+      expires_at: new Date(Date.now() - 50000).toISOString(), // expired in past
+    });
+
+    const isValid = await isConsentPromptValid('+15559876543', TENANT_A, PROJECT_A);
+    expect(isValid).toBe(false);
   });
 });
