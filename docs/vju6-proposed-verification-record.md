@@ -9,9 +9,9 @@
 
 - **Repository:** `bhanetworkgh/bha-cst`
 - **Branch:** `main`
-- **Current HEAD Commit SHA:** `0ac8c5d` (`docs: document CST production readiness and acceptance gaps`)
+- **Current HEAD Commit SHA:** `95abd7d` (`feat: security hardening, consent regressions, and v1 readiness closure`)
 - **Target Readiness Deadline:** October 14, 2026, 5:00 PM PKT
-- **Audit Timestamp:** 2026-10-13T22:20:00+05:00 (17:20:00 UTC)
+- **Audit Timestamp:** 2026-10-14T00:48:34+05:00 (19:48:34 UTC)
 - **Evaluator / Responsible Operator:** Antigravity IDE (Pair Programmer)
 - **Verification Environment:** Darwin arm64 (macOS 15.3), Node.js v20.18.0, Vitest v1.6.1, PostgreSQL 16.
 
@@ -21,12 +21,12 @@
 
 | Test Command | Scope / Files | Passed | Skipped | Failed | Notes |
 |:---|:---|:---:|:---:|:---:|:---|
-| `npm test` | All 56 test files in `tests/` | 551 | 6 | 0 | 6 tests skipped in `dashboard_real_proof.test.ts` (gated by `REAL_DASHBOARD_PROOF=1`); 557 total. |
+| `npm test` | All 56 test files in `tests/` | 557 | 6 | 0 | 6 tests skipped in `dashboard_real_proof.test.ts` (gated by `REAL_DASHBOARD_PROOF=1`); 563 total. |
 | `REAL_DASHBOARD_PROOF=1 npx vitest run tests/integration/dashboard_real_proof.test.ts` | Live Dashboard ingestion | 7 | 0 | 0 | **Verified live against https://dashboard.bhanetwork.org/api/engine/cst-events** (HTTP 200, row inserted). |
 | `npm run typecheck` | `tsc --noEmit -p engine/tsconfig.json` | Clean | 0 | 0 | 0 TypeScript errors across codebase. |
 | `npm run build` | `tsc -b engine/tsconfig.json && copy_web_assets.js` | Clean | 0 | 0 | `dist/` created; 7 web assets copied to `dist/web`. |
 | `npx vitest run tests/security/vfarm_proxy_unauth.test.ts` | 5R0J route regression suite | 18 | 0 | 0 | 100% pass; verifies fail-closed 401/403 and zero upstream calls. |
-| `npx vitest run tests/consent/` | All consent suites (2 files) | 37 | 0 | 0 | Verifies canonical wording, opt-in/opt-out, resubscription, prompt idempotency & evidence. |
+| `npx vitest run tests/consent/` | All consent suites (2 files) | 40 | 0 | 0 | Verifies canonical wording, opt-in/opt-out, resubscription, prompt idempotency & evidence (+3 regression tests added Oct 14). |
 | `npx vitest run tests/transport/outbound_tenancy.test.ts` | Tenancy, DID binding & callbacks | 22 | 0 | 0 | Verifies project binding, capability check, turn-id correlation. |
 | `npx vitest run tests/adapters/vfarm_live_contract.test.ts` | vFarm live client contracts | 18 | 0 | 0 | Verifies layout parsing, headers, auth forwarding, timeout budgets. |
 
