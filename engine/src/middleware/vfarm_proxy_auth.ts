@@ -136,7 +136,7 @@ export async function requireVfarmAdminSession(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const sessionToken = req.header('x-admin-token');
+  const sessionToken = (req.header('x-admin-token') || '').trim();
   if (sessionToken) {
     let email: string | null = null;
     try {
@@ -193,7 +193,7 @@ export async function requireVfarmAdminSessionOrJwt(
   next: NextFunction,
 ): Promise<void> {
   const bearer = readBearer(req);
-  const sessionToken = req.header('x-admin-token');
+  const sessionToken = (req.header('x-admin-token') || '').trim();
 
   if (!bearer && !sessionToken) {
     auditRefused(req, 'Unauthenticated vFarm proxy request (no CST admin session, no vFarm JWT)', 'anonymous');

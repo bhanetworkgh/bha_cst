@@ -281,6 +281,28 @@ describe('LOOP-1790790007707-5R0J — public vFarm proxy routes are not an unaut
     expect(mock.calls).toHaveLength(0);
   });
 
+  it('authenticates a valid x-admin-token with surrounding whitespace (trim regression)', async () => {
+    // A token passed with leading/trailing whitespace (e.g. from a copy-paste
+    // or proxy header manipulation) must still resolve to the session correctly
+    // after the middleware trims it.
+    const paddedSession = `  ${VALID_SESSION}  `;
+    const res = await request(app)
+      .get('/api/devices')
+      .set('x-admin-token', paddedSession);
+    // The middleware trims the token before session lookup; the session must resolve.
+    expect(res.status).toBe(200);
+    expect(mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a whitespace-only x-admin-token on admin-only routes with 401', async () => {
+    for (const r of ADMIN_ONLY_ROUTES) {
+      // Use spaces-only; tab/newline are invalid HTTP header characters
+      const res = await (request(app) as any)[r.method](r.path).set('x-admin-token', '     ');
+      expect(res.status, `${r.method.toUpperCase()} ${r.path}`).toBe(401);
+      expect(mock.calls).toHaveLength(0);
+    }
+  });
+
   it('rejects a caller JWT on the farm-key scoped routes (403) even when a valid admin session is also present', async () => {
     // A caller JWT must never elevate to CST farm-key scope. When a valid
     // admin session is also attached the route is served through that session

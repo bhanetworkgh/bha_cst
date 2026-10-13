@@ -19,7 +19,12 @@ databases:
   - name: bha-cst-postgres
     databaseName: bha_cst
     user: bha_cst_user
-    plan: free          # upgrade to "starter" or higher for production
+    # OYP9 BLOCKER: Free-tier databases hibernate after 90 days inactivity and
+    # are deleted after 90 days on free plan. Upgrade to 'starter' or higher for
+    # persistent production data and continuous availability.
+    # OPERATOR ACTION: Change 'free' to 'starter' in the Render dashboard before
+    # routing pilot traffic. This requires billing to be configured.
+    plan: free          # CHANGE TO 'starter' for production
     region: oregon      # match your web service region
     postgresMajorVersion: 16
 
@@ -32,18 +37,31 @@ services:
     # ── Build ─────────────────────────────────────────────────────────────────
     buildCommand: npm ci && npm run build
 
-    # ── Database migrations run once before each new deployment goes live ─────
-    # Render runs preDeployCommand before switching traffic to the new instance.
-    startCommand: node scripts/migrate.js && npm start
+    # ── Database Migrations ───────────────────────────────────────────────────
+    # preDeployCommand runs BEFORE Render switches traffic to the new instance
+    # (paid plans: starter and above only). On the free plan this field is
+    # ignored — migrations run as part of startCommand instead.
+    #
+    # OPERATOR ACTION (OYP9): After upgrading to 'starter' plan, move migration
+    # execution to this field and change startCommand to just 'npm start'.
+    preDeployCommand: node scripts/migrate.js
 
+    # On free plan: startCommand runs migrations + server together because
+    # preDeployCommand is not available. Remove '&& node scripts/migrate.js'
+    # when upgrading to a paid plan (preDeployCommand handles it above).
+    startCommand: node scripts/migrate.js && npm start
 
     # ── Health Check ─────────────────────────────────────────────────────────
     # Render polls this endpoint; the instance is only marked healthy after it
     # returns HTTP 200.  Matches the /health route in engine/src/app.ts.
     healthCheckPath: /health
 
-    # ── Autoscaling / Scaling ─────────────────────────────────────────────────
-    plan: free           # upgrade to "starter" or higher for production
+    # ── Scaling ───────────────────────────────────────────────────────────────
+    # OYP9 BLOCKER: Free tier hibernates after 15 minutes of inactivity and
+    # returns x-render-routing: hibernate-wake-error on cold wake, causing
+    # Twilio webhook delivery failures (HTTP 503).
+    # OPERATOR ACTION: Change 'free' to 'starter' to eliminate hibernation.
+    plan: free           # CHANGE TO 'starter' for production
     autoDeploy: true     # re-deploy automatically on every push to main
 
     # ── Environment Variables ─────────────────────────────────────────────────

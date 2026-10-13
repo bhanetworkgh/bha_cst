@@ -271,6 +271,25 @@ describe('Audit Trail', () => {
     expect(granted!.wording_version).toBe(CONSENT_WORDING_VERSION);
     expect(revoked!.wording_version).toBe(CONSENT_WORDING_VERSION);
   });
+
+  it('STOP in tenant A does not suppress outbound SMS for the same phone in tenant B', async () => {
+    // Both tenants opted in first
+    await recordConsent(TENANT_A, '+15551119999', { projectId: PROJECT_A });
+    await recordConsent(TENANT_B, '+15551119999', { projectId: PROJECT_B });
+
+    // Tenant A receives STOP
+    await recordOptOut(TENANT_A, '+15551119999', { projectId: PROJECT_A });
+
+    // Tenant A is blocked
+    const resA = await canSendSms(TENANT_A, '+15551119999', PROJECT_A);
+    expect(resA.allowed).toBe(false);
+    expect(resA.status).toBe('opted_out');
+
+    // Tenant B is still allowed — cross-tenant STOP isolation holds
+    const resB = await canSendSms(TENANT_B, '+15551119999', PROJECT_B);
+    expect(resB.allowed).toBe(true);
+    expect(resB.status).toBe('opted_in');
+  });
 });
 
 describe('HELP Keywords and Inbound Response', () => {
