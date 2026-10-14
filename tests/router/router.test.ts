@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IntentRouter } from '../../engine/src/router/index.js';
 import { DbClient } from '../../engine/src/db/client.js';
 import { VfarmConnector } from '../../engine/src/connectors/vfarm.js';
+import { CoreRegistry } from '../../engine/src/core/registry.js';
+import { VfarmTenantAdapter } from '../../engine/src/adapters/vfarm/index.js';
 import { InboundMessage, IdentityContext } from '../../engine/src/transport/twilio/types.js';
 import { seedTestCustomers } from '../helpers/seed_customers.js';
 
@@ -11,6 +13,7 @@ import { seedTestCustomers } from '../helpers/seed_customers.js';
  * Status intents route through VfarmConnector preserving caller unit_context (farm_id, unit_id),
  * knowledge through BharagRagConnector, images through MediaServerConnector, and escalations
  * through BharagIncidentsConnector.
+ * KMG9: Farm-specific requests never fall back to BHARAG cluster.
  */
 describe('IntentRouter & Intent Detection Tests', () => {
   beforeEach(() => {
@@ -27,6 +30,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
           json: async () => ({ incident_id: 'inc_real_001', status: 'open' }),
         } as Response;
       }
+      // BHARAG cluster knowledge — should NOT be called for farm-specific requests (KMG9)
       return {
         ok: true,
         json: async () => ({ answer: 'BHARAG Knowledge response for query.' }),
@@ -61,17 +65,18 @@ describe('IntentRouter & Intent Detection Tests', () => {
     permissions:       [],
   };
 
-  it('detects status intent, passes unit_context to VfarmConnector, and includes workspaceKey, farm_id, and unit_id in API payload', async () => {
-    let capturedBody: any = null;
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
-      if (options?.body) {
-        capturedBody = JSON.parse(options.body as string);
-      }
-      return {
-        ok: true,
-        json: async () => ({ answer: 'vFarm Unit unit_bay_04 (farm_austin_main) Status: NORMAL. Water Temp: 21.5°C.' }),
-      } as Response;
+  it('detects status intent, passes unit_context to VfarmConnector, and does NOT call BHARAG cluster when live vFarm client available', async () => {
+    // Set up a live vFarm adapter that returns a reading
+    const adapter = CoreRegistry.getAdapter('tenant-vfarm-01') as VfarmTenantAdapter;
+    vi.spyOn(adapter, 'hasLiveClient').mockReturnValue(true);
+    vi.spyOn(adapter, 'getLatestDeviceReading').mockResolvedValue({
+      sensor_id: 'unit_bay_04',
+      reading_ts: '2024-01-15T10:00:00Z',
+      temperature_c: 21.5,
+      humidity_rh: 60,
     });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     const getUnitStatusSpy = vi.spyOn(VfarmConnector, 'getUnitStatus');
 
@@ -99,26 +104,27 @@ describe('IntentRouter & Intent Detection Tests', () => {
       'Bay 4 status check',
       expect.anything(),
     );
-    expect(capturedBody).toMatchObject({
-      query: 'Bay 4 status check',
-      workspaceKey: expect.any(String),
-      farm_id: 'farm_austin_main',
-      unit_id: 'unit_bay_04',
-    });
+    // KMG9: BHARAG cluster must NOT be called for farm-specific telemetry
+    const clusterCalls = fetchSpy.mock.calls.filter((call) =>
+      String(call[0]).includes('/api/v1/cluster/ask') || String(call[0]).includes('cluster')
+    );
+    expect(clusterCalls.length).toBe(0);
     expect(outbound.body).toContain('Status: NORMAL');
+    expect(outbound.body).toContain('Water Temp: 21.5°C');
   });
 
   it('enforces multi-tenancy security: rejects message text attempt to override farm_id or unit_id', async () => {
-    let capturedBody: any = null;
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => {
-      if (options?.body) {
-        capturedBody = JSON.parse(options.body as string);
-      }
-      return {
-        ok: true,
-        json: async () => ({ answer: 'Status verified for farm_austin_main.' }),
-      } as Response;
+    // Set up a live vFarm adapter
+    const adapter = CoreRegistry.getAdapter('tenant-vfarm-01') as VfarmTenantAdapter;
+    vi.spyOn(adapter, 'hasLiveClient').mockReturnValue(true);
+    vi.spyOn(adapter, 'getLatestDeviceReading').mockResolvedValue({
+      sensor_id: 'unit_bay_04',
+      reading_ts: '2024-01-15T10:00:00Z',
+      temperature_c: 21.5,
+      humidity_rh: 60,
     });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     const getUnitStatusSpy = vi.spyOn(VfarmConnector, 'getUnitStatus');
 
@@ -134,7 +140,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
       correlation_id: 'corr_status_malicious',
     };
 
-    await IntentRouter.routeAndHandle(maliciousMsg, knownIdentity);
+    const outbound = await IntentRouter.routeAndHandle(maliciousMsg, knownIdentity);
 
     // Connector MUST receive caller-verified context, never the attacker-supplied text
     expect(getUnitStatusSpy).toHaveBeenCalledWith(
@@ -147,12 +153,17 @@ describe('IntentRouter & Intent Detection Tests', () => {
       maliciousMsg.body,
       expect.anything(),
     );
-    expect(capturedBody.farm_id).toBe('farm_austin_main');
-    expect(capturedBody.unit_id).toBe('unit_bay_04');
+    // KMG9: BHARAG cluster must NOT be called
+    const clusterCalls = fetchSpy.mock.calls.filter((call) =>
+      String(call[0]).includes('/api/v1/cluster/ask') || String(call[0]).includes('cluster')
+    );
+    expect(clusterCalls.length).toBe(0);
+    expect(outbound.body).toContain('Status: NORMAL');
   });
 
   it('provides explicit telemetry_unavailable degraded fallback when telemetry endpoints are unreachable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Connection refused'));
+    // No live vFarm client (default in test runner) - should return telemetry_unavailable without BHARAG fallback
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     const msg: InboundMessage = {
       message_id:     'SM_STATUS_FALLBACK_001',
@@ -167,6 +178,11 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
 
+    // KMG9: Must NOT call BHARAG cluster
+    const clusterCalls = fetchSpy.mock.calls.filter((call) =>
+      String(call[0]).includes('/api/v1/cluster/ask') || String(call[0]).includes('cluster')
+    );
+    expect(clusterCalls.length).toBe(0);
     expect(outbound.body).toContain('vFarm Unit unit_bay_04 (farm_austin_main)');
     expect(outbound.body).toContain('Telemetry currently unavailable for this unit');
     expect(outbound.body).not.toContain('21.5°C');
@@ -256,7 +272,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     expect(conv?.incident_id ?? null).toBeNull();
   });
 
-  it('resolves +923082113844 as a known customer (cust_vfarm_003_test_user) and routes to BHARAG RAG', async () => {
+  it('resolves +923082113844 as a known customer and routes to vFarm for farm-specific live-state query', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_REAL_NUMBER_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -282,9 +298,11 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const outbound = await IntentRouter.routeAndHandle(msg, identity);
 
-    expect(outbound.body).toContain('BHARAG Knowledge');
+    // KMG9: "Bay 1" matches status keyword 'bay', so intent is 'status' -> vFarm path
+    // No live client in test runner -> telemetry_unavailable, NO BHARAG
+    expect(outbound.body).toContain('Telemetry currently unavailable');
     expect(outbound.to_e164).toBe('+923082113844');
-    expect(['knowledge', 'status']).toContain(IntentRouter.detectIntent(msg.body));
+    expect(IntentRouter.detectIntent(msg.body)).toBe('status');
   });
 
   it('serves unregistered (unknown) sender safe onboarding response without calling knowledge connector', async () => {

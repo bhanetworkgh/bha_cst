@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import url from 'url';
+import { migrationEffectChecks } from './migration_checks.js';
 
 dotenv.config();
 
@@ -133,36 +134,91 @@ async function runMigrations() {
     const appliedMap = new Map(applied.map((r) => [r.filename, r.checksum]));
 
     // ── Ledger adoption ───────────────────────────────────────────────────────
-    // An empty ledger on an already-migrated database must not replay history.
+    // An empty ledger on a legacy database (pre-ledger) must not blindly replay
+    // history, but it must NOT silently mark migrations whose effects are absent.
+    // This is the adoption defect: the old check only inspected the 010 marker
+    // and recorded EVERY file as applied — including 016/017/018 whose tables,
+    // constraints, and triggers might not exist yet on a DB last touched by the
+    // old IF-NOT-EXISTS runner before those files were written.
     const forceBaseline = process.argv.includes('--baseline');
     const forceApply = process.argv.includes('--force');
+    let adoptedThisRun = []; // files recorded as applied (adopted) without execution
 
     if (appliedMap.size === 0 && !forceApply) {
-      const already = forceBaseline || (await looksAlreadyMigrated(client));
-      if (already) {
-        console.log(
-          'Ledger is empty but this database is already migrated (conversations ' +
-            'carries project_id and the 010 unique constraint). Recording all ' +
-            'discovered files as applied WITHOUT replaying them, so only genuinely ' +
-            'new migrations run from now on.',
-        );
+      const alreadyMigrated = forceBaseline || (await looksAlreadyMigrated(client));
+      if (alreadyMigrated) {
+        // Confirm the 010 precondition (legacy runner boundary), then verify each
+        // migration whose effects we can actually inspect. Migrations with an
+        // explicit effect check are adopted ONLY when those effects exist;
+        // otherwise they are left for the normal apply loop below to run.
+        const adoptable = [];
+        const toApply = [];
         for (const file of files) {
+          const check = migrationEffectChecks[file];
+          if (check) {
+            const present = await check(client);
+            if (present) {
+              adoptable.push(file);
+            } else {
+              toApply.push(file);
+              console.warn(
+                `⚠ ${file} is NOT adopted: its schema effects were not found in the ` +
+                  'database. The migration will be applied in this run.',
+              );
+            }
+          } else {
+            // No explicit effect check. On a database satisfying the 010
+            // precondition these are legacy (pre-016+) files the old runner
+            // already executed via IF-NOT-EXISTS. `--baseline` lets an operator
+            // force adoption when the precondition itself is not demonstrable
+            // but the operator has independently confirmed the effects exist.
+            adoptable.push(file);
+          }
+        }
+
+        for (const file of adoptable) {
           const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
           await client.query(
             'INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)',
             [file, checksum(sql)],
           );
         }
-        console.log(`✓ Recorded ${files.length} existing migration(s) in schema_migrations.`);
         console.log(
-          '  To replay every file from scratch instead, run: node scripts/migrate.js --force',
+          `Ledger is empty and this database satisfies the legacy-migration ` +
+            `precondition (${adoptable.length} file(s) adopted; ${toApply.length} file(s) to apply).`,
         );
-        console.log('🎉 Migrations complete: 0 applied, ledger initialised.');
-        return;
+        if (forceBaseline && adoptable.length < files.length) {
+          console.log(
+            '  (--baseline flag supplied: files without explicit effect checks were ' +
+              'adopted on operator affirmation.)',
+          );
+        }
+
+        if (toApply.length > 0) {
+          console.log(
+            `  ${toApply.length} migration(s) must be applied because their effects ` +
+              'are not present — continuing to the apply step.',
+          );
+          adoptedThisRun = adoptable;
+        } else {
+          console.log(
+            '  To replay every file from scratch instead, run: node scripts/migrate.js --force',
+          );
+          console.log('🎉 Migrations complete: 0 applied, ledger initialised.');
+          return;
+        }
+      } else {
+        console.log('Ledger is empty and the database looks fresh — applying all migrations.');
       }
-      console.log('Ledger is empty and the database looks fresh — applying all migrations.');
     } else if (forceApply) {
       console.log('--force given: re-applying every migration regardless of the ledger.');
+    }
+
+    // Mirror adopted files into `appliedMap` so the loop below skips them, while
+    // letting un-adopted files (effects absent) flow through and be applied.
+    for (const adopted of adoptedThisRun) {
+      const sql = fs.readFileSync(path.join(migrationsDir, adopted), 'utf8');
+      appliedMap.set(adopted, checksum(sql));
     }
 
     let ran = 0;

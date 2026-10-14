@@ -6,11 +6,14 @@ export class BharagRagConnector {
    * Query common BHARAG RAG Knowledge Substrate via Cluster Ask API (Spec §3, §4 & §6).
    * Uses the unified BHARAG cluster endpoint with x-api-key authentication.
    * Disambiguates queries by contextualizing with system name when necessary.
+   * KMG9: Farm-specific identifiers (farm_id, unit_id) are NOT sent — the upstream
+   * authorization boundary must enforce workspace scoping via workspaceKey/workspace.
+   * Sending farm/unit identifiers without confirmed enforcement risks cross-tenant leakage.
    */
   static async askKnowledge(
     question: string,
     workspaceKey?: string,
-    unitContext?: Record<string, unknown>
+    _unitContext?: Record<string, unknown>
   ): Promise<string> {
     const env = getEnv();
     const clusterUrl = env.BHARAG_CLUSTER_URL;
@@ -34,12 +37,9 @@ export class BharagRagConnector {
         workspaceKey: wsKey,
         workspace: 'vfarm',
       };
-      if (unitContext?.farm_id) {
-        payload.farm_id = unitContext.farm_id;
-      }
-      if (unitContext?.unit_id) {
-        payload.unit_id = unitContext.unit_id;
-      }
+      // KMG9: farm_id and unit_id intentionally omitted — upstream must enforce
+      // workspace isolation via workspaceKey. CST cannot assume these fields
+      // filter results unless the BHARAG API contract explicitly confirms it.
 
       const response = await fetch(clusterUrl, {
         method: 'POST',
@@ -121,4 +121,3 @@ export class BharagRagConnector {
     return `${prefix}please consult your vFarm user manual or contact support for direct assistance with "${question}".`;
   }
 }
-

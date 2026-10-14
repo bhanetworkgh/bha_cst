@@ -28,15 +28,47 @@ export class IntentRouter {
     const imageKeywords = ['photo', 'image', 'picture', 'snap', 'look', 'view', 'capture', 'camera', 'send'];
     if (imageKeywords.some((kw) => text.includes(kw))) return 'images';
 
-    // 3. Status & telemetry inquiries
+    // 3. Status & telemetry inquiries (explicit status vocabulary)
     const statusKeywords = ['status', 'temp', 'temperature', 'ph', 'ec', 'check', 'telemetry', 'reading', 'bay', 'water'];
     if (statusKeywords.some((kw) => text.includes(kw))) return 'status';
+
+    // 3.5. Farm-specific live-state questions (KMG9: route to vFarm, never BHARAG)
+    // These patterns indicate a request for current/live farm data with caller's farm context.
+    // They are classified as 'status' so they hit the vFarm path (which fails closed).
+    if (this.isFarmSpecificLiveStateRequest(text)) return 'status';
 
     // 4. Knowledge / FAQ questions
     const knowledgeKeywords = ['how', 'what', 'why', 'clean', 'filter', 'light', 'cycle', 'guide', 'doc', 'manual', 'procedure'];
     if (knowledgeKeywords.some((kw) => text.includes(kw))) return 'knowledge';
 
     return 'default';
+  }
+
+  /**
+   * Detect farm-specific live-state requests that require vFarm telemetry.
+   * KMG9: These must route through the vFarm path (fail-closed), never BHARAG.
+   * Conservative patterns: possessive + live-state vocabulary.
+   * Does NOT match general procedures (clean filter, manual, guide, etc.)
+   */
+  private static isFarmSpecificLiveStateRequest(text: string): boolean {
+    const farmStatePatterns = [
+      // "how is my farm", "how's my farm", "why is my farm", "why is my unit"
+      /how is my farm/i, /how's my farm/i,
+      /why is my farm/i, /why is my unit/i,
+      // "status of my", "my farm's status", "my unit's status"
+      /status of my/i, /my farm's status/i, /my unit's status/i,
+      // sensor/telemetry possessives
+      /my water temperature/i, /my ph\b/i, /my ec\b/i, /my temperature/i,
+      /my humidity/i, /my water level/i, /my sensor/i, /my telemetry/i, /my reading/i,
+      // alert possessives
+      /any alerts on my/i, /alerts on my/i, /my alerts\b/i, /my farm's alerts/i,
+      // performance/condition possessives
+      /my farm performing/i, /my farm condition/i, /how is .* doing\b/i,
+      // explicit "what is my" + live data vocab
+      /what is my water/i, /what is my ph\b/i, /what is my ec\b/i, /what is my temperature/i,
+      /what is my humidity/i, /what is my sensor/i, /what is my reading/i,
+    ];
+    return farmStatePatterns.some((re) => re.test(text));
   }
 
   /**

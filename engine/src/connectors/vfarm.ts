@@ -1,4 +1,3 @@
-import { getEnv } from '../config/env.js';
 import { Logger } from '../config/logger.js';
 import type { SpeakerIdentity } from '../core/types.js';
 import type { IdentityContext } from '../transport/twilio/types.js';
@@ -68,13 +67,15 @@ function formatTelemetryText(telemetry: VfarmUnitStatus): string {
 export class VfarmConnector {
   /**
    * Fetch live unit status from the vFarm read API when a resolved speaker identity
-   * is available; falls back to the BHARAG cluster path when live data is unavailable.
+   * is available. Never falls back to BHARAG cluster for farm-specific telemetry
+   * (KMG9: LOOP-1788044070647). On any upstream failure or missing live client,
+   * returns a safe unavailable response with status telemetry_unavailable.
    */
   static async getUnitStatus(
     customerRef: string,
     unitContext?: Record<string, unknown>,
-    workspaceKey?: string,
-    question?: string,
+    _workspaceKey?: string,
+    _question?: string,
     speaker?: SpeakerIdentity | IdentityContext,
   ): Promise<{ text: string; telemetry?: VfarmUnitStatus; httpStatus?: number }> {
     const farmId = unitContext?.farm_id as string | undefined;
@@ -116,112 +117,51 @@ export class VfarmConnector {
               deviceId: unitId,
               speaker: speakerIdentity,
             });
-          const telemetry = mapLatestReadingToTelemetry(farmId, unitId, reading);
-          Logger.info(
-            `vFarm Telemetry Connector: live reading for unit ${unitId} (${farmId}) actor ${customerRef}`,
-          );
-          return { text: formatTelemetryText(telemetry), telemetry };
-        } catch (err: any) {
-          if (err instanceof VfarmAuthorizationError) {
-            Logger.warn(`vFarm telemetry refused for ${customerRef}: ${err.message}`);
-            return {
-              text: 'You do not have access to telemetry for the requested farm or device.',
-              httpStatus: 403,
-              telemetry: {
-                unit_id: unitId,
-                farm_id: farmId,
-                status: 'telemetry_unavailable',
-                last_updated: new Date().toISOString(),
-              },
-            };
+            const telemetry = mapLatestReadingToTelemetry(farmId, unitId, reading);
+            Logger.info(
+              `vFarm Telemetry Connector: live reading for unit ${unitId} (${farmId}) actor ${customerRef}`,
+            );
+            return { text: formatTelemetryText(telemetry), telemetry };
+          } catch (err: any) {
+            if (err instanceof VfarmAuthorizationError) {
+              Logger.warn(`vFarm telemetry refused for ${customerRef}: ${err.message}`);
+              return {
+                text: 'You do not have access to telemetry for the requested farm or device.',
+                httpStatus: 403,
+                telemetry: {
+                  unit_id: unitId,
+                  farm_id: farmId,
+                  status: 'telemetry_unavailable',
+                  last_updated: new Date().toISOString(),
+                },
+              };
+            }
+            // vFarm upstream failure (timeout, 5xx, network) — fail closed.
+            // KMG9: NEVER fall back to the BHARAG cluster path for farm-specific
+            // telemetry. Return a safe unavailable response instead.
+            Logger.warn(`vFarm live telemetry path failed (fail-closed, no BHARAG fallback): ${(err as Error).message}`, {
+              unit_id: unitId,
+              farm_id: farmId,
+              customer_ref: customerRef,
+            });
           }
-          Logger.warn(`vFarm live telemetry path failed, falling back to cluster: ${(err as Error).message}`, {
+        } else {
+          // No live vFarm client configured for this tenant — KMG9: do not query
+          // BHARAG. Return telemetry_unavailable so the caller never receives
+          // cross-tenant or fabricated sensor data.
+          Logger.warn(`vFarm telemetry unavailable for ${customerRef}: no live client for tenant ${tenantId} (fail-closed, no BHARAG fallback)`, {
             unit_id: unitId,
             farm_id: farmId,
-            customer_ref: customerRef,
           });
         }
       }
     }
-  }
 
-    const env = getEnv();
-    const wsKey = workspaceKey || env.BHARAG_WORKSPACE_KEY;
-    const query = question || `What is the current status and telemetry of unit ${unitId} at farm ${farmId}?`;
-
-    const clusterUrl = env.BHARAG_CLUSTER_URL;
-    const clusterKey = env.BHARAG_CLUSTER_KEY;
-
-    Logger.info(`vFarm Telemetry Connector: Querying status for unit ${unitId} (${farmId}) for actor ${customerRef}`);
-
-    try {
-      const controller = new AbortController();
-      const timeoutMs = env.BHARAG_CLUSTER_TIMEOUT_MS || 10000;
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-      const payload = {
-        query,
-        workspaceKey: wsKey,
-        farm_id: farmId,
-        unit_id: unitId,
-      };
-
-      const response = await fetch(clusterUrl, {
-        method: 'POST',
-        headers: {
-          'accept': 'application/json',
-          'Content-Type': 'application/json',
-          'x-api-key': clusterKey,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      }).catch(() => null);
-
-      clearTimeout(timeoutId);
-
-      if (response && response.ok) {
-        const data = (await response.json()) as any;
-        if (data.status && data.status !== 'telemetry_unavailable') {
-          const telemetry: VfarmUnitStatus = {
-            unit_id: data.unit_id || unitId,
-            farm_id: data.farm_id || farmId,
-            status: data.status,
-            water_temp_c: data.water_temp_c != null ? Number(data.water_temp_c) : undefined,
-            ph_level: data.ph_level != null ? Number(data.ph_level) : undefined,
-            ec_level: data.ec_level != null ? Number(data.ec_level) : undefined,
-            water_level: data.water_level,
-            last_updated: data.last_updated || new Date().toISOString(),
-          };
-
-          return {
-            text: formatTelemetryText(telemetry),
-            telemetry,
-          };
-        }
-
-        if (data.answer) {
-          const lower = data.answer.toLowerCase();
-          const lacksInfo = lower.includes("don't have enough information") ||
-                            lower.includes("not enough information") ||
-                            lower.includes("does not include any specific current readings") ||
-                            lower.includes("does not include any current sensor readings");
-          if (!lacksInfo) {
-            return { text: data.answer };
-          }
-        }
-      }
-    } catch (err: any) {
-      Logger.warn(`vFarm live telemetry API fetch fallback: ${err.message}`, {
-        unit_id: unitId,
-        farm_id: farmId,
-        customer_ref: customerRef,
-      });
-      Logger.infra({
-        message: 'vFarm telemetry unavailable: cluster API error or timeout',
-        commercial_impact: 'Customer cannot receive live sensor data. Farming decisions may be delayed. Escalate if outage persists beyond 5 minutes.',
-        meta: { unit_id: unitId, farm_id: farmId, customer_ref: customerRef, error: err.message },
-      });
-    }
+    Logger.infra({
+      message: 'vFarm telemetry unavailable: live adapter not configured or upstream call failed',
+      commercial_impact: 'Customer cannot receive live sensor data for this unit. No cross-tenant or BHARAG-derived data is returned.',
+      meta: { unit_id: unitId, farm_id: farmId, customer_ref: customerRef },
+    });
 
     const telemetry: VfarmUnitStatus = {
       unit_id: unitId,
@@ -230,14 +170,9 @@ export class VfarmConnector {
       last_updated: new Date().toISOString(),
     };
 
-    Logger.infra({
-      message: 'vFarm telemetry unavailable: cluster returned no usable data',
-      commercial_impact: 'Customer cannot receive live sensor data. Farming decisions may be delayed. Escalate if outage persists beyond 5 minutes.',
-      meta: { unit_id: unitId, farm_id: farmId, customer_ref: customerRef },
-    });
-
-    const formattedText = `vFarm Unit ${unitId} (${farmId}): Telemetry currently unavailable for this unit. Live sensor readings cannot be retrieved at this time.`;
-
-    return { text: formattedText, telemetry };
+    return {
+      text: `vFarm Unit ${unitId} (${farmId}): Telemetry currently unavailable for this unit. Live sensor readings cannot be retrieved at this time.`,
+      telemetry,
+    };
   }
 }

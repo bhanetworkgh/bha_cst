@@ -67,7 +67,7 @@ describe('Authorization & Step-Up Authentication Seam Tests', () => {
     permissions:       [],
   };
 
-  it('allows read operation for known user with permitted role', async () => {
+  it('allows read operation for known user with permitted role — farm telemetry goes through vFarm (KMG9)', async () => {
     const msg: InboundMessage = {
       message_id:     'SM_READ_TEST_001',
       tenant_id:      'tenant-vfarm-01',
@@ -80,7 +80,11 @@ describe('Authorization & Step-Up Authentication Seam Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, knownManagerIdentity);
-    expect(outbound.body).toContain('BHARAG Knowledge');
+    // KMG9: "temperature" + "Bay" = status keywords -> routes to vFarm path
+    // No live client in test runner -> telemetry_unavailable, NO BHARAG
+    expect(outbound.body).toContain('Telemetry currently unavailable');
+    expect(outbound.body).not.toContain('BHARAG Knowledge');
+    expect(IntentRouter.detectIntent(msg.body)).toBe('status');
   });
 
   it('refuses equipment control attempt from tech role due to role boundary', async () => {

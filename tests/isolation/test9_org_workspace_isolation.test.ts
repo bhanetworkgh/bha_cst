@@ -39,7 +39,7 @@ describe('Isolation Test 9: Organization & Workspace Tenancy Boundaries', () => 
     vi.restoreAllMocks();
   });
 
-  it('enforces Organization A boundary and prevents accessing Organization B context', async () => {
+  it('enforces Organization A boundary and prevents accessing Organization B context — KMG9: farm telemetry goes through vFarm', async () => {
     const orgAIdentity: IdentityContext = {
       customer_ref:      'cust_vfarm_001_john_doe',
       organization_id:   'tenant-vfarm-01',
@@ -65,7 +65,10 @@ describe('Isolation Test 9: Organization & Workspace Tenancy Boundaries', () => 
 
     const outbound = await IntentRouter.routeAndHandle(msg, orgAIdentity);
     expect(outbound.tenant_id).toBe('tenant-vfarm-01');
-    expect(outbound.body).toContain('BHARAG Cluster');
+    // KMG9: "telemetry" = status keyword -> routes to vFarm path
+    // No live client in test runner -> telemetry_unavailable, NO BHARAG
+    expect(outbound.body).toContain('Telemetry currently unavailable');
+    expect(outbound.body).not.toContain('BHARAG Cluster');
   });
 
   it('ignores customer-supplied organization_id or workspace_id in message payload and enforces server-resolved scope', async () => {

@@ -117,7 +117,7 @@ describe('BharagRagConnector Tests', () => {
     expect(result).not.toContain('BHARAG Knowledge:');
   });
 
-  it('includes workspaceKey, farm_id, and unit_id in cluster API payload when provided', async () => {
+  it('includes workspaceKey and workspace in cluster API payload, but NOT farm_id/unit_id (KMG9)', async () => {
     let capturedOptions: any = null;
 
     globalThis.fetch = vi.fn().mockImplementation(async (_url: string | URL | Request, options?: RequestInit) => {
@@ -134,13 +134,16 @@ describe('BharagRagConnector Tests', () => {
       { farm_id: 'farm_austin_main', unit_id: 'unit_bay_04' }
     );
 
-    expect(JSON.parse(capturedOptions.body)).toEqual({
+    // KMG9: farm_id and unit_id intentionally omitted — upstream must enforce
+    // workspace isolation via workspaceKey. CST cannot assume these fields
+    // filter results unless the BHARAG API contract explicitly confirms it.
+    const payload = JSON.parse(capturedOptions.body);
+    expect(payload).toEqual({
       query: 'vFarm: What are the optimal settings?',
       workspaceKey: 'ws_key_test_123',
       workspace: 'vfarm',
-      farm_id: 'farm_austin_main',
-      unit_id: 'unit_bay_04',
     });
+    expect(payload).not.toHaveProperty('farm_id');
+    expect(payload).not.toHaveProperty('unit_id');
   });
 });
-
