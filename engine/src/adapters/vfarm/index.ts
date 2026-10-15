@@ -486,6 +486,11 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     this.projectsMap.set(project.project_id, project);
   }
 
+  /** Return the vFarm org_id for a project, used for org-member lookups. */
+  public _getProjectOrgId(projectId: string): string | null {
+    return this.projectsMap.get(projectId)?.tenant_org_id ?? null;
+  }
+
   public registerSpeaker(projectId: string, speaker: SpeakerRecord): void {
     let pMap = this.speakersMap.get(projectId);
     if (!pMap) {
@@ -829,8 +834,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // authoritative vFarm organization-members list before trusting it.
     if (this.httpClient) {
       await this.ensureAdminToken();
-      const project = this.projectsMap.get(params.projectId);
-      const orgId = project?.tenant_org_id;
+      const orgId = this._getProjectOrgId(params.projectId);
       if (orgId) {
         // Any thrown VfarmApiError (auth/timeout/network/upstream/invalid
         // response) propagates to CoreRegistry, which fails closed — see

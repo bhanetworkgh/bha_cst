@@ -53,6 +53,7 @@
       <button class="admin-tab" data-tab="sms-consent" role="tab">7 · SMS Consent</button>
       <button class="admin-tab" data-tab="vfarm-live" role="tab">8 · vFarm Live E2E</button>
       <button class="admin-tab" data-tab="turn-stream" role="tab">9 · Turn Stream</button>
+      <button class="admin-tab" data-tab="vfarm-users" role="tab">10 · vFarm Users &amp; Grants <span class="tab-pill" id="badge-vfarm-users-count">0</span></button>
     </nav>
 
     <!-- Alert / Banner Container -->
@@ -833,7 +834,97 @@
         <div id="audit-alerts-list" class="admin-table-wrap"></div>
       </div>
     </section>
+
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <!-- 10. vFARM USERS & AUTHORITATIVE FARM GRANTS -->
+    <!-- ──────────────────────────────────────────────────────────────────────── -->
+    <section id="tab-vfarm-users" class="admin-panel hidden">
+      <!-- Header & Organization Controls -->
+      <div class="panel-block">
+        <div class="panel-heading">
+          <div>
+            <span class="section-label">VFARM IDENTITY &amp; ACCESS CONTROL</span>
+            <h3>Authoritative Organization Members &amp; Farm Grants</h3>
+          </div>
+          <div class="heading-controls">
+            <button id="btn-vfarm-tab-refresh" class="ghost-button small">↻ Refresh Org Members</button>
+          </div>
+        </div>
+        <p class="admin-note">
+          Displays live organization members from vFarm via <code>GET /api/v1/admin/vfarm/users?org_id=…</code>.
+          Farm grants are discovered dynamically through <code>GET /api/v1/users/{user_id}/farm-grants</code> and joined with CST local speaker bindings.
+          Zero credentials or tokens are exposed to the browser.
+        </p>
+
+        <div class="filter-toolbar" style="margin-bottom: 20px;">
+          <div class="filter-group" style="min-width: 340px;">
+            <label for="vfarm-tab-org-select">Target vFarm Organization</label>
+            <select id="vfarm-tab-org-select">
+              <option value="">Loading discovered organizations…</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="vfarm-tab-role-filter">Filter by vFarm Role</label>
+            <select id="vfarm-tab-role-filter">
+              <option value="">All vFarm roles</option>
+              <option value="admin">admin</option>
+              <option value="owner">owner</option>
+              <option value="manager">manager</option>
+              <option value="technician">technician</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="vfarm-tab-mapping-filter">Mapping Status</label>
+            <select id="vfarm-tab-mapping-filter">
+              <option value="">All statuses</option>
+              <option value="mapped">Mapped to CST Speaker</option>
+              <option value="unmapped">vFarm Only (Unmapped)</option>
+              <option value="has_grants">Has Active Farm Grants</option>
+              <option value="no_grants">Zero Farm Grants</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Upstream Status</label>
+            <div id="vfarm-tab-status" class="muted" style="padding: 8px 0;">—</div>
+          </div>
+        </div>
+
+        <!-- Metric Cards -->
+        <div id="vfarm-tab-metrics" class="metric-grid admin-metric-grid" style="margin-bottom: 24px;"></div>
+
+        <!-- Visual Distribution Chart -->
+        <div class="panel-block" style="background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 18px 20px; margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <span class="section-label" style="margin: 0;">ORGANIZATION ROLE &amp; SCOPE BREAKDOWN</span>
+            <small class="muted" id="vfarm-chart-caption">Live distribution</small>
+          </div>
+          <div id="vfarm-role-chart" style="display: flex; flex-direction: column; gap: 10px;"></div>
+        </div>
+
+        <!-- Live Users Table -->
+        <div id="vfarm-tab-users-table" class="admin-table-wrap"></div>
+      </div>
+    </section>
   </main>
+
+  <!-- Modal: View User Farm Grants -->
+  <div id="modal-view-grants" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <span class="modal-label">AUTHORITATIVE SCOPE</span>
+          <h3 id="modal-view-grants-title">User Farm Grants</h3>
+        </div>
+        <button class="modal-close" id="btn-close-view-grants">&times;</button>
+      </div>
+      <div id="modal-view-grants-body" style="padding: 20px 24px;">
+        <p class="muted">Loading grants…</p>
+      </div>
+      <div class="modal-actions" style="padding: 16px 24px; border-top: 1px solid var(--line);">
+        <button type="button" class="ghost-button" id="btn-dismiss-view-grants">Close</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ──────────────────────────────────────────────────────────────────────── -->
   <!-- MODALS -->

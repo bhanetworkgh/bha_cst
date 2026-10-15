@@ -183,6 +183,10 @@ export class CoreRegistry {
     const dbProjects = await DbClient.getAllProjects();
     for (const p of dbProjects) {
       this.projects.set(p.project_id, p);
+      const adapter = this.adapters.get(p.tenant_id);
+      if (adapter?.addProject) {
+        adapter.addProject(p);
+      }
     }
 
     // 3. Load service number bindings from DB
@@ -237,6 +241,10 @@ export class CoreRegistry {
 
   static registerProject(project: Project): void {
     this.projects.set(project.project_id, project);
+    const adapter = this.adapters.get(project.tenant_id);
+    if (adapter?.addProject) {
+      adapter.addProject(project);
+    }
     if (typeof DbClient !== 'undefined' && DbClient?.saveProject) {
       DbClient.saveProject(project).catch((err) => {
         Logger.warn(`CoreRegistry: Failed to persist project ${project.project_id}: ${err.message}`);

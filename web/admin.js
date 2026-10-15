@@ -147,6 +147,7 @@ function activateTab(tab) {
   }
   if (tab === 'vfarm-live') loadVfarmLiveTab();
   if (tab === 'turn-stream') guarded(loadTurnStream);
+  if (tab === 'vfarm-users') guarded(loadVfarmUsersTab);
 }
 
 $('#admin-tabs').addEventListener('click', (event) => {
@@ -2252,10 +2253,407 @@ $('#btn-consent-refresh')?.addEventListener('click', () => {
 $('#btn-consent-grant')?.addEventListener('click', () => updateConsent('grant'));
 $('#btn-consent-revoke')?.addEventListener('click', () => updateConsent('revoke'));
 
-// Boot refresh only when a session token is already present. Without this the
-// console fires an admin API call before the auth guard has redirected an
-// anonymous visitor to /admin/login, producing a 401 in the browser log.
+// ── 12. vFarm Users & Authoritative Farm Grants (Tab 10) ──────────────────────
+
+let vfarmTabUsers = [];
+
+function fillVfarmTabOrgSelect() {
+  const select = $('#vfarm-tab-org-select');
+  if (!select) return [];
+
+  const orgs = [];
+  const seen = new Set();
+  for (const project of state.projects) {
+    if (!project?.tenant_org_id || seen.has(project.tenant_org_id)) continue;
+    seen.add(project.tenant_org_id);
+    orgs.push({ org_id: project.tenant_org_id, project_id: project.project_id });
+  }
+
+  const current = select.value;
+  select.replaceChildren(
+    new Option('Select an organization…', ''),
+    ...orgs.map((o) => new Option(`${o.org_id} (${o.project_id})`, o.org_id))
+  );
+  if (current && seen.has(current)) select.value = current;
+  else if (orgs.length === 1) select.value = orgs[0].org_id;
+
+  return orgs;
+}
+
+async function refreshVfarmTabOrgOptions() {
+  const select = $('#vfarm-tab-org-select');
+  if (!select) return;
+
+  const current = select.value;
+  fillVfarmTabOrgSelect();
+
+  let discovered = [];
+  try {
+    const data = await api('/api/v1/admin/vfarm/organizations');
+    discovered = Array.isArray(data?.organizations) ? data.organizations : [];
+  } catch (err) {
+    const status = $('#vfarm-tab-status');
+    if (status && !select.value) status.textContent = 'org discovery unavailable';
+    return;
+  }
+
+  const existing = new Set(Array.from(select.options).map((o) => o.value).filter(Boolean));
+  for (const org of discovered) {
+    if (!org?.id || existing.has(org.id)) continue;
+    existing.add(org.id);
+    select.appendChild(new Option(
+      `${org.name || 'org'} · ${org.slug || org.id.slice(0, 8)} · ${org.member_count ?? '?'} member(s) · ${org.id}`,
+      org.id
+    ));
+  }
+
+  for (const option of Array.from(select.options)) {
+    if (!option.value || looksLikeVfarmOrgId(option.value)) continue;
+    option.textContent = `${option.textContent} ⚠ not a live vFarm id (placeholder)`;
+  }
+
+  if (current && existing.has(current)) select.value = current;
+}
+
+async function loadVfarmUsersTab() {
+  await refreshVfarmTabOrgOptions();
+
+  const orgSelect = $('#vfarm-tab-org-select');
+  let orgId = orgSelect?.value || '';
+
+  // Auto-pick first valid or available option if empty
+  if (!orgId && orgSelect && orgSelect.options.length > 1) {
+    for (let i = 1; i < orgSelect.options.length; i++) {
+      if (orgSelect.options[i].value) {
+        orgSelect.selectedIndex = i;
+        orgId = orgSelect.value;
+        break;
+      }
+    }
+  }
+
+  const status = $('#vfarm-tab-status');
+  const tableWrap = $('#vfarm-tab-users-table');
+  const metricsEl = $('#vfarm-tab-metrics');
+  const chartEl = $('#vfarm-role-chart');
+
+  if (!orgId) {
+    vfarmTabUsers = [];
+    if (status) status.textContent = 'no organization selected';
+    if (tableWrap) {
+      tableWrap.innerHTML = `
+        <table class="admin-table">
+          <thead><tr><th>Live vFarm Organization Members & Farm Grants</th></tr></thead>
+          <tbody>${emptyRow(1, 'Select a vFarm organization above to view its live members, roles, and farm grants.')}</tbody>
+        </table>`;
+    }
+    if (metricsEl) metricsEl.innerHTML = '';
+    if (chartEl) chartEl.innerHTML = '';
+    const badge = $('#badge-vfarm-users-count');
+    if (badge) badge.textContent = '0';
+    return;
+  }
+
+  if (status) status.textContent = 'querying vFarm…';
+
+  let data;
+  try {
+    data = await api(`/api/v1/admin/vfarm/users?org_id=${encodeURIComponent(orgId)}`);
+  } catch (err) {
+    vfarmTabUsers = [];
+    if (status) status.textContent = 'upstream error';
+    if (tableWrap) {
+      tableWrap.innerHTML = `
+        <table class="admin-table">
+          <thead><tr><th>Live vFarm Organization Members</th></tr></thead>
+          <tbody>${emptyRow(1, `Failed to load vFarm users: ${escapeAdminHtml(err.message)}`)}</tbody>
+        </table>`;
+    }
+    return;
+  }
+
+  if (data?.vfarm_source === 'unavailable') {
+    vfarmTabUsers = [];
+    const reason = data?.source_error || 'vFarm live API unavailable';
+    if (status) status.textContent = 'source unavailable';
+    if (tableWrap) {
+      tableWrap.innerHTML = `
+        <table class="admin-table">
+          <thead><tr><th>Live vFarm Organization Members</th></tr></thead>
+          <tbody>${emptyRow(1, `Live vFarm data unavailable: ${escapeAdminHtml(reason)}. Zero credentials sent from browser.`)}</tbody>
+        </table>`;
+    }
+    return;
+  }
+
+  vfarmTabUsers = Array.isArray(data?.customers) ? data.customers : [];
+  if (status) status.textContent = `${vfarmTabUsers.length} members · live`;
+  const badge = $('#badge-vfarm-users-count');
+  if (badge) badge.textContent = String(vfarmTabUsers.length);
+
+  renderVfarmTabMetrics(vfarmTabUsers, orgId);
+  renderVfarmTabChart(vfarmTabUsers);
+  renderVfarmTabFilteredUsers();
+}
+
+function renderVfarmTabMetrics(users, orgId) {
+  const container = $('#vfarm-tab-metrics');
+  if (!container) return;
+
+  const totalMembers = users.length;
+  const mapped = users.filter((u) => u.cst_registered).length;
+  const unmapped = totalMembers - mapped;
+  const totalGrants = users.reduce((acc, u) => acc + (u.farm_grants_count || 0), 0);
+  const usersWithGrants = users.filter((u) => (u.farm_grants_count || 0) > 0).length;
+
+  container.innerHTML = `
+    <div class="metric-card">
+      <span class="metric-label">Total Org Members</span>
+      <strong class="metric-value">${totalMembers}</strong>
+      <small class="muted">Live in ${escapeAdminHtml(orgId ? orgId.slice(0, 18) : 'org')}</small>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label">Active Farm Grants</span>
+      <strong class="metric-value">${totalGrants}</strong>
+      <small class="muted">Across ${usersWithGrants} member(s)</small>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label">CST Linked Speakers</span>
+      <strong class="metric-value">${mapped}</strong>
+      <small class="muted">Phone & project mapped</small>
+    </div>
+    <div class="metric-card">
+      <span class="metric-label">vFarm Only (Unmapped)</span>
+      <strong class="metric-value">${unmapped}</strong>
+      <small class="muted">Awaiting phone mapping</small>
+    </div>`;
+}
+
+function renderVfarmTabChart(users) {
+  const chart = $('#vfarm-role-chart');
+  if (!chart) return;
+
+  if (!users.length) {
+    chart.innerHTML = '<p class="muted">No user data available for distribution.</p>';
+    return;
+  }
+
+  const roleCounts = {};
+  users.forEach((u) => {
+    const role = (u.vfarm_role || 'unassigned').toLowerCase();
+    roleCounts[role] = (roleCounts[role] || 0) + 1;
+  });
+
+  const total = users.length;
+  const colors = {
+    owner: '#7c3aed',
+    admin: '#2563eb',
+    manager: '#059669',
+    technician: '#d97706',
+    operator: '#0891b2',
+    guest: '#64748b',
+    unassigned: '#94a3b8',
+  };
+
+  const bars = Object.entries(roleCounts).map(([role, count]) => {
+    const pct = Math.round((count / total) * 100);
+    const color = colors[role] || '#3b82f6';
+    return `
+      <div style="display: flex; align-items: center; gap: 12px; font-size: 13px;">
+        <span style="min-width: 100px; text-transform: capitalize; font-weight: 500;">${escapeAdminHtml(role)}</span>
+        <div style="flex: 1; height: 10px; background: var(--line, #e2e8f0); border-radius: 999px; overflow: hidden;">
+          <div style="width: ${pct}%; height: 100%; background: ${color}; border-radius: 999px; transition: width 0.4s ease;"></div>
+        </div>
+        <span class="muted" style="min-width: 60px; text-align: right;">${count} (${pct}%)</span>
+      </div>`;
+  }).join('');
+
+  chart.innerHTML = bars;
+}
+
+function renderVfarmTabFilteredUsers() {
+  const tableWrap = $('#vfarm-tab-users-table');
+  if (!tableWrap) return;
+
+  const roleFilter = $('#vfarm-tab-role-filter')?.value || '';
+  const mappingFilter = $('#vfarm-tab-mapping-filter')?.value || '';
+
+  let filtered = vfarmTabUsers;
+
+  if (roleFilter) {
+    filtered = filtered.filter((u) => (u.vfarm_role || '').toLowerCase() === roleFilter.toLowerCase());
+  }
+
+  if (mappingFilter === 'mapped') {
+    filtered = filtered.filter((u) => u.cst_registered);
+  } else if (mappingFilter === 'unmapped') {
+    filtered = filtered.filter((u) => !u.cst_registered);
+  } else if (mappingFilter === 'has_grants') {
+    filtered = filtered.filter((u) => (u.farm_grants_count || 0) > 0);
+  } else if (mappingFilter === 'no_grants') {
+    filtered = filtered.filter((u) => !u.farm_grants_count || u.farm_grants_count === 0);
+  }
+
+  if (!filtered.length) {
+    tableWrap.innerHTML = `
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>vFarm User ID</th>
+            <th>Member Details</th>
+            <th>vFarm Role</th>
+            <th>Authoritative Farm Grants</th>
+            <th>CST Speaker Binding</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${emptyRow(6, 'No users match the selected filters.')}</tbody>
+      </table>`;
+    return;
+  }
+
+  const rows = filtered.map((u) => {
+    const grantsCount = u.farm_grants_count || 0;
+    const grantsSummary = (u.vfarm_farm_ids && u.vfarm_farm_ids.length)
+      ? u.vfarm_farm_ids.slice(0, 3).map((f) => `<span class="tag-chip">${escapeAdminHtml(f)}</span>`).join(' ') + (u.vfarm_farm_ids.length > 3 ? ` <span class="muted">+${u.vfarm_farm_ids.length - 3}</span>` : '')
+      : '<span class="muted">No farm grants</span>';
+
+    const cstBindingHtml = u.cst_registered
+      ? `<strong>${escapeAdminHtml(u.cst_phone_e164)}</strong><br><small class="muted">${escapeAdminHtml(u.cst_project_id || '—')} · ${escapeAdminHtml(u.cst_role || '—')}</small>`
+      : '<span class="tag-chip-empty">vFarm Only (Unmapped)</span>';
+
+    return `
+      <tr>
+        <td>
+          <code>${escapeAdminHtml(u.user_id)}</code>
+          ${u.granted_at ? `<br><small class="muted">Joined: ${new Date(u.granted_at).toLocaleDateString()}</small>` : ''}
+        </td>
+        <td>
+          <strong>${escapeAdminHtml(u.name || '—')}</strong>
+          <br><small class="muted">${escapeAdminHtml(u.email || '—')}</small>
+        </td>
+        <td>
+          <span class="role-badge ${escapeAdminHtml(u.vfarm_role || 'user')}">${escapeAdminHtml(u.vfarm_role || 'user')}</span>
+        </td>
+        <td>
+          <div style="margin-bottom: 4px;">
+            <span class="pill ${grantsCount > 0 ? 'active' : 'warn'}">${grantsCount} grant(s)</span>
+          </div>
+          <div>${grantsSummary}</div>
+        </td>
+        <td>
+          ${cstBindingHtml}
+        </td>
+        <td>
+          <button class="ghost-button small btn-view-grants" data-userid="${escapeAdminHtml(u.user_id)}" data-name="${escapeAdminHtml(u.name || u.email || u.user_id)}">
+            View Grants (${grantsCount})
+          </button>
+        </td>
+      </tr>`;
+  }).join('');
+
+  tableWrap.innerHTML = `
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>vFarm User ID</th>
+          <th>Member Details</th>
+          <th>vFarm Role</th>
+          <th>Authoritative Farm Grants</th>
+          <th>CST Speaker Binding</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  tableWrap.querySelectorAll('.btn-view-grants').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userid;
+      const uname = btn.dataset.name;
+      openUserFarmGrantsModal(uid, uname);
+    });
+  });
+}
+
+async function openUserFarmGrantsModal(userId, userName) {
+  const modal = $('#modal-view-grants');
+  const title = $('#modal-view-grants-title');
+  const body = $('#modal-view-grants-body');
+  if (!modal || !body) return;
+
+  if (title) title.textContent = `Farm Grants · ${userName}`;
+  body.innerHTML = `<p class="muted">Fetching live farm grants for <code>${escapeAdminHtml(userId)}</code> from vFarm…</p>`;
+  modal.classList.remove('hidden');
+
+  try {
+    const data = await api(`/api/v1/admin/vfarm/users/${encodeURIComponent(userId)}/farm-grants`);
+    const grants = Array.isArray(data?.grants) ? data.grants : [];
+
+    if (!grants.length) {
+      body.innerHTML = `
+        <div style="padding: 16px; background: var(--surface-2, #f8fafc); border-radius: var(--radius-md); text-align: center;">
+          <p style="margin: 0 0 4px 0; font-weight: 500;">No Farm Grants Found</p>
+          <small class="muted">vFarm returned 0 active farm authorizations for this user.</small>
+        </div>`;
+      return;
+    }
+
+    const grantRows = grants.map((g) => `
+      <tr>
+        <td><code>${escapeAdminHtml(g.farm_id || g.id || '—')}</code></td>
+        <td><strong>${escapeAdminHtml(g.farm_name || g.name || '—')}</strong></td>
+        <td><span class="role-badge ${escapeAdminHtml(g.role || 'operator')}">${escapeAdminHtml(g.role || 'operator')}</span></td>
+        <td><span class="pill ${g.status === 'active' || !g.status ? 'active' : 'warn'}">${escapeAdminHtml(g.status || 'active')}</span></td>
+        <td><small class="muted">${g.granted_at ? new Date(g.granted_at).toLocaleString() : '—'}</small></td>
+      </tr>`).join('');
+
+    body.innerHTML = `
+      <div style="margin-bottom: 14px;">
+        <span class="pill active">${grants.length} Active Authoritative Grant(s)</span>
+      </div>
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Farm ID</th>
+            <th>Farm Name</th>
+            <th>Scoped Role</th>
+            <th>Status</th>
+            <th>Granted At</th>
+          </tr>
+        </thead>
+        <tbody>${grantRows}</tbody>
+      </table>`;
+  } catch (err) {
+    body.innerHTML = `
+      <div style="padding: 16px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: var(--radius-md);">
+        <p style="margin: 0; color: #dc2626; font-weight: 500;">Failed to fetch farm grants</p>
+        <small class="muted">${escapeAdminHtml(err.message)}</small>
+      </div>`;
+  }
+}
+
+// Close view grants modal handlers
+$('#btn-close-view-grants')?.addEventListener('click', () => {
+  $('#modal-view-grants')?.classList.add('hidden');
+});
+$('#btn-dismiss-view-grants')?.addEventListener('click', () => {
+  $('#modal-view-grants')?.classList.add('hidden');
+});
+$('#modal-view-grants')?.addEventListener('click', (e) => {
+  if (e.target.id === 'modal-view-grants') $('#modal-view-grants')?.classList.add('hidden');
+});
+
+// Event listeners for Tab 10
+$('#vfarm-tab-org-select')?.addEventListener('change', () => guarded(loadVfarmUsersTab));
+$('#vfarm-tab-role-filter')?.addEventListener('change', renderVfarmTabFilteredUsers);
+$('#vfarm-tab-mapping-filter')?.addEventListener('change', renderVfarmTabFilteredUsers);
+$('#btn-vfarm-tab-refresh')?.addEventListener('click', () => guarded(loadVfarmUsersTab));
+
+// Boot refresh only when a session token is already present.
 if (localStorage.getItem('cst_admin_token')) {
   guarded(refreshAll);
 }
+
+
 

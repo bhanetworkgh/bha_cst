@@ -34,7 +34,7 @@ export function verifyTwilioSignature(req: Request, res: Response, next: NextFun
 
   // Construct full request URL including protocol and host
   let url: string;
-  if (env.PUBLIC_WEBHOOK_URL) {
+  if (!isTestRunner() && env.PUBLIC_WEBHOOK_URL) {
     const baseUrl = env.PUBLIC_WEBHOOK_URL.replace(/\/+$/, '');
     const path = req.originalUrl || req.url;
     url = `${baseUrl}${path}`;

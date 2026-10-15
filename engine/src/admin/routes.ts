@@ -1388,7 +1388,7 @@ adminRouter.get('/turn-stream', async (req: Request, res: Response) => {
  * Used by the admin panel Users tab to show the authoritative vFarm user list
  * and verify each user has a matching local speaker record.
  */
-adminRouter.get('/vfarm/customers', async (req: Request, res: Response) => {
+adminRouter.get(['/vfarm/customers', '/vfarm/users'], async (req: Request, res: Response) => {
   try {
     const adapter = CoreRegistry.getVfarmAdapter();
     if (!adapter) {
@@ -1427,54 +1427,99 @@ adminRouter.get('/vfarm/customers', async (req: Request, res: Response) => {
     } catch (err: any) {
       Logger.warn(`Admin vfarm/customers: org members fetch failed: ${err.message}`);
       vfarmMembers = [];
-      // Report the failure instead of returning an empty list under status "ok":
-      // an empty array here would read to the Admin Panel as "this org has no
-      // users", which is a different — and wrong — claim.
       sourceError = err.message;
     }
 
     // Cross-reference with local CST speakers.
-    // The CST↔vFarm join key is `customers.customer_ref`, which holds the vFarm
-    // `user_id` (see the ON CONFLICT upsert in POST /speakers/sync). There is no
-    // `person_id` column on the customers table.
     const localSpeakers = await DbClient.getAllCustomers();
     const byUserId = new Map<string, (typeof localSpeakers)[number]>();
     for (const s of localSpeakers) {
       if (s.customer_ref && !byUserId.has(s.customer_ref)) byUserId.set(s.customer_ref, s);
     }
 
-    const customers = vfarmMembers.map((member: any) => {
-      const local = byUserId.get(member.user_id);
-      return {
-        user_id: member.user_id,
-        email: member.email,
-        name: member.name,
-        vfarm_role: member.role,
-        granted_at: member.granted_at,
-        // CST local record
-        cst_registered: Boolean(local),
-        cst_phone_e164: local?.phone_e164 ?? null,
-        cst_role: local?.role ?? null,
-        cst_project_id: local?.project_id ?? null,
-        cst_farm_ids: local?.farm_ids ?? null,
-        cst_cache_expires_at: local?.speaker_cache_expires_at ?? null,
-      };
-    });
+    // Enrich each member with live farm grants from vFarm
+    const customers = await Promise.all(
+      vfarmMembers.map(async (member: any) => {
+        let liveGrants: any[] = [];
+        try {
+          if (client && typeof client.getUserFarmGrants === 'function') {
+            liveGrants = await client.getUserFarmGrants(member.user_id, jwt || undefined);
+          }
+        } catch (err: any) {
+          Logger.warn(`Admin vfarm/customers: live farm grants lookup failed for ${member.user_id}: ${err.message}`);
+        }
+
+        const local = byUserId.get(member.user_id);
+        const liveFarmIds = liveGrants.map((g: any) => g.farm_id).filter(Boolean);
+
+        return {
+          user_id: member.user_id,
+          email: member.email,
+          name: member.name,
+          vfarm_role: member.role,
+          granted_at: member.granted_at,
+          // Authoritative live vFarm grants
+          vfarm_grants: liveGrants,
+          vfarm_farm_ids: liveFarmIds,
+          farm_grants_count: liveGrants.length,
+          // CST local record
+          cst_registered: Boolean(local),
+          cst_phone_e164: local?.phone_e164 ?? null,
+          cst_role: local?.role ?? null,
+          cst_project_id: local?.project_id ?? null,
+          cst_farm_ids: local?.farm_ids ?? null,
+          cst_cache_expires_at: local?.speaker_cache_expires_at ?? null,
+        };
+      })
+    );
 
     res.status(200).json({
       status: 'ok',
       org_id: orgId,
       count: customers.length,
       customers,
-      // 'live'        — members were fetched from vFarm
-      // 'unavailable' — the fetch failed; `customers` is NOT a statement about
-      //                how many users the org has, and the caller must not
-      //                present it as authoritative.
       vfarm_source: sourceError ? 'unavailable' : 'live',
       source_error: sourceError,
     });
   } catch (err: any) {
     Logger.error(`Admin GET vfarm/customers error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/users/:userId/farm-grants
+ * Returns live authoritative farm grants for a specific vFarm user.
+ */
+adminRouter.get('/vfarm/users/:userId/farm-grants', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const client = adapter.getLiveClient();
+    if (!client) {
+      res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client not configured' });
+      return;
+    }
+
+    const { userId } = req.params;
+    if (!userId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'userId is required' });
+      return;
+    }
+
+    const jwt = await adapter.ensureAdminToken();
+    const grants = await client.getUserFarmGrants(userId, jwt || undefined);
+    res.status(200).json({
+      status: 'ok',
+      user_id: userId,
+      count: grants.length,
+      grants,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET vfarm/users/:userId/farm-grants error: ${err.message}`);
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });
