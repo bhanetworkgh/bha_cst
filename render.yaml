@@ -31,7 +31,7 @@ services:
     region: oregon
 
     # ── Build ─────────────────────────────────────────────────────────────────
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
 
     # ── Database Migrations & Start ───────────────────────────────────────────
     # On free tier, preDeployCommand is not supported by Render, so database
