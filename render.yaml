@@ -33,13 +33,9 @@ services:
     # ── Build ─────────────────────────────────────────────────────────────────
     buildCommand: npm ci && npm run build
 
-    # ── Database Migrations ───────────────────────────────────────────────────
-    # preDeployCommand runs BEFORE Render switches traffic to the new instance
-    # (available on paid plans: starter and above).
-    preDeployCommand: node scripts/migrate.js
-
-    # On free plan: preDeployCommand is ignored, so migrations run during startup.
-    # When upgrading to paid plans with preDeployCommand, change to 'npm start'.
+    # ── Database Migrations & Start ───────────────────────────────────────────
+    # On free tier, preDeployCommand is not supported by Render, so database
+    # migrations run right before the server starts in startCommand.
     startCommand: node scripts/migrate.js && npm start
 
     # ── Health Check ─────────────────────────────────────────────────────────
