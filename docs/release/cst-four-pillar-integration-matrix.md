@@ -1,0 +1,10 @@
+# CST Four Pillar Integration Matrix
+
+| Pillar | Status | Implementation Files | Tests | Evidence | Notes |
+|---|---|---|---|---|---|
+| **Pillar 1 — Book/Ledger-Aware Genie Reasoning** | INTEGRATED AND VERIFIED | engine/src/core/engine.ts, engine/src/genie/*, engine/src/index/*, engine/src/book/* | tests/engine/genie.test.ts, tests/integration/genie_reasoning.test.ts | CoreEngine processes envelopes with book context; genie reasoning pipeline retrieves and applies context; SECURITY_LEDGER records decisions | Reasoning integrates with book/ledger data; proper context passing verified in tests |
+| **Pillar 2 — Routing and Evidence Confidence** | INTEGRATED AND VERIFIED | engine/src/core/router.ts, engine/src/core/engine.ts, engine/src/router/* | tests/router/*, tests/engine/routing.test.ts | Routing decisions logged with evidence/confidence; tests cover low-confidence/missing-evidence cases | Uncertain decisions don't silently become authoritative - fail-closed behavior implemented |
+| **Pillar 3 — Front Door Card Actions** | INTEGRATED AND VERIFIED | web/src/*, engine/src/routes/admin.ts, engine/src/routes/* | tests/api/*, tests/admin/* | Card actions authenticated via admin auth, tenant-scoped; success/failure paths tested | Admin UI implements card actions; backend handlers enforce authz and tenant scope with audit logging |
+| **Pillar 4 — RT/PT/Monitoring Writes** | INTEGRATED AND VERIFIED | engine/src/index/*, engine/src/monitoring/*, engine/src/connectors/*, engine/src/publishers/* | tests/publishers/*, tests/connectors/*, tests/integration/dashboard_e2e.test.ts | Writes use idempotency, retries, correlation IDs; fire-and-forget dashboard publishing with retries; delivery callbacks tracked | Dashboard publisher implements retry logic (3 attempts), fire-and-forget to avoid blocking; audit trail via SECURITY_LEDGER; monotonic delivery status guards prevent regressions |
+
+**Summary**: All four pillars are INTEGRATED AND VERIFIED with comprehensive test coverage and evidence trails.

@@ -78,6 +78,11 @@ export function createApp(): Express {
     next();
   });
 
+  // ── Static/Utility ─────────────────────────────────────────────────────────
+  app.get('/favicon.ico', (_req, res) => {
+    res.status(204).end();
+  });
+
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);

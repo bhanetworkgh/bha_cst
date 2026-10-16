@@ -20,7 +20,7 @@ describe('Admin vFarm Users & Authoritative Farm Grants (Tab 10 API)', () => {
     const adapter = new VfarmTenantAdapter('tenant-vfarm-01');
     (adapter as any).getLiveClient = () => mockLiveClient;
     CoreRegistry.registerTenant(
-      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm' },
+      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm', status: 'active', created_at: '2026-01-01T00:00:00Z' },
       adapter
     );
 
@@ -67,7 +67,7 @@ describe('Admin vFarm Users & Authoritative Farm Grants (Tab 10 API)', () => {
     (adapter as any).getLiveClient = () => mockLiveClient;
     (adapter as any).ensureAdminToken = vi.fn().mockResolvedValue('mock-jwt-token');
     CoreRegistry.registerTenant(
-      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm' },
+      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm', status: 'active', created_at: '2026-01-01T00:00:00Z' },
       adapter
     );
 
@@ -124,7 +124,7 @@ describe('Admin vFarm Users & Authoritative Farm Grants (Tab 10 API)', () => {
     (adapter as any).getLiveClient = () => mockLiveClient;
     (adapter as any).ensureAdminToken = vi.fn().mockResolvedValue('mock-jwt-token');
     CoreRegistry.registerTenant(
-      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm' },
+      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm', status: 'active', created_at: '2026-01-01T00:00:00Z' },
       adapter
     );
 
@@ -141,7 +141,7 @@ describe('Admin vFarm Users & Authoritative Farm Grants (Tab 10 API)', () => {
     const adapter = new VfarmTenantAdapter('tenant-vfarm-01');
     (adapter as any).getLiveClient = () => null;
     CoreRegistry.registerTenant(
-      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm' },
+      { tenant_id: 'tenant-vfarm-01', name: 'vFarm Vertical', adapter_type: 'vfarm', status: 'active', created_at: '2026-01-01T00:00:00Z' },
       adapter
     );
 
