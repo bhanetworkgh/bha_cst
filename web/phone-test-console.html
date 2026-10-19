@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CST · Phone Number Tester</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0d14;
+      --surface:   #111520;
+      --surface2:  #181d2e;
+      --border:    #232840;
+      --accent:    #6c7ef8;
+      --accent2:   #4adeaa;
+      --danger:    #f85c5c;
+      --warn:      #f8b24a;
+      --text:      #e2e6f0;
+      --muted:     #7a809a;
+      --success:   #4adeaa;
+      --radius:    10px;
+      --mono:      'JetBrains Mono', monospace;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      background: linear-gradient(135deg, #0e1627 0%, #131c36 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 700; color: #fff;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    header .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .status-chip {
+      margin-left: auto;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      background: rgba(248,92,92,.15);
+      color: var(--danger);
+      border: 1px solid rgba(248,92,92,.3);
+      transition: all .3s;
+    }
+    .status-chip.ok {
+      background: rgba(74,222,170,.12);
+      color: var(--success);
+      border-color: rgba(74,222,170,.3);
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      padding: 32px;
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 24px;
+      max-width: 1300px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; padding: 16px; }
+    }
+
+    /* ── Cards ───────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 14px 20px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-header .icon { font-size: 14px; }
+    .card-body { padding: 20px; }
+
+    /* ── Forms ───────────────────────────────────────────────────────────── */
+    .form-group { margin-bottom: 14px; }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input[type="text"], input[type="password"], input[type="url"], input[type="tel"], select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      padding: 9px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    select option { background: var(--bg); }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 18px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all .2s;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #7d8ef9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(108,126,248,.35); }
+    .btn-success {
+      background: var(--success);
+      color: #0a0d14;
+    }
+    .btn-success:hover { background: #60e8b8; transform: translateY(-1px); }
+    .btn-danger {
+      background: rgba(248,92,92,.15);
+      color: var(--danger);
+      border: 1px solid rgba(248,92,92,.3);
+    }
+    .btn-danger:hover { background: rgba(248,92,92,.25); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; transform: none !important; }
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+
+    /* ── Log / Response ──────────────────────────────────────────────────── */
+    .log-area {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.6;
+      max-height: 320px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-ok   { color: var(--success); }
+    .log-err  { color: var(--danger); }
+    .log-warn { color: var(--warn); }
+    .log-dim  { color: var(--muted); }
+
+    /* ── Table ───────────────────────────────────────────────────────────── */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .data-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+    }
+    .data-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(35,40,64,.5);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table tr:hover td { background: rgba(108,126,248,.05); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-green { background: rgba(74,222,170,.15); color: var(--success); }
+    .badge-blue  { background: rgba(108,126,248,.15); color: var(--accent); }
+    .badge-red   { background: rgba(248,92,92,.15); color: var(--danger); }
+    .badge-warn  { background: rgba(248,178,74,.15); color: var(--warn); }
+
+    /* ── Tabs ────────────────────────────────────────────────────────────── */
+    .tab-nav {
+      display: flex;
+      gap: 4px;
+      padding: 14px 20px 0;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      padding: 8px 16px;
+      border-radius: 7px 7px 0 0;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-family: inherit;
+      transition: all .2s;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      background: rgba(108,126,248,.08);
+    }
+    .tab-btn:hover:not(.active) { color: var(--text); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* ── Step indicator ──────────────────────────────────────────────────── */
+    .steps {
+      display: flex;
+      gap: 0;
+      margin-bottom: 20px;
+      border-radius: 7px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .step {
+      flex: 1;
+      padding: 8px 12px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--bg);
+      border-right: 1px solid var(--border);
+      transition: all .3s;
+    }
+    .step:last-child { border-right: none; }
+    .step.done { background: rgba(74,222,170,.1); color: var(--success); }
+    .step.active { background: rgba(108,126,248,.12); color: var(--accent); }
+
+    /* ── Divider ─────────────────────────────────────────────────────────── */
+    .divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+    /* ── Inline copy button ──────────────────────────────────────────────── */
+    .code-inline {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 2px 7px;
+      color: var(--accent2);
+    }
+
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+    .pill {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all .2s;
+      font-family: var(--mono);
+    }
+    .pill:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Toast ───────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      padding: 12px 20px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity .3s;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    #toast.show { opacity: 1; }
+    #toast.ok   { background: rgba(74,222,170,.2); border: 1px solid var(--success); color: var(--success); }
+    #toast.err  { background: rgba(248,92,92,.2); border: 1px solid var(--danger);  color: var(--danger); }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .help-text {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">📞</div>
+  <div>
+    <h1>CST Phone Number Tester</h1>
+    <div class="subtitle">Register &amp; test your number against the live CST engine</div>
+  </div>
+  <div class="status-chip" id="session-chip">● Not logged in</div>
+</header>
+
+<main>
+  <!-- ── Left column: Config + Auth ─────────────────────────────────────── -->
+  <div style="display:flex;flex-direction:column;gap:20px;">
+
+    <!-- Server Config -->
+    <div class="card">
+      <div class="card-header"><span class="icon">⚙️</span> Server</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="server-url">Production URL</label>
+          <input type="url" id="server-url" value="https://bha-cst-7u9e.onrender.com" />
+        </div>
+        <div class="pill-row">
+          <span class="pill" onclick="$('server-url').value='https://bha-cst-7u9e.onrender.com'">Production</span>
+          <span class="pill" onclick="$('server-url').value='http://localhost:3000'">Localhost</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Login -->
+    <div class="card">
+      <div class="card-header"><span class="icon">🔐</span> Admin Login</div>
+      <div class="card-body">
+        <div class="form-group">
+          <label for="login-email">Email</label>
+          <input type="text" id="login-email" placeholder="admin@example.com" />
+        </div>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" placeholder="••••••••" />
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-login" onclick="doLogin()">🔑 Login</button>
+          <button class="btn btn-ghost" id="btn-logout" onclick="doLogout()" disabled>Logout</button>
+        </div>
+        <div class="log-area" id="login-log" style="margin-top:12px;max-height:100px;">Waiting for login…</div>
+      </div>
+    </div>
+
+    <!-- Quick API Tester -->
+    <div class="card">
+      <div class="card-header"><span class="icon">🔭</span> Quick Inspect</div>
+      <div class="card-body">
+        <div class="btn-row" style="margin-top:0;flex-direction:column;gap:8px;">
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start" onclick="quickFetch('/api/v1/admin/projects')">📂 List Projects</button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start" onclick="quickFetch('/api/v1/admin/numbers/bindings')">📟 List Bindings</button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start" onclick="quickFetch('/api/v1/admin/speakers?tenant_id=tenant-vfarm-01')">👥 List Speakers</button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start" onclick="quickFetch('/api/v1/admin/tenants')">🏢 List Tenants</button>
+          <button class="btn btn-ghost" style="width:100%;justify-content:flex-start" onclick="quickFetch('/api/v1/health')">💓 Health</button>
+        </div>
+        <div class="log-area" id="inspect-log" style="margin-top:12px;max-height:200px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Right column: Tabs ────────────────────────────────────────────── -->
+  <div class="card" style="align-self:start;">
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="register" onclick="switchTab('register',this)">1 · Register My Number</button>
+      <button class="tab-btn" data-tab="bind" onclick="switchTab('bind',this)">2 · Bind DID</button>
+      <button class="tab-btn" data-tab="current" onclick="switchTab('current',this)">3 · Current State</button>
+      <button class="tab-btn" data-tab="apidocs" onclick="switchTab('apidocs',this)">4 · API Docs</button>
+    </div>
+
+    <!-- ── Tab 1: Register Speaker ────────────────────────────────────── -->
+    <div class="tab-pane active" id="pane-register">
+      <div class="card-body">
+        <div class="steps">
+          <div class="step" id="step1" >Step 1: Login</div>
+          <div class="step" id="step2">Step 2: Fill Form</div>
+          <div class="step" id="step3">Step 3: Submit</div>
+          <div class="step" id="step4">Step 4: Call In!</div>
+        </div>
+
+        <p style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6;">
+          Register your personal phone number as an authorized speaker so CST recognises you when you call.
+        </p>
+
+        <div class="form-group">
+          <label for="reg-phone">Your Phone Number (E.164)</label>
+          <input type="tel" id="reg-phone" placeholder="+15551234567" />
+          <div class="help-text">Must start with + and country code. E.g. <span class="code-inline">+12025551234</span></div>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-ref">Person ID / Reference</label>
+          <input type="text" id="reg-ref" placeholder="jason-bays-test" />
+          <div class="help-text">Unique identifier for you — any slug works, e.g. your name.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-tenant">Tenant</label>
+          <select id="reg-tenant" onchange="populateProjectDropdown()">
+            <option value="tenant-vfarm-01">tenant-vfarm-01 (vFarm)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-project">Project</label>
+          <select id="reg-project">
+            <option value="proj-vfarm-main">proj-vfarm-main (Main)</option>
+            <option value="proj-vfarm-dallas">proj-vfarm-dallas (Dallas)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-role">Role</label>
+          <select id="reg-role">
+            <option value="owner">owner</option>
+            <option value="manager">manager</option>
+            <option value="tech">tech</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-farms">Farm IDs (comma-separated, optional)</label>
+          <input type="text" id="reg-farms" placeholder="farm-001, farm-002" />
+          <div class="help-text">Leave blank if you don't have specific farm access restrictions.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="reg-ttl">Cache TTL (hours)</label>
+          <input type="text" id="reg-ttl" value="48" />
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-success" id="btn-register" onclick="doRegisterSpeaker()">✅ Register My Number</button>
+          <button class="btn btn-ghost" onclick="doCheckSpeaker()">🔍 Check if registered</button>
+        </div>
+
+        <div class="log-area" id="register-log" style="margin-top:16px;">Fill in the form above and click Register.</div>
+      </div>
+    </div>
+
+    <!-- ── Tab 2: Bind DID ────────────────────────────────────────────── -->
+    <div class="tab-pane" id="pane-bind">
+      <div class="card-body">
+        <p style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6;">
+          Bind a Twilio service number (the number callers <em>dial</em>) to a tenant + project so CST routes the call correctly.
+          This is separate from registering the <em>caller's</em> number.
+        </p>
+
+        <div class="form-group">
+          <label for="bind-phone">Service Number (Twilio DID, E.164)</label>
+          <input type="tel" id="bind-phone" placeholder="+19715885826" />
+        </div>
+
+        <div class="pill-row" style="margin-bottom:8px;">
+          <span class="pill" onclick="$('bind-phone').value='+19715885826'">+19715885826 (vFarm Main)</span>
+          <span class="pill" onclick="$('bind-phone').value='+19715885824'">+19715885824 (vFarm Dallas)</span>
+        </div>
+
+        <div class="form-group">
+          <label for="bind-tenant">Tenant</label>
+          <select id="bind-tenant">
+            <option value="tenant-vfarm-01">tenant-vfarm-01 (vFarm)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="bind-project">Project</label>
+          <select id="bind-project">
+            <option value="proj-vfarm-main">proj-vfarm-main (Main)</option>
+            <option value="proj-vfarm-dallas">proj-vfarm-dallas (Dallas)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="bind-capability">Capability</label>
+          <select id="bind-capability">
+            <option value="voice">voice</option>
+            <option value="sms">sms</option>
+          </select>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="doBindNumber()">🔗 Bind Number</button>
+          <button class="btn btn-danger" onclick="doUnbindNumber()">✂️ Unbind</button>
+          <button class="btn btn-ghost" onclick="refreshBindings()">↻ Refresh List</button>
+        </div>
+
+        <div class="log-area" id="bind-log" style="margin-top:16px;">Bind response will appear here.</div>
+
+        <hr class="divider" />
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:10px;">Current Bindings</div>
+        <div id="bindings-table-container">
+          <div class="empty-state">Click ↻ Refresh List above</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab 3: Current State ───────────────────────────────────────── -->
+    <div class="tab-pane" id="pane-current">
+      <div class="card-body">
+        <div class="btn-row" style="margin-top:0;margin-bottom:16px;">
+          <button class="btn btn-primary" onclick="loadCurrentState()">↻ Refresh All State</button>
+        </div>
+
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px;">Registered Speakers</div>
+        <div id="speakers-table-container">
+          <div class="empty-state">Click Refresh All State</div>
+        </div>
+
+        <hr class="divider" />
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px;">Service Number Bindings</div>
+        <div id="bindings-table2-container">
+          <div class="empty-state">Click Refresh All State</div>
+        </div>
+
+        <hr class="divider" />
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px;">Projects</div>
+        <div id="projects-table-container">
+          <div class="empty-state">Click Refresh All State</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab 4: API Docs ───────────────────────────────────────────── -->
+    <div class="tab-pane" id="pane-apidocs">
+      <div class="card-body" style="font-size:13px;line-height:1.7;">
+
+        <p style="color:var(--muted);margin-bottom:20px;">All API endpoints are under <span class="code-inline">/api/v1/admin</span> and require a session cookie from <span class="code-inline">POST /api/v1/auth/login</span>.</p>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">Register a Speaker (Your Number)</div>
+          <div class="log-area" style="max-height:none;">POST /api/v1/admin/speakers
+
+Body (JSON):
+{
+  "phone_e164":   "+15551234567",   // your number in E.164
+  "customer_ref": "your-name-id",  // unique ID for you
+  "tenant_id":    "tenant-vfarm-01",
+  "project_id":   "proj-vfarm-main",
+  "role":         "owner",          // owner | manager | tech
+  "farm_ids":     [],               // optional farm scoping
+  "ttl_hours":    48                // cache TTL
+}
+
+Response 201:
+{ "status": "created", "speaker": { ... } }</div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">List Speakers</div>
+          <div class="log-area" style="max-height:none;">GET /api/v1/admin/speakers?tenant_id=tenant-vfarm-01&project_id=proj-vfarm-main
+
+Response 200:
+{ "speakers": [...], "count": N }</div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">Bind a Service Number (DID → Project)</div>
+          <div class="log-area" style="max-height:none;">POST /api/v1/admin/numbers/bind
+
+Body (JSON):
+{
+  "phone_e164":  "+19715885826",   // the Twilio number callers dial
+  "tenant_id":   "tenant-vfarm-01",
+  "project_id":  "proj-vfarm-main",
+  "capability":  "voice"           // voice | sms
+}
+
+Response 201:
+{ "status": "bound", "binding": { ... } }</div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">View All Bindings</div>
+          <div class="log-area" style="max-height:none;">GET /api/v1/admin/numbers/bindings
+
+Response 200:
+{ "bindings": [...], "count": N }</div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">Login (get session cookie)</div>
+          <div class="log-area" style="max-height:none;">POST /api/v1/auth/login
+
+Body (JSON):
+{ "email": "you@example.com", "password": "yourpassword" }
+
+Response 200:
+{ "status": "ok", "token": "..." }
+→ Sets Set-Cookie: cst_session=...
+→ Include this cookie on all subsequent /admin/* requests</div>
+        </div>
+
+        <div style="margin-bottom:20px;">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--accent);margin-bottom:8px;">cURL Examples</div>
+          <div class="log-area" style="max-height:none;"># 1. Login and save cookies
+curl -c cookies.txt -X POST \
+  https://bha-cst-7u9e.onrender.com/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"yourpass"}'
+
+# 2. Register your number as a speaker
+curl -b cookies.txt -X POST \
+  https://bha-cst-7u9e.onrender.com/api/v1/admin/speakers \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "phone_e164":"+15551234567",
+    "customer_ref":"my-test-id",
+    "tenant_id":"tenant-vfarm-01",
+    "project_id":"proj-vfarm-main",
+    "role":"owner",
+    "farm_ids":[],
+    "ttl_hours":48
+  }'
+
+# 3. Check current bindings
+curl -b cookies.txt \
+  https://bha-cst-7u9e.onrender.com/api/v1/admin/numbers/bindings
+
+# 4. Bind a DID to a project (if not already bound)
+curl -b cookies.txt -X POST \
+  https://bha-cst-7u9e.onrender.com/api/v1/admin/numbers/bind \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "phone_e164":"+19715885826",
+    "tenant_id":"tenant-vfarm-01",
+    "project_id":"proj-vfarm-main",
+    "capability":"voice"
+  }'</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let sessionToken = null;
+
+  function $( id) { return document.getElementById(id); }
+  function serverUrl() { return $('server-url').value.replace(/\/+$/, ''); }
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  function toast(msg, type = 'ok') {
+    const el = $('toast');
+    el.textContent = msg;
+    el.className = `show ${type}`;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.className = ''; }, 3500);
+  }
+
+  // ── Log helpers ────────────────────────────────────────────────────────────
+  function log(targetId, msg, cls = '') {
+    const el = $(targetId);
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+  function clearLog(id) { $(id).innerHTML = ''; }
+  function logJson(id, data, cls) {
+    log(id, JSON.stringify(data, null, 2), cls);
+  }
+
+  // ── Fetch wrapper ─────────────────────────────────────────────────────────
+  async function api(method, path, body) {
+    const opts = {
+      method,
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    if (sessionToken) opts.headers['Authorization'] = `Bearer ${sessionToken}`;
+    const r = await fetch(serverUrl() + path, opts);
+    let data;
+    try { data = await r.json(); } catch { data = { raw: await r.text() }; }
+    return { ok: r.ok, status: r.status, data };
+  }
+
+  // ── Login / Logout ─────────────────────────────────────────────────────────
+  async function doLogin() {
+    clearLog('login-log');
+    log('login-log', `→ POST ${serverUrl()}/api/v1/auth/login`, 'log-dim');
+    const email    = $('login-email').value.trim();
+    const password = $('login-password').value;
+    if (!email || !password) { log('login-log', '✗ Enter email and password', 'log-err'); return; }
+    try {
+      const { ok, status, data } = await api('POST', '/api/v1/auth/login', { email, password });
+      logJson('login-log', data, ok ? 'log-ok' : 'log-err');
+      if (ok) {
+        sessionToken = data.token || null;
+        $('session-chip').textContent = `● ${email}`;
+        $('session-chip').className = 'status-chip ok';
+        $('btn-logout').disabled = false;
+        $('btn-login').disabled = true;
+        updateSteps(1);
+        toast('Logged in ✓');
+      } else {
+        log('login-log', `HTTP ${status}`, 'log-err');
+        toast(`Login failed: ${data.message || status}`, 'err');
+      }
+    } catch(e) {
+      log('login-log', `✗ ${e.message}`, 'log-err');
+      toast(e.message, 'err');
+    }
+  }
+
+  function doLogout() {
+    sessionToken = null;
+    $('session-chip').textContent = '● Not logged in';
+    $('session-chip').className = 'status-chip';
+    $('btn-logout').disabled = true;
+    $('btn-login').disabled = false;
+    clearLog('login-log');
+    log('login-log', 'Logged out.', 'log-dim');
+    updateSteps(0);
+    toast('Logged out');
+  }
+
+  // ── Tab switcher ──────────────────────────────────────────────────────────
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    $('pane-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  // ── Step indicator ────────────────────────────────────────────────────────
+  function updateSteps(completedStep) {
+    for (let i = 1; i <= 4; i++) {
+      const el = $(`step${i}`);
+      if (!el) continue;
+      el.className = 'step' + (i < completedStep + 1 ? ' done' : i === completedStep + 1 ? ' active' : '');
+    }
+  }
+
+  // ── Quick inspect ─────────────────────────────────────────────────────────
+  async function quickFetch(path) {
+    clearLog('inspect-log');
+    log('inspect-log', `→ GET ${serverUrl()}${path}`, 'log-dim');
+    try {
+      const { ok, status, data } = await api('GET', path);
+      logJson('inspect-log', data, ok ? 'log-ok' : 'log-err');
+      if (!ok) log('inspect-log', `HTTP ${status}`, 'log-err');
+    } catch(e) {
+      log('inspect-log', `✗ ${e.message}`, 'log-err');
+    }
+  }
+
+  // ── Register Speaker ──────────────────────────────────────────────────────
+  async function doRegisterSpeaker() {
+    clearLog('register-log');
+    const phone      = $('reg-phone').value.trim();
+    const ref        = $('reg-ref').value.trim();
+    const tenant_id  = $('reg-tenant').value;
+    const project_id = $('reg-project').value;
+    const role       = $('reg-role').value;
+    const farmsRaw   = $('reg-farms').value.trim();
+    const farm_ids   = farmsRaw ? farmsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const ttl_hours  = parseInt($('reg-ttl').value) || 48;
+
+    if (!phone.startsWith('+') || phone.length < 8) {
+      log('register-log', '✗ Phone must be in E.164 format: +[country][number]', 'log-err');
+      toast('Invalid phone format', 'err');
+      return;
+    }
+    if (!ref) {
+      log('register-log', '✗ Person ID / Reference is required', 'log-err');
+      return;
+    }
+
+    log('register-log', `→ POST /api/v1/admin/speakers`, 'log-dim');
+    const payload = { phone_e164: phone, customer_ref: ref, tenant_id, project_id, role, farm_ids, ttl_hours };
+    logJson('register-log', payload, 'log-dim');
+
+    try {
+      const { ok, status, data } = await api('POST', '/api/v1/admin/speakers', payload);
+      logJson('register-log', data, ok ? 'log-ok' : 'log-err');
+      if (ok) {
+        updateSteps(3);
+        toast(`✅ ${phone} registered as speaker!`);
+        log('register-log', '', '');
+        log('register-log', '✓ Now call the Twilio number linked to this project to test!', 'log-ok');
+      } else {
+        log('register-log', `HTTP ${status}: ${data.message || ''}`, 'log-err');
+        toast(`Registration failed: ${data.message || status}`, 'err');
+      }
+    } catch(e) {
+      log('register-log', `✗ ${e.message}`, 'log-err');
+      toast(e.message, 'err');
+    }
+  }
+
+  async function doCheckSpeaker() {
+    clearLog('register-log');
+    const phone      = $('reg-phone').value.trim();
+    const tenant_id  = $('reg-tenant').value;
+    const project_id = $('reg-project').value;
+    if (!phone) { log('register-log', '✗ Enter a phone number first', 'log-err'); return; }
+    const path = `/api/v1/admin/speakers?tenant_id=${encodeURIComponent(tenant_id)}&project_id=${encodeURIComponent(project_id)}`;
+    log('register-log', `→ GET ${path}`, 'log-dim');
+    try {
+      const { ok, data } = await api('GET', path);
+      if (ok && data.speakers) {
+        const found = data.speakers.find(s => s.phone_e164 === phone);
+        if (found) {
+          logJson('register-log', found, 'log-ok');
+          log('register-log', '✓ Number IS registered', 'log-ok');
+          toast('Number is already registered ✓');
+        } else {
+          log('register-log', `✗ ${phone} is NOT in the speaker directory for ${project_id}`, 'log-err');
+          toast('Number not registered yet', 'err');
+        }
+      } else {
+        logJson('register-log', data, 'log-err');
+      }
+    } catch(e) {
+      log('register-log', `✗ ${e.message}`, 'log-err');
+    }
+  }
+
+  // ── Bind / Unbind Numbers ─────────────────────────────────────────────────
+  async function doBindNumber() {
+    clearLog('bind-log');
+    const payload = {
+      phone_e164:  $('bind-phone').value.trim(),
+      tenant_id:   $('bind-tenant').value,
+      project_id:  $('bind-project').value,
+      capability:  $('bind-capability').value,
+    };
+    log('bind-log', `→ POST /api/v1/admin/numbers/bind`, 'log-dim');
+    logJson('bind-log', payload, 'log-dim');
+    try {
+      const { ok, status, data } = await api('POST', '/api/v1/admin/numbers/bind', payload);
+      logJson('bind-log', data, ok ? 'log-ok' : 'log-err');
+      if (!ok) log('bind-log', `HTTP ${status}`, 'log-err');
+      else { toast('✅ Number bound!'); refreshBindings(); }
+    } catch(e) {
+      log('bind-log', `✗ ${e.message}`, 'log-err');
+    }
+  }
+
+  async function doUnbindNumber() {
+    clearLog('bind-log');
+    const phone = $('bind-phone').value.trim();
+    if (!phone) { log('bind-log', '✗ Enter a phone number to unbind', 'log-err'); return; }
+    log('bind-log', `→ DELETE /api/v1/admin/numbers/unbind`, 'log-dim');
+    try {
+      const { ok, status, data } = await api('DELETE', '/api/v1/admin/numbers/unbind', { phone_e164: phone });
+      logJson('bind-log', data, ok ? 'log-ok' : 'log-err');
+      if (!ok) log('bind-log', `HTTP ${status}`, 'log-err');
+      else { toast('Number unbound'); refreshBindings(); }
+    } catch(e) {
+      log('bind-log', `✗ ${e.message}`, 'log-err');
+    }
+  }
+
+  async function refreshBindings() {
+    try {
+      const { ok, data } = await api('GET', '/api/v1/admin/numbers/bindings');
+      if (ok) {
+        renderBindingsTable('bindings-table-container', data.bindings || []);
+        renderBindingsTable('bindings-table2-container', data.bindings || []);
+      }
+    } catch(e) { /* silent */ }
+  }
+
+  function renderBindingsTable(containerId, bindings) {
+    const c = $(containerId);
+    if (!bindings.length) {
+      c.innerHTML = '<div class="empty-state">No bindings found</div>';
+      return;
+    }
+    c.innerHTML = `<table class="data-table">
+      <thead><tr>
+        <th>Phone (DID)</th><th>Tenant</th><th>Project</th><th>Capability</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+        ${bindings.map(b => `<tr>
+          <td>${b.phone_e164}</td>
+          <td>${b.tenant_id}</td>
+          <td>${b.project_id}</td>
+          <td><span class="badge badge-blue">${b.capability}</span></td>
+          <td><span class="badge ${b.status === 'bound' ? 'badge-green' : 'badge-warn'}">${b.status}</span></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // ── Current State (Tab 3) ─────────────────────────────────────────────────
+  async function loadCurrentState() {
+    // Speakers
+    try {
+      const { ok, data } = await api('GET', '/api/v1/admin/speakers?tenant_id=tenant-vfarm-01');
+      const c = $('speakers-table-container');
+      if (ok && data.speakers?.length) {
+        c.innerHTML = `<table class="data-table">
+          <thead><tr><th>Phone</th><th>Person ID</th><th>Project</th><th>Role</th><th>Farms</th><th>Cache Expires</th></tr></thead>
+          <tbody>${data.speakers.map(s => `<tr>
+            <td>${s.phone_e164}</td>
+            <td>${s.customer_ref || s.person_id || '—'}</td>
+            <td>${s.project_id}</td>
+            <td><span class="badge badge-blue">${s.role || 'owner'}</span></td>
+            <td>${(s.farm_ids || []).join(', ') || '—'}</td>
+            <td style="font-size:11px;">${s.speaker_cache_expires_at ? new Date(s.speaker_cache_expires_at).toLocaleString() : '—'}</td>
+          </tr>`).join('')}</tbody>
+        </table>`;
+      } else {
+        c.innerHTML = '<div class="empty-state">No speakers found — register your number first</div>';
+      }
+    } catch(e) { $('speakers-table-container').innerHTML = `<div class="empty-state">${e.message}</div>`; }
+
+    // Bindings
+    await refreshBindings();
+
+    // Projects
+    try {
+      const { ok, data } = await api('GET', '/api/v1/admin/projects');
+      const c = $('projects-table-container');
+      const projects = data.projects || data || [];
+      if (ok && projects.length) {
+        c.innerHTML = `<table class="data-table">
+          <thead><tr><th>Project ID</th><th>Tenant</th><th>Policy</th><th>Voice</th><th>Capabilities</th></tr></thead>
+          <tbody>${projects.map(p => `<tr>
+            <td>${p.project_id}</td>
+            <td>${p.tenant_id}</td>
+            <td><span class="badge badge-blue">${p.speaker_policy || '—'}</span></td>
+            <td><span class="badge ${p.voice_enabled ? 'badge-green' : 'badge-red'}">${p.voice_enabled ? 'enabled' : 'disabled'}</span></td>
+            <td>${(p.capabilities || []).join(', ') || '—'}</td>
+          </tr>`).join('')}</tbody>
+        </table>`;
+      } else {
+        c.innerHTML = '<div class="empty-state">No projects returned</div>';
+      }
+    } catch(e) { $('projects-table-container').innerHTML = `<div class="empty-state">${e.message}</div>`; }
+
+    toast('State refreshed ✓');
+  }
+
+  function populateProjectDropdown() {
+    // Future: load from API dynamically
+  }
+
+  // Init
+  updateSteps(0);
+  $('btn-login').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  $('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+</script>
+</body>
+</html>

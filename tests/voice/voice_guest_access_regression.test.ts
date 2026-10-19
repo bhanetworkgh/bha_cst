@@ -353,9 +353,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
         .type('form')
         .send(payload);
 
-      expect(res.status).toBe(403);
-      expect(res.body.status).toBe('refused');
-      expect(res.body.reason).toContain('not linked to any active farm resources');
+      expect(res.status).toBe(200);
+      expect(res.body.text || res.body.reply || '').toContain("can't access farm or equipment data without a linked account");
     });
 
     it('refuses guest caller attempting equipment control operations', async () => {
@@ -513,6 +512,146 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
 
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('TENANT_SCOPE_VIOLATION');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 8. Admin Elevation / Role Assignment Regression
+  //    Verifies that no caller is automatically assigned admin/owner privileges
+  //    by phone number, test configuration, or any other implicit mechanism.
+  // ─────────────────────────────────────────────────────────────────────────────
+  describe('8. No-admin-elevation regression (R-ID-NOADMIN)', () => {
+    it('does not assign admin/owner role to caller by phone number alone', async () => {
+      // Any phone number that is NOT pre-registered must resolve as unknown guest.
+      const result = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000001',  // not registered
+        to_e164: '+19715885826',
+        speech_text: 'Hello there',
+        correlation_id: 'NOADMIN_001',
+      });
+      // Synthesized (guest general conversation allowed)
+      expect(result.status).toBe('synthesized');
+      // Must not carry an elevated role
+      expect((result as any).role).toBeUndefined();
+    });
+
+    it('registered normal user retains only their actual user-level permissions', async () => {
+      // Register a speaker with role 'tech' (not owner/admin)
+      const vfarmAdapter = CoreRegistry.getAdapter('tenant-vfarm-01') as any;
+      vfarmAdapter.registerSpeaker('proj-vfarm-main', {
+        person_id: 'person_tech_001',
+        phone_e164: '+15550000002',
+        role: 'tech',
+        farm_ids: ['farm_austin_main'],
+      });
+      CoreRegistry.invalidateSpeakerCache('tenant-vfarm-01', 'proj-vfarm-main', '+15550000002');
+
+      // Tech asking for farm status is allowed (they have farm_ids)
+      const result = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000002',
+        to_e164: '+19715885826',
+        speech_text: 'What is the status of my farm?',
+        correlation_id: 'NOADMIN_002',
+      });
+
+      // Tech can get status — expect synthesized
+      expect(result.status).toBe('synthesized');
+
+      // Tech role is denied equipment control (write:control)
+      const controlResult = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000002',
+        to_e164: '+19715885826',
+        speech_text: 'Turn off the irrigation pump',
+        correlation_id: 'NOADMIN_003',
+      });
+      // Tech attempting control: should be refused
+      expect(controlResult.status).toBe('refused');
+    });
+
+    it('unknown caller remains a restricted guest and is never silently promoted', async () => {
+      const result = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000099',  // never registered
+        to_e164: '+19715885826',
+        speech_text: 'hello',
+        correlation_id: 'NOADMIN_004',
+      });
+
+      // General greeting must be synthesized (guests can have support conversation)
+      expect(result.status).toBe('synthesized');
+      // No role field on the result object
+      expect((result as any).role).toBeUndefined();
+    });
+
+    it('guest can have a general-support conversation without farm-resource links', async () => {
+      // A completely unknown caller asks a general FAQ question — must get a response
+      const result = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000050',
+        to_e164: '+19715885826',
+        speech_text: 'How can I contact support?',
+        correlation_id: 'NOADMIN_005',
+      });
+
+      expect(result.status).toBe('synthesized');
+      expect(result.text).toBeTruthy();
+    });
+
+    it('guest cannot retrieve protected farm data or invoke restricted operations', async () => {
+      // Guest asking for farm telemetry: must NOT receive actual farm data.
+      // Engine returns safe speakable message (status 'onboarding'), NOT real telemetry.
+      // The call is kept alive (not hung up) but farm data is withheld.
+      const farmStatusResult = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000051',
+        to_e164: '+19715885826',
+        speech_text: 'Give me the farm status',
+        correlation_id: 'NOADMIN_006_STATUS',
+      });
+
+      // Must be synthesized (safe reply spoken), NOT a real farm data response
+      expect(farmStatusResult.status).toBe('synthesized');
+      // The safe reply must not contain actual telemetry data markers
+      const replyText = (farmStatusResult.text || '').toLowerCase();
+      expect(replyText).not.toContain('temperature');
+      expect(replyText).not.toContain('telemetry');
+      expect(replyText).not.toContain('ph level');
+
+      // Guest asking to control equipment: this IS a hard refusal
+      const controlResult = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15550000051',
+        to_e164: '+19715885826',
+        speech_text: 'Turn off the irrigation pump',
+        correlation_id: 'NOADMIN_006_CONTROL',
+      });
+
+      expect(controlResult.status).toBe('refused');
+    });
+
+    it('authorization refusals produce a safe voice response and do not unnecessarily end the call', async () => {
+      // Farm-gate refusal for a guest: verify the TwiML contains <Gather> (not <Hangup/>)
+      const payload: Record<string, string> = {
+        CallSid: 'CA_NOADMIN_TWIML_001',
+        From: '+15550000060',   // unknown caller
+        To: '+19715885826',
+        SpeechResult: 'What is the status of my farm?',
+        CallStatus: 'in-progress',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice/turn')
+        .set('x-test-bypass-signature', 'true')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/xml/);
+
+      const twiml = res.text;
+      // Must contain a <Say> element with a safe reply
+      expect(twiml).toContain('<Say>');
+      // Must NOT contain <Hangup/> — call must stay alive
+      expect(twiml).not.toContain('<Hangup/>');
+      // Must contain <Gather> so the caller can continue speaking
+      expect(twiml).toContain('<Gather');
     });
   });
 });

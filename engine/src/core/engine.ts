@@ -431,11 +431,14 @@ export class CoreEngine {
         }
       }
 
-      // ── 2. UNKNOWN SPEAKER GATE (R-ID-7) (Onboarding) ─────────────────────────
-      if (!speaker.is_known) {
-        // For voice channel: if the guest caller is attempting to query private farm status/telemetry
-        if (channel === 'voice' && (detectedIntent === 'status' || detectedIntent === 'images')) {
-          const reason = 'Status/media query refused: speaker is not granted any active farm resources';
+      // ── 2. OUT-OF-SCOPE FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-5) ─────────
+      const grantedFarmIds = speaker.farm_ids || [];
+
+      if (detectedIntent === 'status' || detectedIntent === 'images') {
+        // Check if message explicitly mentions an out-of-scope farm (R-ID-5)
+        const outOfScopeFarmMention = this.detectOutOfScopeFarmMention(lowerText, grantedFarmIds);
+        if (outOfScopeFarmMention) {
+          const reason = `Out-of-scope farm mention "${outOfScopeFarmMention}" refused; granted farms are [${grantedFarmIds.join(', ')}]`;
           Logger.audit({
             timestamp: new Date().toISOString(),
             tenant_id,
@@ -450,8 +453,8 @@ export class CoreEngine {
 
           const durationMs = Date.now() - startTime;
           const res: EnvelopeResponse = {
-            reply_text: 'Your account is not linked to any active farm resources in this project. Please contact support.',
-            reply: 'Your account is not linked to any active farm resources in this project. Please contact support.',
+            reply_text: `You do not have access to queries for ${outOfScopeFarmMention}. Queries are restricted to your assigned farms: ${grantedFarmIds.join(', ')}.`,
+            reply: `You do not have access to queries for ${outOfScopeFarmMention}. Queries are restricted to your assigned farms: ${grantedFarmIds.join(', ')}.`,
             correlation_id,
             channel,
             tenant_id,
@@ -471,6 +474,59 @@ export class CoreEngine {
             durationMs,
             intent: detectedIntent,
             replyText: res.reply_text,
+            conversationId,
+            reason,
+          });
+
+          return res;
+        }
+      }
+
+      // ── 2b. UNKNOWN SPEAKER GATE (R-ID-7) (Onboarding) ─────────────────────────
+      if (!speaker.is_known) {
+        // For voice channel: guest asking for protected farm data — reply safely and allow
+        // the caller to continue the conversation (do NOT hard-refuse or hang up).
+        if (channel === 'voice' && (detectedIntent === 'status' || detectedIntent === 'images')) {
+          const reason = 'Voice guest asked for farm data: served safe reply without farm access (caller may continue)';
+          const safeReply = "I'm sorry, I can't access farm or equipment data without a linked account. Is there anything else I can help you with?";
+          Logger.audit({
+            timestamp: new Date().toISOString(),
+            tenant_id,
+            actor: speaker.customer_ref,
+            role: speaker.role,
+            entry_point: 'api',
+            tool_or_route: 'CoreEngine.processEnvelope',
+            outcome: 'ok',
+            reason,
+            correlation_id,
+          });
+
+          const durationMs = Date.now() - startTime;
+          // Use status 'onboarding' so the voice layer speaks this and keeps the
+          // call alive with a Gather, rather than treating it as an auth refusal
+          // that triggers a Hangup. The caller can continue with general questions.
+          const res: EnvelopeResponse = {
+            reply_text: safeReply,
+            reply: safeReply,
+            correlation_id,
+            channel,
+            tenant_id,
+            project_id,
+            speaker_ref,
+            conversation_id: conversationId,
+            status: 'onboarding',
+            intent: detectedIntent,
+            reason,
+            duration_ms: durationMs,
+          };
+
+          this.publishTurn({
+            envelope,
+            speaker,
+            status: 'onboarding',
+            durationMs,
+            intent: detectedIntent,
+            replyText: safeReply,
             conversationId,
             reason,
           });
@@ -528,12 +584,15 @@ export class CoreEngine {
         return res;
       }
 
-      // ── 3. FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-3, R-ID-4, R-ID-5) ─────
-      const grantedFarmIds = speaker.farm_ids || [];
-
+      // ── 3. UNLINKED FARM SCOPE AUTHORIZATION (R-ID-3, R-ID-4) ─────
       if (detectedIntent === 'status' || detectedIntent === 'images') {
         if (grantedFarmIds.length === 0) {
-          const reason = 'Status/media query refused: speaker is not granted any active farm resources';
+          const reason = 'Status/media query: speaker has no active farm resources; served safe reply (caller may continue)';
+          // Voice channel: reply safely and keep call alive. Non-voice channels
+          // (SMS, web) retain the hard refusal so they don't loop indefinitely.
+          const safeReply = channel === 'voice'
+            ? "I'm sorry, your account doesn't have any linked farm resources yet. I can still help with general questions. What would you like to know?"
+            : 'Your account is not linked to any active farm resources in this project. Please contact support.';
           Logger.audit({
             timestamp: new Date().toISOString(),
             tenant_id,
@@ -541,22 +600,25 @@ export class CoreEngine {
             role: speaker.role,
             entry_point: 'api',
             tool_or_route: 'CoreEngine.processEnvelope',
-            outcome: 'refused',
+            outcome: channel === 'voice' ? 'ok' : 'refused',
             reason,
             correlation_id,
           });
 
           const durationMs = Date.now() - startTime;
+          // For voice: use 'onboarding' so the voice layer speaks this and
+          // keeps the call alive with a Gather. For other channels: 'refused'.
+          const responseStatus = channel === 'voice' ? 'onboarding' : 'refused';
           const res: EnvelopeResponse = {
-            reply_text: 'Your account is not linked to any active farm resources in this project. Please contact support.',
-            reply: 'Your account is not linked to any active farm resources in this project. Please contact support.',
+            reply_text: safeReply,
+            reply: safeReply,
             correlation_id,
             channel,
             tenant_id,
             project_id,
             speaker_ref,
             conversation_id: conversationId,
-            status: 'refused',
+            status: responseStatus,
             intent: detectedIntent,
             reason,
             duration_ms: durationMs,
@@ -565,59 +627,10 @@ export class CoreEngine {
           this.publishTurn({
             envelope,
             speaker,
-            status: 'refused',
+            status: responseStatus,
             durationMs,
             intent: detectedIntent,
-            replyText: res.reply_text,
-            conversationId,
-            reason,
-          });
-
-          return res;
-        }
-      }
-
-      // ── 3. OUT-OF-SCOPE FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-5) ─────────
-      if (detectedIntent === 'status' || detectedIntent === 'images') {
-        // Check if message explicitly mentions an out-of-scope farm (R-ID-5)
-        const outOfScopeFarmMention = this.detectOutOfScopeFarmMention(lowerText, grantedFarmIds);
-        if (outOfScopeFarmMention) {
-          const reason = `Out-of-scope farm mention "${outOfScopeFarmMention}" refused; granted farms are [${grantedFarmIds.join(', ')}]`;
-          Logger.audit({
-            timestamp: new Date().toISOString(),
-            tenant_id,
-            actor: speaker.customer_ref,
-            role: speaker.role,
-            entry_point: 'api',
-            tool_or_route: 'CoreEngine.processEnvelope',
-            outcome: 'refused',
-            reason,
-            correlation_id,
-          });
-
-          const durationMs = Date.now() - startTime;
-          const res: EnvelopeResponse = {
-            reply_text: `You do not have access to queries for ${outOfScopeFarmMention}. Queries are restricted to your assigned farms: ${grantedFarmIds.join(', ')}.`,
-            reply: `You do not have access to queries for ${outOfScopeFarmMention}. Queries are restricted to your assigned farms: ${grantedFarmIds.join(', ')}.`,
-            correlation_id,
-            channel,
-            tenant_id,
-            project_id,
-            speaker_ref,
-            conversation_id: conversationId,
-            status: 'refused',
-            intent: detectedIntent,
-            reason,
-            duration_ms: durationMs,
-          };
-
-          this.publishTurn({
-            envelope,
-            speaker,
-            status: 'refused',
-            durationMs,
-            intent: detectedIntent,
-            replyText: res.reply_text,
+            replyText: safeReply,
             conversationId,
             reason,
           });

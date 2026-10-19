@@ -350,7 +350,10 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       expect(res2.status).toBe(200);
       expect(res2.body.status).toBe('initiated');
 
-      // But attempting a private farm query as an unauthenticated/removed caller is refused
+      // A removed speaker asking for farm status: engine serves a safe speakable
+      // reply (status 'onboarding') so the call stays alive — not a hard 403.
+      // The caller is NOT granted farm access; they receive a polite refusal and
+      // can continue the conversation with general questions.
       const turnRes = await request(app)
         .post('/api/v1/voice/turn')
         .send({
@@ -358,11 +361,17 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           to_e164: '+19715885826',
           speech_text: 'What is the status of my farm?',
         });
-      expect(turnRes.status).toBe(403);
-      expect(turnRes.body.status).toBe('refused');
+      // HTTP 200 — voice farm-gate refusals are now soft (speakable, call continues)
+      expect(turnRes.status).toBe(200);
+      // The response carries a safe message, not a hard security refused
+      expect(turnRes.body.status).not.toBe('refused');
     });
 
     it('rejects voice turn from unknown speaker attempting restricted action', async () => {
+      // Farm status/images queries from guests now return a safe speakable reply
+      // (HTTP 200, status 'onboarding') so the call stays alive. The guest is NOT
+      // granted farm access — the engine refuses the data request but keeps the
+      // conversation going so the caller can ask general support questions.
       const res = await request(app)
         .post('/api/v1/voice/turn')
         .send({
@@ -371,8 +380,12 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           speech_text: 'status check',
         });
 
-      expect(res.status).toBe(403);
-      expect(res.body.status).toBe('refused');
+      // HTTP 200: farm-gate refusal is soft on voice (speakable, call continues)
+      expect(res.status).toBe(200);
+      // Must NOT be marked as a hard security refusal
+      expect(res.body.status).not.toBe('refused');
+      // The safe reply must be present
+      expect(res.body.text || res.body.reply || '').toBeTruthy();
     });
 
     it('rejects voice turn from unknown speaker attempting equipment control', async () => {
@@ -570,9 +583,14 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           correlation_id: 'SCOPE_EMPTY_001',
         });
 
-      // CoreEngine refuses status query with empty farm scope; VoiceInterface propagates 403
-      expect(res.status).toBe(403);
-      expect(res.body.text).toContain('not linked to any active farm');
+      // CoreEngine serves a safe speakable reply for voice (status 'onboarding')
+      // so the call stays alive — not a hard 403. Farm data is still denied;
+      // the caller receives a polite message and can continue with general questions.
+      expect(res.status).toBe(200);
+      // The response must NOT be a hard refused status
+      expect(res.body.status).not.toBe('refused');
+      // A safe speakable text must be present
+      expect(res.body.text || res.body.reply || '').toBeTruthy();
     });
 
     it('preserves tenant_id and project_id on voice delivery records', async () => {
@@ -912,7 +930,11 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       expect(result.httpStatus).toBe(404);
     });
 
-    it('returns refused for unknown speaker attempting restricted action', async () => {
+    it('returns safe onboarding reply for unknown speaker attempting status (farm-gate soft refusal)', async () => {
+      // Unknown speakers asking for farm status/images no longer get a hard 403 refused.
+      // They receive a safe speakable reply (status 'onboarding') so the voice call
+      // stays alive. Farm data is still fully denied; the caller can continue with
+      // general support questions.
       const result = await VoiceInterface.processVoiceTurn({
         from_e164: '+15559999999',
         to_e164: '+19715885826',
@@ -920,8 +942,10 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
         correlation_id: 'PROC_UNK_SPEAKER_001',
       });
 
-      expect(result.status).toBe('refused');
-      expect(result.httpStatus).toBe(403);
+      // Voice farm-gate: synthesized (the safe reply is spoken, call continues)
+      expect(result.status).toBe('synthesized');
+      // Must NOT be a hard security 403
+      expect(result.httpStatus).not.toBe(403);
     });
 
     it('allows unknown speaker to process general inquiry turn with least-privilege response', async () => {

@@ -862,7 +862,24 @@ export class VoiceInterface {
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
         } else {
-          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(turnResult.reason || 'Operation could not be completed.')}</Say>\n  <Hangup/>\n</Response>`;
+          // Distinguish hard security failures (hang up) from soft/recoverable
+          // refusals (say a safe message, then re-gather so the caller can continue).
+          const refusalText = turnResult.reason || turnResult.text || '';
+          const isHardFailure = (
+            refusalText.includes('not authorized') ||
+            refusalText.includes('step-up') ||
+            refusalText.includes('cross-tenant') ||
+            refusalText.includes('FORBIDDEN') ||
+            turnResult.status === 'failed'
+          );
+          const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
+          let twiml: string;
+          if (isHardFailure) {
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
+          } else {
+            // Soft refusal (farm gate, no resources, etc.) — speak and re-gather
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          }
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
         }
@@ -954,7 +971,24 @@ export class VoiceInterface {
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       } else {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(result.reason || 'Operation could not be completed.')}</Say>\n  <Hangup/>\n</Response>`;
+        // Hard security failures hang up; soft refusals (farm gate, no farm resources)
+        // speak a safe reply and re-gather so the caller can continue the conversation.
+        const refusalText = result.reason || result.text || '';
+        const isHardFailure = (
+          refusalText.includes('not authorized') ||
+          refusalText.includes('step-up') ||
+          refusalText.includes('cross-tenant') ||
+          refusalText.includes('FORBIDDEN') ||
+          result.status === 'failed'
+        );
+        const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
+        let twiml: string;
+        if (isHardFailure) {
+          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
+        } else {
+          // Soft refusal — speak and re-gather
+          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+        }
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       }
