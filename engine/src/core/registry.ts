@@ -182,6 +182,19 @@ export class CoreRegistry {
     // 2. Load projects from DB
     const dbProjects = await DbClient.getAllProjects();
     for (const p of dbProjects) {
+      if (!p.elevenlabs_voice_id && p.project_id === 'proj-vfarm-main') {
+        const configuredVoice = process.env.VFARM_ELEVENLABS_VOICE_ID || process.env.ELEVENLABS_VOICE_ID || 'eleven_voice_jason_vfarm';
+        if (configuredVoice) {
+          p.elevenlabs_voice_id = configuredVoice;
+          p.elevenlabs_model_id = process.env.VFARM_ELEVENLABS_MODEL_ID || process.env.ELEVENLABS_MODEL_ID || p.elevenlabs_model_id || 'eleven_turbo_v2_5';
+          p.voice_enabled = true;
+          try {
+            await DbClient.saveProject(p);
+          } catch (err: any) {
+            Logger.warn(`CoreRegistry: Failed to backfill project voice pointer to DB: ${err.message}`);
+          }
+        }
+      }
       this.projects.set(p.project_id, p);
       const adapter = this.adapters.get(p.tenant_id);
       if (adapter?.addProject) {

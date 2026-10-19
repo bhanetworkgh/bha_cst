@@ -67,11 +67,26 @@ function escapeXml(unsafe: string): string {
 }
 
 function getVoiceTurnActionUrl(req?: Request): string {
-  // If explicitly configured via PUBLIC_WEBHOOK_URL, use it (unless running in test suite without explicit override)
-  const envPublicUrl = process.env.PUBLIC_WEBHOOK_URL?.trim();
+  // If explicitly configured via PUBLIC_WEBHOOK_URL or CST_SERVICE_URL, use it
+  const envPublicUrl = (process.env.PUBLIC_WEBHOOK_URL || process.env.CST_SERVICE_URL)?.trim();
   if (envPublicUrl && (!isTestRunner() || process.env.TEST_FORCE_PUBLIC_URL === 'true')) {
     const base = envPublicUrl.replace(/\/+$/, '');
     return `${base}/webhooks/twilio/voice/turn`;
+  }
+  // If behind proxy (e.g. Render), reconstruct from x-forwarded-proto and x-forwarded-host
+  if (req) {
+    const forwardedHost = req.headers['x-forwarded-host'] as string | undefined;
+    if (forwardedHost) {
+      const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+      return `${proto}://${forwardedHost}/webhooks/twilio/voice/turn`;
+    }
+    if (!isTestRunner() || process.env.TEST_FORCE_PUBLIC_URL === 'true') {
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = req.get('host');
+      if (host) {
+        return `${proto}://${host}/webhooks/twilio/voice/turn`;
+      }
+    }
   }
   return '/webhooks/twilio/voice/turn';
 }
@@ -858,7 +873,7 @@ export class VoiceInterface {
 
         const actionUrl = getVoiceTurnActionUrl(req);
         if (turnResult.status === 'synthesized') {
-          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(turnResult.text || '')}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(turnResult.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
         } else {
@@ -869,16 +884,22 @@ export class VoiceInterface {
             refusalText.includes('not authorized') ||
             refusalText.includes('step-up') ||
             refusalText.includes('cross-tenant') ||
-            refusalText.includes('FORBIDDEN') ||
-            turnResult.status === 'failed'
+            refusalText.includes('FORBIDDEN')
           );
+          if (turnResult.status === 'dropped' || turnResult.status === 'failed') {
+            const safeErrMsg = 'I apologize, but I am currently experiencing technical difficulties. Please try again shortly or contact your account representative. Goodbye.';
+            const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeErrMsg}</Say>\n  <Hangup/>\n</Response>`;
+            res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+            res.status(200).send(twiml);
+            return;
+          }
           const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
           let twiml: string;
           if (isHardFailure) {
             twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
           } else {
-            // Soft refusal (farm gate, no resources, etc.) — speak and re-gather
-            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+            // Soft refusal (farm gate, no resources, etc.) — speak and re-gather without terminating call
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
           }
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
@@ -912,7 +933,7 @@ export class VoiceInterface {
 
       const greeting = project.onboarding_reply || 'Welcome to Customer Service Twin. How can I assist you today?';
       const actionUrl = getVoiceTurnActionUrl(req);
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n</Response>`;
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I did not hear anything. Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);
@@ -941,11 +962,41 @@ export class VoiceInterface {
    * Twilio Voice Turn Webhook Handler
    */
   static async handleSpeechTurnWebhook(req: Request, res: Response): Promise<void> {
+    const turnStartTime = Date.now();
     try {
       const receivingNumber = ((req.body?.To as string) || '').trim();
       const callerNumber = ((req.body?.From as string) || '').trim();
       const callSid = req.body?.CallSid || `turn_${randomUUID()}`;
       const speechText = ((req.body?.SpeechResult || req.body?.speech_text || req.body?.Body || '') as string).trim();
+      const confidence = req.body?.Confidence ? parseFloat(req.body.Confidence) : undefined;
+
+      Logger.info(`Voice turn webhook received`, {
+        call_sid: callSid,
+        has_speech: Boolean(speechText),
+        speech_chars: speechText.length,
+        confidence,
+        is_twilio: isTwilioVoiceRequest(req),
+      });
+
+      const actionUrl = getVoiceTurnActionUrl(req);
+
+      // Fast-path: Empty speech or silent gather timeout
+      if (!speechText) {
+        Logger.info(`Voice turn received empty speech; returning reprompt`, { call_sid: callSid });
+        if (!isTwilioVoiceRequest(req)) {
+          res.status(200).json({
+            status: 'empty_speech',
+            message: 'No speech transcription received',
+            call_sid: callSid,
+          });
+          return;
+        }
+
+        const repromptTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>I am sorry, I did not catch that. Could you please repeat what you said?</Say>\n  </Gather>\n  <Say>I still did not hear anything. Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+        res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+        res.status(200).send(repromptTwiml);
+        return;
+      }
 
       const result = await this.processVoiceTurn({
         from_e164: callerNumber,
@@ -953,6 +1004,15 @@ export class VoiceInterface {
         speech_text: speechText,
         correlation_id: callSid,
         call_sid: callSid,
+      });
+
+      const elapsedMs = Date.now() - turnStartTime;
+      Logger.info(`Voice turn processed`, {
+        call_sid: callSid,
+        status: result.status,
+        duration_ms: elapsedMs,
+        tenant_id: result.tenant_id,
+        project_id: result.project_id,
       });
 
       if (result.tenant_id) res.setHeader('X-Tenant-Id', result.tenant_id);
@@ -965,12 +1025,11 @@ export class VoiceInterface {
         return;
       }
 
-      const actionUrl = getVoiceTurnActionUrl(req);
       if (result.status === 'synthesized') {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(result.text || '')}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
-      } else {
+      } else if (result.status === 'refused') {
         // Hard security failures hang up; soft refusals (farm gate, no farm resources)
         // speak a safe reply and re-gather so the caller can continue the conversation.
         const refusalText = result.reason || result.text || '';
@@ -978,22 +1037,27 @@ export class VoiceInterface {
           refusalText.includes('not authorized') ||
           refusalText.includes('step-up') ||
           refusalText.includes('cross-tenant') ||
-          refusalText.includes('FORBIDDEN') ||
-          result.status === 'failed'
+          refusalText.includes('FORBIDDEN')
         );
         const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
         let twiml: string;
         if (isHardFailure) {
           twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
         } else {
-          // Soft refusal — speak and re-gather
-          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          // Soft refusal — speak and re-gather without terminating call
+          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
         }
+        res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+        res.status(200).send(twiml);
+      } else {
+        // Soft fallback for technical errors / dropped turns
+        const safeErrMsg = 'I apologize, but I am currently experiencing technical difficulties. Please try again shortly or contact your account representative. Goodbye.';
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeErrMsg}</Say>\n  <Hangup/>\n</Response>`;
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       }
     } catch (err: any) {
-      Logger.error(`Voice turn webhook failure: ${err.message}`);
+      Logger.error(`Voice turn webhook failure: ${err.message}`, { duration_ms: Date.now() - turnStartTime });
       res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
     }
   }

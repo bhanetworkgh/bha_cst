@@ -654,4 +654,183 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(twiml).toContain('<Gather');
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 9. Complete Inbound Voice Turn & Silence Resilience Regression
+  // ─────────────────────────────────────────────────────────────────────────────
+  describe('9. Complete Inbound Voice Turn & Silence Resilience Regression', () => {
+    it('initial inbound call returns raw TwiML with nested Gather prompt and fallback verbs', async () => {
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_FLOW_001',
+        From: '+15551234567',
+        To: '+19715885826',
+        CallStatus: 'ringing',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice')
+        .set('Host', 'localhost:3000')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Twilio-Signature', signVoiceInbound(payload))
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/xml');
+      expect(res.text).toContain('<Response>');
+      expect(res.text).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.text).toContain('<Say>Welcome to vFarm Support');
+      expect(res.text).toContain('I did not hear anything');
+    });
+
+    it('reconstructs fully qualified HTTPS action URL when behind proxy headers', async () => {
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_PROXY_001',
+        From: '+15551234567',
+        To: '+19715885826',
+        CallStatus: 'ringing',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice')
+        .set('x-test-bypass-signature', 'true')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Forwarded-Proto', 'https')
+        .set('X-Forwarded-Host', 'bha-cst-7u9e.onrender.com')
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/xml');
+      expect(res.text).toContain('action="https://bha-cst-7u9e.onrender.com/webhooks/twilio/voice/turn"');
+    });
+
+    it('form-encoded SpeechResult produces non-empty synthesized spoken response in Gather loop', async () => {
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_TURN_001',
+        From: '+15551234567',
+        To: '+19715885826',
+        SpeechResult: 'What are your support hours?',
+        CallStatus: 'in-progress',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice/turn')
+        .set('Host', 'localhost:3000')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Twilio-Signature', signVoiceTurn(payload))
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/xml');
+      expect(res.text).toContain('<Response>');
+      expect(res.text).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.text).toContain('<Say>');
+      expect(res.text).not.toContain('<Hangup/>');
+      expect(mockSynthesizer.synthesize).toHaveBeenCalled();
+    });
+
+    it('empty SpeechResult triggers polite reprompt without terminating the call', async () => {
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_EMPTY_001',
+        From: '+15551234567',
+        To: '+19715885826',
+        SpeechResult: '',
+        CallStatus: 'in-progress',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice/turn')
+        .set('Host', 'localhost:3000')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Twilio-Signature', signVoiceTurn(payload))
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/xml');
+      expect(res.text).toContain('<Response>');
+      expect(res.text).toContain('did not catch that');
+      expect(res.text).toContain('<Gather input="speech"');
+    });
+
+    it('technical failure or dropped voice turn speaks safe message instead of raw architectural error', async () => {
+      // Mock synthesis failure
+      vi.mocked(mockSynthesizer.synthesize).mockRejectedValueOnce(new Error('ElevenLabs socket closed'));
+
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_ERR_001',
+        From: '+15551234567',
+        To: '+19715885826',
+        SpeechResult: 'Hello support',
+        CallStatus: 'in-progress',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice/turn')
+        .set('Host', 'localhost:3000')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Twilio-Signature', signVoiceTurn(payload))
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toContain('text/xml');
+      expect(res.text).toContain('<Response>');
+      // Must NOT leak raw exception or developer error strings
+      expect(res.text).not.toContain('ElevenLabs socket closed');
+      expect(res.text).not.toContain('Voice clone not configured');
+      // Must contain safe caller-facing apology and clean Hangup
+      expect(res.text).toContain('experiencing technical difficulties');
+      expect(res.text).toContain('<Hangup/>');
+    });
+
+    it('rejects invalid Twilio signature with 403 Refused', async () => {
+      const payload: Record<string, string> = {
+        CallSid: 'CA_PROD_BAD_SIG',
+        From: '+15551234567',
+        To: '+19715885826',
+        SpeechResult: 'Hello',
+      };
+
+      const res = await request(app)
+        .post('/webhooks/twilio/voice/turn')
+        .set('Host', 'localhost:3000')
+        .set('User-Agent', 'TwilioProxy/1.1')
+        .set('X-Twilio-Signature', 'invalid_signature_string')
+        .type('form')
+        .send(payload);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('CoreRegistry.initFromDb hydrates missing voice ID from environment so voice turns do not drop', async () => {
+      // Save project with null voice ID in DbClient store
+      const projectWithoutVoice: Project = {
+        project_id: 'proj-vfarm-main',
+        tenant_id: 'tenant-vfarm-01',
+        name: 'vFarm Austin HQ',
+        status: 'active',
+        capabilities: { voice: true, sms: true },
+        speaker_policy: 'allowlist',
+        onboarding_reply: 'Welcome to vFarm Support',
+        elevenlabs_voice_id: undefined, // Simulates NULL in DB
+        voice_enabled: true,
+      };
+
+      await DbClient.saveProject(projectWithoutVoice);
+      process.env.VFARM_ELEVENLABS_VOICE_ID = 'voice_env_hydrated_test';
+
+      try {
+        await CoreRegistry.initFromDb();
+        const hydratedProject = CoreRegistry.getProject('proj-vfarm-main');
+        expect(hydratedProject?.elevenlabs_voice_id).toBe('voice_env_hydrated_test');
+        expect(hydratedProject?.voice_enabled).toBe(true);
+      } finally {
+        delete process.env.VFARM_ELEVENLABS_VOICE_ID;
+        CoreRegistry.resetToDefault();
+      }
+    });
+  });
 });

@@ -103,6 +103,13 @@ export const migrationEffectChecks = {
     (await tableExists(client, 'sms_consent_prompts')) &&
     (await indexExists(client, 'unq_sms_consent_prompts_active')) &&
     (await columnExists(client, 'sms_consent_prompts', 'expires_at')),
+
+  '019_backfill_project_voice_pointer.sql': async (client) => {
+    const r = await client.query(
+      `SELECT 1 FROM projects WHERE project_id = 'proj-vfarm-main' AND elevenlabs_voice_id IS NOT NULL AND elevenlabs_voice_id != ''`
+    );
+    return r.rows.length > 0;
+  },
 };
 
 /** Human-readable summary of which migrations in `files` lack an explicit check. */
