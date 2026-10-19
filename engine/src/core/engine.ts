@@ -291,57 +291,7 @@ export class CoreEngine {
         farm_ids: speaker.farm_ids,
       });
 
-      // ── 1. UNKNOWN SPEAKER GATE (R-ID-7) (Onboarding) ─────────────────────────
-      if (!speaker.is_known) {
-        const reason = 'Unknown speaker served safe generic onboarding response (zero farm data)';
-        Logger.audit({
-          timestamp: new Date().toISOString(),
-          tenant_id,
-          actor: speaker.customer_ref,
-          role: 'unknown_user',
-          entry_point: 'api',
-          tool_or_route: 'CoreEngine.processEnvelope',
-          outcome: 'ok',
-          reason,
-          correlation_id,
-        });
-
-      // Append canonical consent wording with explicit opt-in/opt-out instructions
-      const consentWording = getConsentWording();
-      const consentInstruction = `\n\n${consentWording.text}\n\nTo opt in, reply YES. Reply STOP at any time to opt out.`;
-
-      const durationMs = Date.now() - startTime;
-      const res: EnvelopeResponse = {
-        reply_text: onboardingReply + consentInstruction,
-        reply: onboardingReply + consentInstruction,
-        correlation_id,
-        channel,
-        tenant_id,
-        project_id,
-        speaker_ref,
-        conversation_id: conversationId,
-        intent: detectedIntent,
-        reason,
-        status: 'onboarding',
-        duration_ms: durationMs,
-      };
-
-        this.publishTurn({
-          envelope,
-          speaker,
-          status: 'onboarding',
-          durationMs,
-          intent: detectedIntent,
-          replyText: onboardingReply,
-          conversationId,
-          reason,
-          metadata: { onboarding: true },
-        });
-
-        return res;
-      }
-
-      // ── 2. ROLE PERMISSION BOUNDARY CHECKS ───────────────────────────────────
+      // ── 1. ROLE PERMISSION BOUNDARY CHECKS & RESTRICTED ACTIONS ───────────────
 
       // User/role management attempts via communication rail
       if (this.isUserManagementAttempt(lowerText)) {
@@ -388,9 +338,11 @@ export class CoreEngine {
         return res;
       }
 
-      // Tech Role attempting Control Actions
-      if (speaker.role === 'tech' && this.isControlAttempt(lowerText)) {
-        const reason = 'Tech role is not authorized to execute equipment control operations';
+      // Equipment control actions: refused for non-privileged roles (tech, unknown, guest)
+      if ((speaker.role === 'tech' || speaker.role === 'unknown' || !speaker.is_known) && this.isControlAttempt(lowerText)) {
+        const reason = speaker.role === 'tech'
+          ? 'Tech role is not authorized to execute equipment control operations'
+          : `Role '${speaker.role}' is not authorized to execute equipment control operations`;
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id,
@@ -405,8 +357,8 @@ export class CoreEngine {
 
         const durationMs = Date.now() - startTime;
         const res: EnvelopeResponse = {
-          reply_text: "Role 'tech' is not authorized to execute control operations. Please contact a project manager or owner.",
-          reply: "Role 'tech' is not authorized to execute control operations. Please contact a project manager or owner.",
+          reply_text: `Role '${speaker.role}' is not authorized to execute control operations. Please contact a project manager or owner.`,
+          reply: `Role '${speaker.role}' is not authorized to execute control operations. Please contact a project manager or owner.`,
           correlation_id,
           channel,
           tenant_id,
@@ -433,7 +385,7 @@ export class CoreEngine {
         return res;
       }
 
-      // ── 3. STEP-UP AUTHENTICATION SEAM ───────────────────────────────────────
+      // Step-up authentication seam for sensitive operations
       if (StepUpAuthService.isSensitiveAction(text, detectedIntent)) {
         const stepUpResult = StepUpAuthService.verifyStepUp({
           customer_ref: speaker.customer_ref,
@@ -441,7 +393,7 @@ export class CoreEngine {
           tenant_id,
           system_id: project_id,
           workspace_id: project_id,
-          is_known_customer: true,
+          is_known_customer: Boolean(speaker.is_known),
           role: speaker.role,
           permissions: speaker.permissions,
         });
@@ -479,7 +431,104 @@ export class CoreEngine {
         }
       }
 
-      // ── 4. FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-3, R-ID-4, R-ID-5) ─────
+      // ── 2. UNKNOWN SPEAKER GATE (R-ID-7) (Onboarding) ─────────────────────────
+      if (!speaker.is_known) {
+        // For voice channel: if the guest caller is attempting to query private farm status/telemetry
+        if (channel === 'voice' && (detectedIntent === 'status' || detectedIntent === 'images')) {
+          const reason = 'Status/media query refused: speaker is not granted any active farm resources';
+          Logger.audit({
+            timestamp: new Date().toISOString(),
+            tenant_id,
+            actor: speaker.customer_ref,
+            role: speaker.role,
+            entry_point: 'api',
+            tool_or_route: 'CoreEngine.processEnvelope',
+            outcome: 'refused',
+            reason,
+            correlation_id,
+          });
+
+          const durationMs = Date.now() - startTime;
+          const res: EnvelopeResponse = {
+            reply_text: 'Your account is not linked to any active farm resources in this project. Please contact support.',
+            reply: 'Your account is not linked to any active farm resources in this project. Please contact support.',
+            correlation_id,
+            channel,
+            tenant_id,
+            project_id,
+            speaker_ref,
+            conversation_id: conversationId,
+            status: 'refused',
+            intent: detectedIntent,
+            reason,
+            duration_ms: durationMs,
+          };
+
+          this.publishTurn({
+            envelope,
+            speaker,
+            status: 'refused',
+            durationMs,
+            intent: detectedIntent,
+            replyText: res.reply_text,
+            conversationId,
+            reason,
+          });
+
+          return res;
+        }
+
+        const reason = 'Unknown speaker served safe generic onboarding response (zero farm data)';
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id,
+          actor: speaker.customer_ref,
+          role: 'unknown_user',
+          entry_point: 'api',
+          tool_or_route: 'CoreEngine.processEnvelope',
+          outcome: 'ok',
+          reason,
+          correlation_id,
+        });
+
+        // For voice channel: return spoken onboarding reply without SMS opt-in text
+        const consentWording = getConsentWording();
+        const consentInstruction = channel === 'voice'
+          ? ''
+          : `\n\n${consentWording.text}\n\nTo opt in, reply YES. Reply STOP at any time to opt out.`;
+
+        const durationMs = Date.now() - startTime;
+        const res: EnvelopeResponse = {
+          reply_text: onboardingReply + consentInstruction,
+          reply: onboardingReply + consentInstruction,
+          correlation_id,
+          channel,
+          tenant_id,
+          project_id,
+          speaker_ref,
+          conversation_id: conversationId,
+          intent: detectedIntent,
+          reason,
+          status: 'onboarding',
+          duration_ms: durationMs,
+        };
+
+        this.publishTurn({
+          envelope,
+          speaker,
+          status: 'onboarding',
+          durationMs,
+          intent: detectedIntent,
+          replyText: onboardingReply,
+          conversationId,
+          reason,
+          metadata: { onboarding: true },
+        });
+
+        return res;
+      }
+
+      // ── 3. FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-3, R-ID-4, R-ID-5) ─────
       const grantedFarmIds = speaker.farm_ids || [];
 
       if (detectedIntent === 'status' || detectedIntent === 'images') {
@@ -526,7 +575,10 @@ export class CoreEngine {
 
           return res;
         }
+      }
 
+      // ── 3. OUT-OF-SCOPE FARM / RESOURCE SCOPE AUTHORIZATION (R-ID-5) ─────────
+      if (detectedIntent === 'status' || detectedIntent === 'images') {
         // Check if message explicitly mentions an out-of-scope farm (R-ID-5)
         const outOfScopeFarmMention = this.detectOutOfScopeFarmMention(lowerText, grantedFarmIds);
         if (outOfScopeFarmMention) {

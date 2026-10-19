@@ -288,10 +288,10 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════
-  // 5. Unknown/Removed Speaker
+  // 5. Unknown/Removed Speaker (Guest Access with Least Privilege)
   // ══════════════════════════════════════════════════════════════════
-  describe('5. Unknown / removed speaker', () => {
-    it('rejects call from unknown speaker with 403', async () => {
+  describe('5. Unknown / removed speaker (Guest access policy)', () => {
+    it('accepts call from unknown speaker into voice flow as guest with 200', async () => {
       const payload: Record<string, string> = {
         CallSid: 'UNKNOWN_SPEAKER',
         From: '+15559999999',
@@ -306,11 +306,14 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
         .type('form')
         .send(payload);
 
-      expect(res.status).toBe(403);
-      expect(res.body.error).toBe('FORBIDDEN');
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('initiated');
+      expect(res.body.tenant_id).toBe('tenant-vfarm-01');
+      expect(res.body.project_id).toBe('proj-vfarm-main');
+      expect(res.body.twiml).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
     });
 
-    it('rejects call from removed speaker after adapter removal', async () => {
+    it('accepts call from removed speaker as guest caller into voice flow and refuses restricted action', async () => {
       const vfarmAdapter = CoreRegistry.getAdapter('tenant-vfarm-01') as VfarmTenantAdapter;
 
       const payload1: Record<string, string> = {
@@ -344,10 +347,22 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
         .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload2);
-      expect(res2.status).toBe(403);
+      expect(res2.status).toBe(200);
+      expect(res2.body.status).toBe('initiated');
+
+      // But attempting a private farm query as an unauthenticated/removed caller is refused
+      const turnRes = await request(app)
+        .post('/api/v1/voice/turn')
+        .send({
+          from_e164: '+15551234567',
+          to_e164: '+19715885826',
+          speech_text: 'What is the status of my farm?',
+        });
+      expect(turnRes.status).toBe(403);
+      expect(turnRes.body.status).toBe('refused');
     });
 
-    it('rejects voice turn from unknown speaker', async () => {
+    it('rejects voice turn from unknown speaker attempting restricted action', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
         .send({
@@ -358,6 +373,33 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       expect(res.status).toBe(403);
       expect(res.body.status).toBe('refused');
+    });
+
+    it('rejects voice turn from unknown speaker attempting equipment control', async () => {
+      const res = await request(app)
+        .post('/api/v1/voice/turn')
+        .send({
+          from_e164: '+15559999999',
+          to_e164: '+19715885826',
+          speech_text: 'turn off irrigation pump',
+        });
+
+      expect(res.status).toBe(403);
+      expect(res.body.status).toBe('refused');
+    });
+
+    it('allows voice turn from unknown speaker for general guest inquiry', async () => {
+      const res = await request(app)
+        .post('/api/v1/voice/turn')
+        .send({
+          from_e164: '+15559999999',
+          to_e164: '+19715885826',
+          speech_text: 'Hello, what services do you provide?',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('synthesized');
+      expect(res.body.text).toContain('Welcome');
     });
   });
 
@@ -870,16 +912,29 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       expect(result.httpStatus).toBe(404);
     });
 
-    it('returns refused for unknown speaker', async () => {
+    it('returns refused for unknown speaker attempting restricted action', async () => {
       const result = await VoiceInterface.processVoiceTurn({
         from_e164: '+15559999999',
         to_e164: '+19715885826',
-        speech_text: 'hello',
+        speech_text: 'status check',
         correlation_id: 'PROC_UNK_SPEAKER_001',
       });
 
       expect(result.status).toBe('refused');
       expect(result.httpStatus).toBe(403);
+    });
+
+    it('allows unknown speaker to process general inquiry turn with least-privilege response', async () => {
+      const result = await VoiceInterface.processVoiceTurn({
+        from_e164: '+15559999999',
+        to_e164: '+19715885826',
+        speech_text: 'hello',
+        correlation_id: 'PROC_UNK_SPEAKER_002',
+      });
+
+      expect(result.status).toBe('synthesized');
+      expect(result.httpStatus).toBe(200);
+      expect(result.text).toContain('Welcome');
     });
 
     it('returns refused for adapter timeout (degraded resolve returns unknown speaker)', async () => {

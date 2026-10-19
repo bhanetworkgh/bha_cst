@@ -275,41 +275,38 @@ export class VoiceInterface {
       phoneE164: from_e164,
     });
 
-    // Speaker allowlist check / unknown identity gate
-    if (!speaker.is_known || speaker.role === 'unknown') {
+    const isGuest = !speaker.is_known || speaker.role === 'unknown';
+    const activeSpeaker: SpeakerIdentity = isGuest
+      ? {
+          person_id: speaker.person_id || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
+          customer_ref: speaker.customer_ref || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
+          tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
+          phone_e164: from_e164,
+          is_known: false,
+          role: 'unknown',
+          permissions: [],
+          farm_ids: [],
+        }
+      : speaker;
+
+    if (isGuest) {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164,
-        role: 'unknown_caller',
+        actor: from_e164 || 'unknown_caller',
+        role: 'guest',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
-        outcome: 'refused',
-        reason: `Caller ${from_e164} is not on allowlist for project ${binding.project_id}`,
+        outcome: 'ok',
+        reason: `Guest caller ${from_e164} processing voice turn for project ${binding.project_id} under least-privilege policy`,
         correlation_id,
+        details: {
+          tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
+          guest_access: true,
+        },
       });
-
-      await DbClient.recordVoiceDelivery({
-        system_id: binding.project_id,
-        project_id: binding.project_id,
-        tenant_id: binding.tenant_id,
-        status: 'refused',
-        character_count: 0,
-        audio_bytes: 0,
-        error_code: 'UNKNOWN_SPEAKER',
-        error_message: `Caller ${from_e164} is not authorized for project ${binding.project_id}`,
-        correlation_id,
-      });
-
-      return {
-        status: 'refused',
-        reason: `Caller ${from_e164} is not authorized for project ${binding.project_id}`,
-        error: 'FORBIDDEN',
-        correlation_id,
-        tenant_id: binding.tenant_id,
-        project_id: binding.project_id,
-        httpStatus: 403,
-      };
     }
 
     // 4. Construct uniform MessageEnvelope
@@ -317,7 +314,7 @@ export class VoiceInterface {
       tenant_id: binding.tenant_id,
       project_id: binding.project_id,
       channel: 'voice',
-      speaker_ref: from_e164,
+      speaker_ref: activeSpeaker.customer_ref || from_e164,
       text: speech_text,
       media: [],
       correlation_id,
@@ -330,7 +327,7 @@ export class VoiceInterface {
     // 5. Send through CST Core Engine
     let engineResponse: EnvelopeResponse;
     try {
-      engineResponse = await CoreEngine.processEnvelope(envelope, speaker);
+      engineResponse = await CoreEngine.processEnvelope(envelope, activeSpeaker);
     } catch (coreErr: any) {
       Logger.error(`Voice turn CoreEngine error: ${coreErr.message}`, { correlation_id });
       await DbClient.recordVoiceDelivery({
@@ -361,8 +358,10 @@ export class VoiceInterface {
     // 6. Fail-closed: Check if CST core refused text or authorization
     const isRefused =
       engineResponse.status === 'refused' ||
+      engineResponse.status === 'step_up_required' ||
       engineResponse.reply_text.includes('not authorized') ||
       engineResponse.reply_text.includes('restricted to the Organization Admin Panel') ||
+      engineResponse.reply_text.includes('step-up') ||
       engineResponse.reply_text.includes('require step-up authentication') ||
       engineResponse.reply_text.includes('not granted any active farm resources') ||
       engineResponse.reply_text.includes('You do not have access to queries for');
@@ -371,8 +370,8 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: speaker.customer_ref || from_e164,
-        role: speaker.role,
+        actor: activeSpeaker.customer_ref || from_e164,
+        role: activeSpeaker.role,
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
         outcome: 'refused',
@@ -775,21 +774,37 @@ export class VoiceInterface {
         return;
       }
 
-      // Speaker allowlist check
-      if (project.speaker_policy === 'allowlist' && (!speaker.is_known || speaker.role === 'unknown')) {
+      // Inbound entry policy: Allow unregistered/unknown callers to enter voice flow as guest with least privilege
+      const isGuest = !speaker.is_known || speaker.role === 'unknown';
+      if (isGuest) {
+        speaker = {
+          person_id: speaker.person_id || `guest_${callerNumber.replace(/[^0-9]/g, '')}`,
+          customer_ref: speaker.customer_ref || `guest_${callerNumber.replace(/[^0-9]/g, '')}`,
+          tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
+          phone_e164: callerNumber,
+          is_known: false,
+          role: 'unknown',
+          permissions: [],
+          farm_ids: [],
+        };
+
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: binding.tenant_id,
-          actor: callerNumber,
-          role: 'unknown_caller',
+          actor: callerNumber || 'unknown_caller',
+          role: 'guest',
           entry_point: 'webhook',
           tool_or_route: req.originalUrl || req.path,
-          outcome: 'refused',
-          reason: `Caller ${callerNumber} is not authorized on allowlist for project ${binding.project_id}`,
+          outcome: 'ok',
+          reason: `Guest caller ${callerNumber} admitted to voice flow for project ${binding.project_id} under least-privilege policy`,
           correlation_id: callSid,
+          details: {
+            tenant_id: binding.tenant_id,
+            project_id: binding.project_id,
+            guest_access: true,
+          },
         });
-        res.status(403).json({ error: 'FORBIDDEN', message: 'Unknown or unauthorized speaker' });
-        return;
       }
 
       // 5. If speech turn included in inbound call (e.g. testing or immediate SpeechResult)
@@ -825,7 +840,7 @@ export class VoiceInterface {
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
         actor: callerNumber || 'twilio_voice_webhook',
-        role: speaker.role || 'customer_ingress',
+        role: speaker.is_known ? speaker.role : 'guest',
         entry_point: 'webhook',
         tool_or_route: req.originalUrl || req.path,
         outcome: 'ok',
@@ -840,7 +855,8 @@ export class VoiceInterface {
       res.setHeader('X-Project-Id', binding.project_id);
       res.setHeader('X-Call-Sid', callSid);
 
-      const wantsJson = req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded'));
+      const wantsXml = req.headers.accept?.includes('text/xml') || req.headers.accept?.includes('application/xml');
+      const wantsJson = !wantsXml && (req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded')));
 
       if (wantsJson) {
         res.status(200).json({
@@ -884,7 +900,8 @@ export class VoiceInterface {
 
       const httpStatus = result.httpStatus || (result.status === 'synthesized' ? 200 : result.status === 'refused' ? 403 : 502);
 
-      const wantsJson = req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded'));
+      const wantsXml = req.headers.accept?.includes('text/xml') || req.headers.accept?.includes('application/xml');
+      const wantsJson = !wantsXml && (req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded')));
 
       if (wantsJson) {
         res.status(httpStatus).json(result);
