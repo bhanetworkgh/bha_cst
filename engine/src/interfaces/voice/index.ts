@@ -14,6 +14,7 @@ import {
 } from '../../audio/synthesis.js';
 import { VoiceLaneService } from '../../transport/voice/voice_lane.js';
 import { verifyTwilioSignature } from '../../transport/twilio/signature.js';
+import { isTestRunner } from '../../config/runtime.js';
 
 export const voiceInterfaceRouter = Router();
 
@@ -63,6 +64,33 @@ function escapeXml(unsafe: string): string {
       default: return c;
     }
   });
+}
+
+function getVoiceTurnActionUrl(req?: Request): string {
+  // If explicitly configured via PUBLIC_WEBHOOK_URL, use it (unless running in test suite without explicit override)
+  const envPublicUrl = process.env.PUBLIC_WEBHOOK_URL?.trim();
+  if (envPublicUrl && (!isTestRunner() || process.env.TEST_FORCE_PUBLIC_URL === 'true')) {
+    const base = envPublicUrl.replace(/\/+$/, '');
+    return `${base}/webhooks/twilio/voice/turn`;
+  }
+  return '/webhooks/twilio/voice/turn';
+}
+
+function isTwilioVoiceRequest(req: Request): boolean {
+  // 1. Genuine Twilio Voice requests always include User-Agent containing 'TwilioProxy'
+  const ua = (req.headers['user-agent'] as string) || '';
+  if (ua.includes('TwilioProxy')) {
+    return true;
+  }
+
+  // 2. Client explicitly requesting XML via Accept header
+  const accept = (req.headers.accept as string) || '';
+  if (accept.includes('text/xml') || accept.includes('application/xml')) {
+    return true;
+  }
+
+  // 3. Any other client defaults to JSON to preserve existing non-Twilio API contract
+  return false;
 }
 
 /**
@@ -820,7 +848,24 @@ export class VoiceInterface {
 
         res.setHeader('X-Tenant-Id', binding.tenant_id);
         res.setHeader('X-Project-Id', binding.project_id);
-        res.status(turnResult.httpStatus || 200).json(turnResult);
+
+        const httpStatus = turnResult.httpStatus || (turnResult.status === 'synthesized' ? 200 : turnResult.status === 'refused' ? 403 : 502);
+
+        if (!isTwilioVoiceRequest(req)) {
+          res.status(turnResult.httpStatus || 200).json(turnResult);
+          return;
+        }
+
+        const actionUrl = getVoiceTurnActionUrl(req);
+        if (turnResult.status === 'synthesized') {
+          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(turnResult.text || '')}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+          res.status(200).send(twiml);
+        } else {
+          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(turnResult.reason || 'Operation could not be completed.')}</Say>\n  <Hangup/>\n</Response>`;
+          res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+          res.status(200).send(twiml);
+        }
         return;
       }
 
@@ -849,16 +894,14 @@ export class VoiceInterface {
       });
 
       const greeting = project.onboarding_reply || 'Welcome to Customer Service Twin. How can I assist you today?';
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n</Response>`;
+      const actionUrl = getVoiceTurnActionUrl(req);
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n</Response>`;
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);
       res.setHeader('X-Call-Sid', callSid);
 
-      const wantsXml = req.headers.accept?.includes('text/xml') || req.headers.accept?.includes('application/xml');
-      const wantsJson = !wantsXml && (req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded')));
-
-      if (wantsJson) {
+      if (!isTwilioVoiceRequest(req)) {
         res.status(200).json({
           status: 'initiated',
           call_sid: callSid,
@@ -868,7 +911,7 @@ export class VoiceInterface {
           twiml,
         });
       } else {
-        res.setHeader('Content-Type', 'text/xml');
+        res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       }
     } catch (err: any) {
@@ -900,22 +943,20 @@ export class VoiceInterface {
 
       const httpStatus = result.httpStatus || (result.status === 'synthesized' ? 200 : result.status === 'refused' ? 403 : 502);
 
-      const wantsXml = req.headers.accept?.includes('text/xml') || req.headers.accept?.includes('application/xml');
-      const wantsJson = !wantsXml && (req.headers.accept?.includes('application/json') || req.is('json') || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/json')) || (typeof req.headers['content-type'] === 'string' && req.headers['content-type'].includes('application/x-www-form-urlencoded')));
-
-      if (wantsJson) {
+      if (!isTwilioVoiceRequest(req)) {
         res.status(httpStatus).json(result);
         return;
       }
 
+      const actionUrl = getVoiceTurnActionUrl(req);
       if (result.status === 'synthesized') {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(result.text || '')}</Say>\n  <Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST"/>\n</Response>`;
-        res.setHeader('Content-Type', 'text/xml');
-        res.status(httpStatus).send(twiml);
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(result.text || '')}</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+        res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+        res.status(200).send(twiml);
       } else {
         const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(result.reason || 'Operation could not be completed.')}</Say>\n  <Hangup/>\n</Response>`;
-        res.setHeader('Content-Type', 'text/xml');
-        res.status(httpStatus).send(twiml);
+        res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+        res.status(200).send(twiml);
       }
     } catch (err: any) {
       Logger.error(`Voice turn webhook failure: ${err.message}`);
