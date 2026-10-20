@@ -1,3 +1,4 @@
+import { maskPhone } from '../../util/privacy.js';
 import { randomUUID } from 'crypto';
 import { InboundMessage, OutboundMessage, SystemConfig } from '../twilio/types.js';
 import { SystemsRegistry } from '../../systems/registry.js';
@@ -90,7 +91,7 @@ export class VoiceLaneService {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: null,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceLaneService.processVoiceTurn',
@@ -114,7 +115,7 @@ export class VoiceLaneService {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceLaneService.processVoiceTurn',
@@ -142,7 +143,7 @@ export class VoiceLaneService {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: tenantId,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceLaneService.processVoiceTurn',

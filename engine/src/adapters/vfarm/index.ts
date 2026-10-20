@@ -1,3 +1,4 @@
+import { maskPhone } from '../../util/privacy.js';
 import { ITenantAdapter } from '../types.js';
 import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, CabinetConfig } from '../../core/types.js';
 import { Logger } from '../../config/logger.js';
@@ -771,9 +772,38 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return result;
   }
 
+  /**
+   * Candidate service numbers for this tenant.
+   *
+   * Candidate numbers must originate from an authoritative source — the
+   * provider's own list of the account's numbers, or an explicit
+   * configuration. There is NO hardcoded fallback here.
+   *
+   * The previous fallback returned three literal numbers, two of which the
+   * Twilio account does not own. Presenting an unowned number as a candidate
+   * makes it bindable as an outbound sender, which is the precondition for
+   * Twilio error 21659 ("the 'From' number is not a valid phone number,
+   * shortcode or alphanumeric sender id"). Failing closed — returning no
+   * candidates and an explicit reason — is the safe outcome: an operator can
+   * configure a real number, but nobody can bind a fabricated one.
+   */
   async pullCandidateNumbers(tenantId: string): Promise<string[]> {
     if (tenantId !== this.tenantId) return [];
-    return ['+19715885823', '+19715885824', '+19715885825'];
+
+    const configured = (process.env.VFARM_CANDIDATE_NUMBERS || '')
+      .split(',')
+      .map((n) => n.trim())
+      .filter((n) => /^\+[1-9]\d{7,14}$/.test(n));
+
+    if (configured.length === 0) {
+      Logger.warn(
+        'vFarm adapter: no authoritative candidate numbers available. ' +
+          'Set VFARM_CANDIDATE_NUMBERS to the numbers this account owns; no candidates are fabricated.',
+      );
+      return [];
+    }
+
+    return configured;
   }
 
   private unknownIdentity(params: { tenantId: string; projectId: string; phone: string }, prefix: string): SpeakerIdentity {
@@ -812,7 +842,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     const cleanPhone = (params.phoneE164 || '').trim();
 
     if (this.config.simulateDegraded) {
-      Logger.warn(`vFarm Adapter degraded: live resolve failed for ${cleanPhone}`);
+      Logger.warn(`vFarm Adapter degraded: live resolve failed for ${maskPhone(cleanPhone)}`);
       throw new Error('vFarm Adapter API unavailable');
     }
 

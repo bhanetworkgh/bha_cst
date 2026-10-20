@@ -50,9 +50,13 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       bound_at: new Date().toISOString(),
     });
 
-    // Bind secondary Dallas voice DID
+    // Bind a second, Dallas-scoped voice DID.
+    //
+    // The number is a test fixture: the real +19715885824 is NOT owned by the
+    // Twilio account and is deliberately absent from every default. Dallas is
+    // voice-disabled by default, so it is enabled explicitly here.
     CoreRegistry.bindServiceNumber({
-      phone_e164: '+19715885824',
+      phone_e164: '+19715550100',
       tenant_id: 'tenant-vfarm-01',
       project_id: 'proj-vfarm-dallas',
       capability: 'voice',
@@ -88,7 +92,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
-      expect(res.text).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
       expect(res.text).toContain('Welcome to vFarm Support');
       expect(res.headers['x-tenant-id']).toBe('tenant-vfarm-01');
       expect(res.headers['x-project-id']).toBe('proj-vfarm-main');
@@ -123,7 +127,9 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.body.tenant_id).toBe('tenant-vfarm-01');
       expect(res.body.project_id).toBe('proj-vfarm-main');
       expect(res.body.greeting).toContain('Welcome to vFarm Support');
-      expect(res.body.twiml).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn"');
+      expect(res.body.twiml).toContain(
+        '<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn"',
+      );
     });
 
     it('allows guest caller to conduct a non-restricted conversational turn', async () => {
@@ -459,6 +465,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
 
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
+        .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -484,6 +492,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
 
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
+        .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -507,6 +517,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
 
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
+        .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -678,7 +690,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
-      expect(res.text).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
       expect(res.text).toContain('<Say>Welcome to vFarm Support');
       expect(res.text).toContain('I did not hear anything');
     });
@@ -725,7 +737,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
-      expect(res.text).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
       expect(res.text).toContain('<Say>');
       expect(res.text).not.toContain('<Hangup/>');
       expect(mockSynthesizer.synthesize).toHaveBeenCalled();
@@ -752,7 +764,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
       expect(res.text).toContain('did not catch that');
-      expect(res.text).toContain('<Gather input="speech"');
+      expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5"');
     });
 
     it('technical failure or dropped voice turn speaks safe message instead of raw architectural error', async () => {

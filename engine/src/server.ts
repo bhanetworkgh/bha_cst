@@ -7,6 +7,7 @@ import { DbClient } from './db/client.js';
 import { CoreRegistry } from './core/registry.js';
 import { SystemsRegistry } from './systems/registry.js';
 import { CstDashboardPublisher } from './publishers/dashboard.js';
+import { checkProgrammaticApiKeyBootConfig } from './middleware/programmatic_api_key.js';
 
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
@@ -39,6 +40,11 @@ const server = app.listen(env.PORT, () => {
     Logger.info(`[vFarm] Initialized with Dynamic Auth. Target Farm: ${targetFarm}`);
   }
   CstDashboardPublisher.checkBootConfig();
+  // The programmatic voice API fails CLOSED at request time when its secret is
+  // absent; this only reports the misconfiguration at boot so it cannot go
+  // unnoticed. The engine deliberately keeps serving the signed Twilio
+  // webhooks, the health endpoints and the outbound worker.
+  checkProgrammaticApiKeyBootConfig();
 });
 
 

@@ -12,6 +12,11 @@ import type { SpeakerRecord } from '../../engine/src/core/types.js';
 describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
   const app = createApp();
 
+  // The programmatic voice API is authenticated (middleware/programmatic_api_key.ts).
+  // Tests act as a service-to-service caller and present the shared secret.
+  const PROGRAMMATIC_API_KEY = 'test_programmatic_api_key_32_chars_long';
+  process.env.CST_API_KEY = PROGRAMMATIC_API_KEY;
+
   const mockSynthesizer: AudioSynthesizer = {
     synthesize: vi.fn(async ({ text, voiceId }) => {
       const audioBytes = Buffer.from(`synthetic-voice-audio-for-${voiceId}-${text.slice(0, 10)}`);
@@ -89,6 +94,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
 
     const res = await request(app)
       .post('/voice/turn')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         from_e164: '+15551112222', // Known manager
         to_e164: '+19715885823',   // vFarm system number
@@ -116,6 +122,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
   it('Step 3: Refuses to speak if CST authorization chain refuses text (tech control action)', async () => {
     const res = await request(app)
       .post('/voice/turn')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         from_e164: '+15553334444', // Tech role
         to_e164: '+19715885823',
@@ -139,6 +146,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
 
     const res = await request(app)
       .post('/voice/turn')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         from_e164: '+15551112222',
         to_e164: '+19715885823',
@@ -159,6 +167,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
 
     const res = await request(app)
       .post('/voice/turn')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         from_e164: '+15551112222',
         to_e164: '+19715885823',
@@ -189,6 +198,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
 
     const res = await request(app)
       .post('/voice/turn')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         from_e164: '+15551112222',
         to_e164: '+19715885823',
@@ -219,6 +229,7 @@ describe('ElevenLabs Voice Clone Integration into CST (5-Step debrief)', () => {
   it('serves direct TTS synthesis at POST /audio/speak', async () => {
     const res = await request(app)
       .post('/audio/speak')
+      .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
       .send({
         text: 'System alert: pH reading is normal.',
         voiceId: 'Hmy97GCI840wuICQesiM',

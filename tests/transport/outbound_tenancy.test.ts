@@ -31,7 +31,7 @@ const TENANT = 'tenant-vfarm-01';
 const PROJECT = 'proj-vfarm-main';
 const OTHER_PROJECT = 'proj-vfarm-dallas';
 const DID_MAIN = '+19715885823';
-const DID_DALLAS = '+19715885824';
+const DID_DALLAS = '+19715550100';
 
 describe('Item 4 — outbound sending DID resolves through project -> service_number_binding', () => {
   beforeEach(() => {
@@ -51,6 +51,17 @@ describe('Item 4 — outbound sending DID resolves through project -> service_nu
   });
 
   it('uses the number bound to the message project', () => {
+    // The production seed only carries service numbers the Twilio account
+    // actually owns, so a second project's DID is bound here as a fixture.
+    CoreRegistry.bindServiceNumber({
+      phone_e164: DID_DALLAS,
+      tenant_id: TENANT,
+      project_id: OTHER_PROJECT,
+      capability: 'sms',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
+
     expect(resolveOutboundSendingNumber(msg({ project_id: OTHER_PROJECT }))).toBe(DID_DALLAS);
     expect(resolveOutboundSendingNumber(msg())).toBe(DID_MAIN);
   });

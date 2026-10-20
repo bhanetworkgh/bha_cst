@@ -53,6 +53,10 @@ const TENANT_ID = 'tenant-vfarm-01';
 
 describe('Voice Failure-Path & Diagnostic Recording', () => {
   const app = createApp();
+  // The programmatic voice API is authenticated (middleware/programmatic_api_key.ts).
+  // Tests act as a service-to-service caller and present the shared secret.
+  const PROGRAMMATIC_API_KEY = 'test_programmatic_api_key_32_chars_long';
+  process.env.CST_API_KEY = PROGRAMMATIC_API_KEY;
 
   /** Synthesizer that always succeeds — baseline for the health signal test */
   const successSynthesizer: AudioSynthesizer = {
@@ -109,6 +113,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
 
       const res = await request(app)
         .post('/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: KNOWN_MANAGER,
           to_e164: VFARM_SYSTEM_NUMBER,
@@ -136,6 +141,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
 
       await request(app)
         .post('/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: KNOWN_MANAGER,
           to_e164: VFARM_SYSTEM_NUMBER,
@@ -152,6 +158,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
 
       await request(app)
         .post('/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: KNOWN_MANAGER,
           to_e164: VFARM_SYSTEM_NUMBER,
@@ -180,6 +187,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
 
       const res = await request(app)
         .post('/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15553334444',
           to_e164: VFARM_SYSTEM_NUMBER,
@@ -213,6 +221,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
       // Trigger a failed turn so there is at least one delivery (but failed)
       await request(app)
         .post('/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: KNOWN_MANAGER,
           to_e164: VFARM_SYSTEM_NUMBER,

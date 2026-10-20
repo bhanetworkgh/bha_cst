@@ -1,6 +1,7 @@
 import twilio from 'twilio';
 import { getEnv } from '../../config/env.js';
 import { Logger } from '../../config/logger.js';
+import { maskPhone } from '../../util/privacy.js';
 
 export interface SendSmsParams {
   to: string;
@@ -39,6 +40,21 @@ export class TwilioClientWrapper {
    *            OPERATOR ACTION REQUIRED: enable the country in the Twilio Console
    *            under Voice > Settings > Geo-Permissions before retrying.
    *
+   * Sender-configuration codes:
+   *   21659 — The 'From' number is not a valid phone number, shortcode or
+   *            alphanumeric sender id, i.e. it is not a number this Twilio
+   *            account owns or has verified. This is PERMANENT: the sender
+   *            identity cannot become valid by resending. The remedy is
+   *            configuration, not retry — either bind a number this account
+   *            owns, or send through a Messaging Service whose sender pool
+   *            contains one. Retrying only burns quota and delays the
+   *            operator action.
+   *            (Basis: the operator-reported error text and the account
+   *            ownership semantics. The installed client — twilio 5.13.1 —
+   *            does not define server-side error codes locally, so the code
+   *            is classified from the provider's documented behaviour rather
+   *            than from a local constant.)
+   *
    * SMS carrier codes:
    *   30005 — Unknown handset. The destination carrier returned a permanent
    *            rejection. For international long-code SMS (e.g. Pakistan Jazz),
@@ -52,6 +68,7 @@ export class TwilioClientWrapper {
     21408, // Permission to send an SMS has not been enabled for the region
     21614, // To number is not a valid mobile number
     21610, // Message cannot be sent to unverified number (Trial accounts)
+    21659, // 'From' number is not a valid/owned sender id — permanent sender-configuration failure
     30005, // Unknown handset — permanent carrier rejection (incl. international long-code SMS)
     30007, // Carrier violation (A2P filter)
     30008, // Unknown permanent carrier failure
@@ -64,32 +81,77 @@ export class TwilioClientWrapper {
     return false;
   }
 
-  static async sendSms(params: SendSmsParams): Promise<{ sid: string; status: string }> {
-    if (this.mockSendHandler) {
-      return await this.mockSendHandler(params);
-    }
-
-    const env = getEnv();
-    const client = this.getClient();
-
-    const requestPayload: any = {
+  /**
+   * Build the Twilio Messages API payload for an outbound SMS.
+   *
+   * Extracted so the sender-selection contract can be asserted directly:
+   *
+   *   - A Messaging Service SID takes precedence and is sent ALONE. A
+   *     `from` and a `messagingServiceSid` are mutually exclusive in the
+   *     Messages API, so sending both is a conflict.
+   *   - Without a Messaging Service SID, the resolved `from` is used. That
+   *     number must be one this account owns — a Messaging Service cannot
+   *     make an unowned number a valid sender, it only selects a configured
+   *     sender pool.
+   */
+  static buildSendSmsPayload(
+    params: SendSmsParams,
+    env: { messagingServiceSid?: string } = {}
+  ): Record<string, unknown> {
+    const requestPayload: Record<string, unknown> = {
       to: params.to,
       body: params.body,
     };
 
-    if (params.from) {
+    const msid = params.messagingServiceSid || env.messagingServiceSid;
+    if (msid) {
+      requestPayload.messagingServiceSid = msid;
+    } else if (params.from) {
       requestPayload.from = params.from;
-    } else if (params.messagingServiceSid || env.TWILIO_MESSAGING_SERVICE_SID) {
-      requestPayload.messagingServiceSid = params.messagingServiceSid || env.TWILIO_MESSAGING_SERVICE_SID;
     }
 
     if (params.mediaUrl && params.mediaUrl.length > 0) {
       requestPayload.mediaUrl = params.mediaUrl;
     }
 
+    return requestPayload;
+  }
+
+  static async sendSms(params: SendSmsParams): Promise<{ sid: string; status: string }> {
+    const env = getEnv();
+
+    // Fail closed BEFORE the API call when there is no usable sender. Sending
+    // a payload with neither `from` nor `messagingServiceSid` produces a
+    // confusing provider error and, in the queue, a pointless retry cycle.
+    // The check runs before the mock handler so it applies to every path.
+    const requestPayload = TwilioClientWrapper.buildSendSmsPayload(params, {
+      messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID,
+    });
+    if (!requestPayload.from && !requestPayload.messagingServiceSid) {
+      const err: any = new Error(
+        'No outbound SMS sender: no messagingServiceSid is configured and no from number was resolved. ' +
+          'Bind a service number this Twilio account owns, or configure TWILIO_MESSAGING_SERVICE_SID.',
+      );
+      err.code = 21659;
+      err.isNonRetriable = true;
+      err.status = 400;
+      Logger.error('Twilio send refused before dispatch: no usable sender', {
+        to: maskPhone(params.to),
+        code: 21659,
+        isNonRetriable: true,
+      });
+      throw err;
+    }
+
+    if (this.mockSendHandler) {
+      return await this.mockSendHandler(params);
+    }
+
+    const client = this.getClient();
+
     try {
-      Logger.info(`Executing Twilio Messages API call to ${params.to}`);
-      const result = await client.messages.create(requestPayload);
+      Logger.info(`Executing Twilio Messages API call to ${maskPhone(params.to)}`);
+      const result = await client.messages.create(requestPayload as any);
       return { sid: result.sid, status: result.status };
     } catch (err: any) {
       const code = err.code || 'UNKNOWN_TWILIO_ERROR';
@@ -97,7 +159,7 @@ export class TwilioClientWrapper {
       const isNonRetriable = this.isNonRetriableError(err);
 
       Logger.error(`Twilio API Error [Code: ${code}, HTTP ${status}]: ${err.message}`, {
-        to: params.to,
+        to: maskPhone(params.to),
         from: params.from,
         code,
         isNonRetriable,

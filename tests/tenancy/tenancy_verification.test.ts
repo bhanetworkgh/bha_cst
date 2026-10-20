@@ -17,6 +17,16 @@ describe('CST Tenancy Verification & Full Lifecycle (Spec §§2-11)', () => {
     DbClient.resetDurableStores();
     CoreRegistry.clear();
     CoreRegistry.resetToDefault();
+    // The production seed only carries service numbers the Twilio account
+    // actually owns, so a second project's DID is bound here as a fixture.
+    CoreRegistry.bindServiceNumber({
+      phone_e164: '+19715550100',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-dallas',
+      capability: 'sms',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return {
@@ -220,7 +230,7 @@ describe('CST Tenancy Verification & Full Lifecycle (Spec §§2-11)', () => {
     const resDisabled = await sendTwilioSms({
       MessageSid: 'SM_disabled_002',
       From: '+15559990000',
-      To: '+19715885824',
+      To: '+19715550100',
       Body: 'Hello Dallas',
     });
     expect(resDisabled.status).toBe(404);

@@ -1,3 +1,4 @@
+import { maskPhone } from '../util/privacy.js';
 import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
 import { randomUUID } from 'crypto';
 import pg from 'pg';
@@ -43,6 +44,38 @@ export class ConversationPersistenceError extends Error {
     this.name = 'ConversationPersistenceError';
   }
 }
+
+/**
+ * The durable outcome of one Dashboard publish attempt.
+ *
+ * `status` is one of:
+ *   - 'published'            — the Dashboard accepted the event (2xx).
+ *   - 'failed'               — the publish was attempted and did not succeed.
+ *   - 'missing_configuration'— the publisher had no Dashboard URL/key configured.
+ *   - 'dry_run'              — validated locally; no remote request was made.
+ */
+export interface DashboardPublishOutcome {
+  id?: string;
+  event_id: string;
+  event_type: string;
+  specversion?: string;
+  turn_id?: string;
+  correlation_id?: string;
+  tenant_id?: string;
+  project_id?: string;
+  status: 'published' | 'failed' | 'missing_configuration' | 'dry_run';
+  http_status?: number;
+  attempts: number;
+  error?: string;
+  /** Masked, TTL-bounded copy of the published event, so it can be replayed. */
+  payload?: Record<string, unknown>;
+  created_at?: string;
+  expires_at?: string;
+  replayed_at?: string;
+}
+
+/** Retention for a replayable publish outcome, matching the alert audit TTL. */
+export const DASHBOARD_OUTCOME_TTL_DAYS = 90;
 
 export interface VoiceDeliveryRecord {
   id?: string;
@@ -128,6 +161,7 @@ export class DbClient {
   private static transcriptsStore:      Map<string, any>                 = new Map();
   private static customersStore:        Map<string, CustomerRecord>      = new Map();
   private static voiceDeliveriesStore:  Map<string, VoiceDeliveryRecord> = new Map();
+  private static dashboardOutcomeStore: Map<string, DashboardPublishOutcome> = new Map();
   private static projectsStore:         Map<string, Project>             = new Map();
   private static bindingsStore:         Map<string, ServiceNumberBinding>= new Map();
   private static tenantsStore:          Map<string, Tenant>              = new Map();
@@ -203,6 +237,9 @@ export class DbClient {
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
     this.smsConsentPromptsStore.clear();
+    // Publish outcomes are test-visible state: leaving them behind lets one
+    // test file's publishes surface in the next file's dead-letter view.
+    this.dashboardOutcomeStore.clear();
   }
 
   /**
@@ -889,6 +926,9 @@ export class DbClient {
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
     this.smsConsentPromptsStore.clear();
+    // Publish outcomes are test-visible state: leaving them behind lets one
+    // test file's publishes surface in the next file's dead-letter view.
+    this.dashboardOutcomeStore.clear();
   }
 
   static resetDurableStores(): void {
@@ -1031,7 +1071,7 @@ export class DbClient {
           const row = res.rows[0];
           // Honor TTL: if speaker_cache_expires_at is set and in the past, treat as miss
           if (row.speaker_cache_expires_at && new Date(row.speaker_cache_expires_at) < new Date()) {
-            Logger.warn(`DbClient.lookupCustomerByPhoneAsync: cache row expired for ${cleanPhone} in project ${projectId}`);
+            Logger.warn(`DbClient.lookupCustomerByPhoneAsync: cache row expired for ${maskPhone(cleanPhone)} in project ${projectId}`);
             return null;
           }
           const record: CustomerRecord = {
@@ -1867,6 +1907,104 @@ export class DbClient {
 
   static getAllVoiceDeliveries(): VoiceDeliveryRecord[] {
     return Array.from(this.voiceDeliveriesStore.values());
+  }
+
+  // ── Dashboard Publish Outcomes (migration 020) ─────────────────────────────
+
+  /**
+   * Record the durable outcome of a Dashboard publish attempt.
+   *
+   * The publisher is fire-and-forget: without this record a dropped event
+   * could not be found, replayed, or audited once the log rotated. One row is
+   * written per attempt; a retry of the same event supersedes the previous
+   * row for the same (event_id, event_type) pair.
+   */
+  static async recordDashboardPublishOutcome(
+    outcome: DashboardPublishOutcome
+  ): Promise<DashboardPublishOutcome> {
+    const id = outcome.id || `dpo_${randomUUID()}`;
+    const now = new Date();
+    const record: DashboardPublishOutcome = {
+      ...outcome,
+      id,
+      created_at: outcome.created_at || now.toISOString(),
+      expires_at:
+        outcome.expires_at ||
+        new Date(now.getTime() + DASHBOARD_OUTCOME_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+    };
+
+    // Supersede any prior live row for the same event so the current outcome
+    // is unambiguous. The prior row's history is preserved in the log.
+    for (const [key, existing] of this.dashboardOutcomeStore) {
+      if (
+        existing.event_id === record.event_id &&
+        existing.event_type === record.event_type &&
+        existing.replayed_at === undefined
+      ) {
+        this.dashboardOutcomeStore.delete(key);
+      }
+    }
+    this.dashboardOutcomeStore.set(id, record);
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `INSERT INTO dashboard_publish_outcomes (
+             id, event_id, event_type, specversion, turn_id, correlation_id,
+             tenant_id, project_id, status, http_status, attempts, error,
+             payload, created_at, expires_at, replayed_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          [
+            record.id,
+            record.event_id,
+            record.event_type,
+            record.specversion || null,
+            record.turn_id || null,
+            record.correlation_id || null,
+            record.tenant_id || null,
+            record.project_id || null,
+            record.status,
+            record.http_status ?? null,
+            record.attempts,
+            record.error || null,
+            record.payload ? JSON.stringify(record.payload) : null,
+            record.created_at,
+            record.expires_at,
+            record.replayed_at || null,
+          ],
+        );
+      } catch (err: any) {
+        // A failed evidence write must never break the customer path.
+        Logger.warn(
+          `DbClient.recordDashboardPublishOutcome: could not persist outcome for ${record.event_id}: ${err?.message}`,
+        );
+      }
+    }
+
+    return record;
+  }
+
+  /** Outcomes that were not ingested, oldest first — the dead-letter view. */
+  static getUnpublishedDashboardOutcomes(limit = 50): DashboardPublishOutcome[] {
+    return Array.from(this.dashboardOutcomeStore.values())
+      .filter((o) => o.status !== 'published' && o.replayed_at === undefined)
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+      .slice(0, limit);
+  }
+
+  /** Every recorded outcome, newest first — the audit view. */
+  static getAllDashboardPublishOutcomes(): DashboardPublishOutcome[] {
+    return Array.from(this.dashboardOutcomeStore.values()).sort((a, b) =>
+      (b.created_at || '').localeCompare(a.created_at || ''),
+    );
+  }
+
+  /** Mark a dead-letter row as replayed. */
+  static markDashboardOutcomeReplayed(id: string, replayedAt?: string): void {
+    const record = this.dashboardOutcomeStore.get(id);
+    if (!record) return;
+    record.replayed_at = replayedAt || new Date().toISOString();
   }
 
   // ── SMS Consent Persistence (sms_consents + sms_consent_audit) ─────────────

@@ -647,7 +647,8 @@ An \`ErrorCode\` value, if present, is stored in the \`error_message\` field for
         summary: 'Direct speech synthesis via Jason\'s voice clone',
         operationId: 'audioSpeak',
         description:
-          'Synthesizes authorized text into base64 audio via ElevenLabs using Jason\'s voice clone pointer. Fails closed if clone is unconfigured or synthesis fails.',
+          'Synthesizes authorized text into base64 audio via ElevenLabs using Jason\'s voice clone pointer. Fails closed if clone is unconfigured or synthesis fails.\n\n' +
+          'REQUIRES the `x-cst-api-key` header (shared secret `CST_API_KEY`). The caller may supply `voiceId` directly, so this route must be authenticated. If `CST_API_KEY` is not configured the route fails closed with 503 CONFIG_MISSING.',
         requestBody: {
           required: true,
           content: {
@@ -692,7 +693,8 @@ An \`ErrorCode\` value, if present, is stored in the \`error_message\` field for
         summary: 'Interactive voice lane turn through CST orchestrator',
         operationId: 'voiceTurn',
         description:
-          'Passes caller voice turn through CST authorization chain, intent router, and BHARAG connectors. Synthesizes audio only if authorized. Strictly fails closed.',
+          'Passes caller voice turn through CST authorization chain, intent router, and BHARAG connectors. Synthesizes audio only if authorized. Strictly fails closed.\n\n' +
+          'REQUIRES the `x-cst-api-key` header (shared secret `CST_API_KEY`). The caller asserts `from_e164`, and the speaker identity — role, permissions and farm scope — is resolved from that number, so the request must be authenticated before it is trusted. If `CST_API_KEY` is not configured the route fails closed with 503 CONFIG_MISSING. The Twilio-hosted equivalents (`/webhooks/twilio/voice/turn`, `/twilio/voice/turn`) are protected by Twilio request signature verification instead.',
         requestBody: {
           required: true,
           content: {

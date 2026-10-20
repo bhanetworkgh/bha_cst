@@ -1,9 +1,10 @@
+import { maskPhone } from '../../util/privacy.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
 import { CoreRegistry } from '../../core/registry.js';
 import { CoreEngine } from '../../core/engine.js';
 import { MessageEnvelope, EnvelopeResponse } from '../../core/envelope.js';
-import { SpeakerIdentity } from '../../core/types.js';
+import { SpeakerIdentity, matchesCapability } from '../../core/types.js';
 import { DbClient, VoiceDeliveryRecord } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
@@ -14,6 +15,7 @@ import {
 } from '../../audio/synthesis.js';
 import { VoiceLaneService } from '../../transport/voice/voice_lane.js';
 import { verifyTwilioSignature } from '../../transport/twilio/signature.js';
+import { requireProgrammaticApiKey } from '../../middleware/programmatic_api_key.js';
 import { isTestRunner } from '../../config/runtime.js';
 
 export const voiceInterfaceRouter = Router();
@@ -27,7 +29,16 @@ export interface VoiceSynthesizeRequest {
   correlation_id?: string;
   voice_id?: string;
   model_id?: string;
+  /** Cancellation signal, threaded to the synthesizer's HTTP request. */
+  signal?: AbortSignal;
 }
+
+/**
+ * Default bound on how long a voice turn may take before the webhook must
+ * answer. Twilio expects a prompt webhook response; a turn can include a
+ * CoreEngine round trip and an ElevenLabs synthesis, so it needs a ceiling.
+ */
+export const DEFAULT_VOICE_TURN_DEADLINE_MS = 7000;
 
 export interface ProcessVoiceTurnInput {
   from_e164: string;
@@ -35,6 +46,13 @@ export interface ProcessVoiceTurnInput {
   speech_text: string;
   correlation_id?: string;
   call_sid?: string;
+  /**
+   * Cancellation signal. The webhook deadline aborts this so a turn that has
+   * been abandoned stops at its next checkpoint instead of persisting a
+   * transcript and a voice-delivery row after the caller has already been
+   * answered.
+   */
+  signal?: AbortSignal;
 }
 
 export interface VoiceTurnResult {
@@ -186,6 +204,94 @@ export class VoiceInterface {
   /**
    * Process an interactive voice turn through the CST Core multi-tenant pipeline.
    */
+  /**
+   * The maximum time a voice turn may take before the webhook must answer.
+   *
+   * Twilio expects a webhook response quickly. A turn can include a CoreEngine
+   * round trip and an ElevenLabs synthesis, so without a bound a slow or cold
+   * instance can hold the response open until the provider gives up.
+   *
+   * Overridable with `CST_VOICE_TURN_DEADLINE_MS` for a deployment with a
+   * different provider budget. The value is clamped to a sane range.
+   */
+  static voiceTurnDeadlineMs(): number {
+    const raw = Number(process.env.CST_VOICE_TURN_DEADLINE_MS);
+    if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_VOICE_TURN_DEADLINE_MS;
+    return Math.min(Math.max(raw, 1000), 20000);
+  }
+
+  /**
+   * Run a voice turn under a bounded deadline.
+   *
+   * A bare `Promise.race()` is not enough: the losing promise keeps running
+   * and can still write a transcript, a voice-delivery row, or an audit entry
+   * after the caller has already been answered — a duplicate turn, and a
+   * duplicate billed synthesis.
+   *
+   * So the turn is given an `AbortSignal`. When the deadline fires the
+   * signal is aborted, the in-flight work stops at its next checkpoint, and
+   * the turn is abandoned WITHOUT persisting anything. The caller receives a
+   * `failed` result carrying `TURN_TIMEOUT`, which the existing failure path
+   * renders as a short safe `<Say>` followed by a hang-up.
+   */
+  static async processVoiceTurnWithDeadline(
+    input: ProcessVoiceTurnInput
+  ): Promise<VoiceTurnResult> {
+    const correlationId = input.correlation_id || input.call_sid || `voice_${randomUUID()}`;
+    const deadlineMs = this.voiceTurnDeadlineMs();
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const turnPromise = this.processVoiceTurn({ ...input, signal: controller.signal });
+
+    // The turn promise must never reject unhandled — an abort surfaces as a
+    // rejection from the synthesizer.
+    turnPromise.catch(() => undefined);
+
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        resolve('timeout');
+      }, deadlineMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+
+    try {
+      const outcome = await Promise.race([
+        turnPromise.then((result) => ({ kind: 'completed' as const, result })),
+        timeoutPromise,
+      ]);
+
+      if (outcome === 'timeout') {
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: null,
+          actor: 'voice_webhook',
+          role: 'system',
+          entry_point: 'webhook',
+          tool_or_route: 'VoiceInterface.processVoiceTurnWithDeadline',
+          outcome: 'error',
+          reason: `Voice turn exceeded the ${deadlineMs}ms response deadline; turn abandoned and no turn was persisted`,
+          correlation_id: correlationId,
+          details: { tripwire: true, deadline_ms: deadlineMs },
+        });
+        return {
+          status: 'failed',
+          reason: 'The response took too long to prepare',
+          error: 'TURN_TIMEOUT',
+          correlation_id: correlationId,
+          httpStatus: 504,
+        };
+      }
+
+      return outcome.result;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   static async processVoiceTurn(input: ProcessVoiceTurnInput): Promise<VoiceTurnResult> {
     const correlation_id = input.correlation_id || input.call_sid || `voice_${randomUUID()}`;
     const from_e164 = (input.from_e164 || '').trim();
@@ -208,7 +314,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: null,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -225,12 +331,13 @@ export class VoiceInterface {
       };
     }
 
-    // 2. Check capability
-    if (binding.capability !== 'voice') {
+    // 2. Check capability. A combined 'sms_voice' binding serves both
+    // transports, so it satisfies the voice check as well.
+    if (!matchesCapability(binding.capability, 'voice')) {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -254,7 +361,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -279,7 +386,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164,
+        actor: maskPhone(from_e164),
         role: 'untrusted_ingress',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -337,12 +444,12 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: from_e164 || 'unknown_caller',
+        actor: maskPhone(from_e164) || 'unknown_caller',
         role: 'guest',
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
         outcome: 'ok',
-        reason: `Guest caller ${from_e164} processing voice turn for project ${binding.project_id} under least-privilege policy`,
+        reason: `Guest caller ${maskPhone(from_e164)} processing voice turn for project ${binding.project_id} under least-privilege policy`,
         correlation_id,
         details: {
           tenant_id: binding.tenant_id,
@@ -413,7 +520,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: activeSpeaker.customer_ref || from_e164,
+        actor: activeSpeaker.customer_ref || maskPhone(from_e164),
         role: activeSpeaker.role,
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -448,13 +555,30 @@ export class VoiceInterface {
       };
     }
 
+    // 6b. The webhook deadline may have fired while the engine was working.
+    // Abandon the turn here, BEFORE any synthesis or persistence, so an
+    // abandoned turn never writes a transcript, a voice-delivery row, or an
+    // audit entry for a response the caller never received.
+    if (input.signal?.aborted) {
+      return {
+        status: 'failed',
+        reason: 'Turn abandoned: the response deadline expired before synthesis',
+        error: 'TURN_TIMEOUT',
+        correlation_id,
+        conversation_id: conversationId,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        httpStatus: 504,
+      };
+    }
+
     // 7. Resolve project-level ElevenLabs voice pointer (Strict Project Isolation)
     const voiceId = project.elevenlabs_voice_id?.trim();
     if (!voiceId) {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: speaker.customer_ref || from_e164,
+        actor: speaker.customer_ref || maskPhone(from_e164),
         role: speaker.role,
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -507,12 +631,29 @@ export class VoiceInterface {
         correlation_id,
         voice_id: voiceId,
         model_id: project.elevenlabs_model_id,
+        signal: input.signal,
       });
     } catch (synthErr: any) {
+      // A synthesis aborted by the response deadline is a timeout, not a
+      // provider failure. Reporting it as SYNTHESIS_FAILED would tell the
+      // operator to look at ElevenLabs when the cause was our own deadline.
+      if (synthErr?.aborted || input.signal?.aborted || synthErr?.name === 'AbortError') {
+        return {
+          status: 'failed',
+          reason: 'Turn abandoned: the response deadline expired during synthesis',
+          error: 'TURN_TIMEOUT',
+          correlation_id,
+          conversation_id: conversationId,
+          tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
+          httpStatus: 504,
+        };
+      }
+
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: speaker.customer_ref || from_e164,
+        actor: speaker.customer_ref || maskPhone(from_e164),
         role: speaker.role,
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -530,6 +671,22 @@ export class VoiceInterface {
         tenant_id: binding.tenant_id,
         project_id: binding.project_id,
         httpStatus: 502,
+      };
+    }
+
+    // 8b. The deadline may have fired during synthesis. If it did, the audio
+    // is discarded: no transcript, no voice-delivery row, no alert-audit row.
+    // Persisting any of them would record a turn the caller never received.
+    if (input.signal?.aborted) {
+      return {
+        status: 'failed',
+        reason: 'Turn abandoned: the response deadline expired during synthesis',
+        error: 'TURN_TIMEOUT',
+        correlation_id,
+        conversation_id: conversationId,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        httpStatus: 504,
       };
     }
 
@@ -577,7 +734,7 @@ export class VoiceInterface {
     Logger.audit({
       timestamp: new Date().toISOString(),
       tenant_id: binding.tenant_id,
-      actor: speaker.customer_ref || from_e164,
+      actor: speaker.customer_ref || maskPhone(from_e164),
       role: speaker.role,
       entry_point: 'api',
       tool_or_route: 'VoiceInterface.processVoiceTurn',
@@ -642,9 +799,21 @@ export class VoiceInterface {
         text: req.text,
         voiceId,
         modelId,
+        signal: req.signal,
       });
 
       const audioBuffer = Buffer.from(result.audioBase64, 'base64');
+
+      // The response deadline may have fired while the synthesis was in
+      // flight. If it did, the audio is discarded and NOTHING is recorded:
+      // a 'synthesized' voice-delivery row would assert a turn that was
+      // never delivered to the caller.
+      if (req.signal?.aborted) {
+        const abortErr: any = new Error('Voice synthesis was abandoned: the response deadline expired.');
+        abortErr.name = 'AbortError';
+        abortErr.aborted = true;
+        throw abortErr;
+      }
 
       // Record voice delivery for 24h health tracking
       await DbClient.recordVoiceDelivery({
@@ -720,8 +889,9 @@ export class VoiceInterface {
         return;
       }
 
-      // 2. Capability check
-      if (binding.capability !== 'voice') {
+      // 2. Capability check. A combined 'sms_voice' binding serves both
+      // transports, so it satisfies the voice check as well.
+      if (!matchesCapability(binding.capability, 'voice')) {
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: binding.tenant_id,
@@ -780,7 +950,7 @@ export class VoiceInterface {
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: binding.tenant_id,
-          actor: callerNumber,
+          actor: maskPhone(callerNumber),
           role: 'untrusted_ingress',
           entry_point: 'webhook',
           tool_or_route: req.originalUrl || req.path,
@@ -804,7 +974,7 @@ export class VoiceInterface {
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: binding.tenant_id,
-          actor: callerNumber,
+          actor: maskPhone(callerNumber),
           role: 'untrusted_ingress',
           entry_point: 'webhook',
           tool_or_route: req.originalUrl || req.path,
@@ -835,7 +1005,7 @@ export class VoiceInterface {
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: binding.tenant_id,
-          actor: callerNumber || 'unknown_caller',
+          actor: maskPhone(callerNumber) || 'unknown_caller',
           role: 'guest',
           entry_point: 'webhook',
           tool_or_route: req.originalUrl || req.path,
@@ -853,7 +1023,7 @@ export class VoiceInterface {
       // 5. If speech turn included in inbound call (e.g. testing or immediate SpeechResult)
       const speechText = ((req.body?.SpeechResult || req.body?.speech_text || req.body?.Body || '') as string).trim();
       if (speechText) {
-        const turnResult = await this.processVoiceTurn({
+        const turnResult = await this.processVoiceTurnWithDeadline({
           from_e164: callerNumber,
           to_e164: receivingNumber,
           speech_text: speechText,
@@ -873,7 +1043,7 @@ export class VoiceInterface {
 
         const actionUrl = getVoiceTurnActionUrl(req);
         if (turnResult.status === 'synthesized') {
-          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(turnResult.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(turnResult.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
         } else {
@@ -899,7 +1069,7 @@ export class VoiceInterface {
             twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
           } else {
             // Soft refusal (farm gate, no resources, etc.) — speak and re-gather without terminating call
-            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
           }
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
@@ -922,7 +1092,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
-        actor: callerNumber || 'twilio_voice_webhook',
+        actor: maskPhone(callerNumber) || 'twilio_voice_webhook',
         role: speaker.is_known ? speaker.role : 'guest',
         entry_point: 'webhook',
         tool_or_route: req.originalUrl || req.path,
@@ -933,7 +1103,7 @@ export class VoiceInterface {
 
       const greeting = project.onboarding_reply || 'Welcome to Customer Service Twin. How can I assist you today?';
       const actionUrl = getVoiceTurnActionUrl(req);
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I did not hear anything. Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I did not hear anything. Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);
@@ -992,13 +1162,13 @@ export class VoiceInterface {
           return;
         }
 
-        const repromptTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>I am sorry, I did not catch that. Could you please repeat what you said?</Say>\n  </Gather>\n  <Say>I still did not hear anything. Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+        const repromptTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>I am sorry, I did not catch that. Could you please repeat what you said?</Say>\n  </Gather>\n  <Say>I still did not hear anything. Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(repromptTwiml);
         return;
       }
 
-      const result = await this.processVoiceTurn({
+      const result = await this.processVoiceTurnWithDeadline({
         from_e164: callerNumber,
         to_e164: receivingNumber,
         speech_text: speechText,
@@ -1026,7 +1196,7 @@ export class VoiceInterface {
       }
 
       if (result.status === 'synthesized') {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       } else if (result.status === 'refused') {
@@ -1045,7 +1215,7 @@ export class VoiceInterface {
           twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
         } else {
           // Soft refusal — speak and re-gather without terminating call
-          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" action="${actionUrl}" method="POST"/>\n</Response>`;
+          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${safeMsg}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
         }
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
@@ -1076,7 +1246,7 @@ export class VoiceInterface {
         return;
       }
 
-      const result = await this.processVoiceTurn({
+      const result = await this.processVoiceTurnWithDeadline({
         from_e164,
         to_e164,
         speech_text,
@@ -1138,7 +1308,7 @@ export class VoiceInterface {
         Logger.audit({
           timestamp: new Date().toISOString(),
           tenant_id: null,
-          actor: callerNumber || 'twilio_voice_lifecycle',
+          actor: maskPhone(callerNumber) || 'twilio_voice_lifecycle',
           role: 'untrusted_ingress',
           entry_point: 'webhook',
           tool_or_route: req.originalUrl || req.path,
@@ -1176,7 +1346,7 @@ export class VoiceInterface {
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: tenantId,
-        actor: callerNumber || 'twilio_voice_lifecycle',
+        actor: maskPhone(callerNumber) || 'twilio_voice_lifecycle',
         role: 'call_lifecycle',
         entry_point: 'webhook',
         tool_or_route: req.originalUrl || req.path,
@@ -1226,24 +1396,32 @@ turnRoutes.forEach((route) => {
 });
 
 // 3. Direct Programmatic Voice Turn Endpoint
-voiceInterfaceRouter.post('/api/v1/voice/turn', (req: Request, res: Response) => {
+//    Authenticated: the caller asserts `from_e164`, and the speaker's role and
+//    farm scope are resolved from that number, so an unauthenticated caller
+//    could impersonate a known vFarm member. See middleware/programmatic_api_key.ts.
+voiceInterfaceRouter.post('/api/v1/voice/turn', requireProgrammaticApiKey, (req: Request, res: Response) => {
   VoiceInterface.handleApiTurn(req, res);
 });
 
 // 4. Call Lifecycle Status Webhook
+//    The Twilio-hosted variants are the intended public entry point and are
+//    signed; the /api/v1 variant is programmatic and needs the shared secret.
 const statusRoutes = [
-  '/webhooks/twilio/voice/status',
-  '/twilio/voice/status',
-  '/api/v1/voice/status',
+  { path: '/webhooks/twilio/voice/status', guard: verifyTwilioSignature },
+  { path: '/twilio/voice/status', guard: verifyTwilioSignature },
+  { path: '/api/v1/voice/status', guard: requireProgrammaticApiKey },
 ];
-statusRoutes.forEach((route) => {
-  voiceInterfaceRouter.post(route, (req: Request, res: Response) => {
+statusRoutes.forEach(({ path, guard }) => {
+  voiceInterfaceRouter.post(path, guard, (req: Request, res: Response) => {
     VoiceInterface.handleCallStatus(req, res);
   });
 });
 
 // 5. Direct Voice Synthesize REST Endpoint
-voiceInterfaceRouter.post('/api/v1/voice/synthesize', async (req: Request, res: Response) => {
+//    Authenticated: it synthesizes arbitrary text with the project's ElevenLabs
+//    voice clone, so an unauthenticated caller could burn quota and misuse the
+//    clone. See middleware/programmatic_api_key.ts.
+voiceInterfaceRouter.post('/api/v1/voice/synthesize', requireProgrammaticApiKey, async (req: Request, res: Response) => {
   try {
     const { tenant_id, project_id, speaker_ref, text, conversation_id, correlation_id } = req.body;
     if (!tenant_id || !project_id || !text) {

@@ -4,6 +4,7 @@ import { VoiceLaneService } from './voice_lane.js';
 import { SystemsRegistry } from '../../systems/registry.js';
 import { DbClient } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
+import { requireProgrammaticApiKey } from '../../middleware/programmatic_api_key.js';
 
 export const voiceRouter = Router();
 
@@ -25,8 +26,12 @@ const voiceTurnSchema = z.object({
 /**
  * Direct TTS generation endpoint (as specified in ElevenLabs Reference §4).
  * POST /audio/speak
+ *
+ * Authenticated: the caller may supply `voiceId` directly, so an anonymous
+ * caller could synthesize arbitrary text with an arbitrary voice and spend the
+ * account's quota. See middleware/programmatic_api_key.ts.
  */
-voiceRouter.post('/audio/speak', async (req: Request, res: Response) => {
+voiceRouter.post('/audio/speak', requireProgrammaticApiKey, async (req: Request, res: Response) => {
   const parsed = audioSpeakSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });
@@ -50,8 +55,12 @@ voiceRouter.post('/audio/speak', async (req: Request, res: Response) => {
 /**
  * Interactive voice lane turn endpoint (orchestrator front door for voice).
  * POST /voice/turn
+ *
+ * Authenticated: `from_e164` is caller-asserted and the speaker's role and
+ * farm scope are resolved from it, so an anonymous caller could impersonate a
+ * known vFarm member. See middleware/programmatic_api_key.ts.
  */
-voiceRouter.post('/voice/turn', async (req: Request, res: Response) => {
+voiceRouter.post('/voice/turn', requireProgrammaticApiKey, async (req: Request, res: Response) => {
   const parsed = voiceTurnSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.flatten() });

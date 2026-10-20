@@ -1,3 +1,4 @@
+import { maskPhone } from '../../util/privacy.js';
 import { Router, Request, Response } from 'express';
 import { verifyTwilioSignature } from '../../transport/twilio/signature.js';
 import { CoreRegistry } from '../../core/registry.js';
@@ -6,6 +7,7 @@ import { MessageEnvelope } from '../../core/envelope.js';
 import { normalizeTwilioInbound } from '../../transport/twilio/normalize.js';
 import { DbClient } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
+import { matchesCapability } from '../../core/types.js';
 import { processOutboundQueue } from '../../transport/twilio/outbound.js';
 import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
@@ -54,7 +56,7 @@ smsInterfaceRouter.post('/twilio/sms', (req: Request, res: Response, next) => {
     return;
   }
 
-  if (binding.capability !== 'sms') {
+  if (!matchesCapability(binding.capability, 'sms')) {
     Logger.audit({
       timestamp: new Date().toISOString(),
       tenant_id: binding.tenant_id,
@@ -271,7 +273,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
                 Logger.audit({
                   timestamp: new Date().toISOString(),
                   tenant_id: binding.tenant_id,
-                  actor: normalizedMsg.from_e164,
+                  actor: maskPhone(normalizedMsg.from_e164),
                   role: 'sender',
                   entry_point: 'webhook',
                   tool_or_route: '/webhooks/twilio/sms',
@@ -338,7 +340,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
                 Logger.audit({
                   timestamp: new Date().toISOString(),
                   tenant_id: binding.tenant_id,
-                  actor: normalizedMsg.from_e164,
+                  actor: maskPhone(normalizedMsg.from_e164),
                   role: 'sender',
                   entry_point: 'webhook',
                   tool_or_route: '/webhooks/twilio/sms',

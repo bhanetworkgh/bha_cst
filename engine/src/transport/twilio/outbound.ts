@@ -1,3 +1,4 @@
+import { matchesCapability } from '../../core/types.js';
 import { DbClient } from '../../db/client.js';
 import { OutboundMessage } from './types.js';
 import { SystemsRegistry } from '../../systems/registry.js';
@@ -113,7 +114,9 @@ export function resolveOutboundSendingNumber(msg: OutboundMessage): string | nul
       fromBinding &&
       fromBinding.tenant_id === msg.tenant_id &&
       fromBinding.project_id === msg.project_id &&
-      fromBinding.capability === 'sms'
+      // A combined 'sms_voice' binding serves both transports, so it must
+      // satisfy the SMS check here as well.
+      matchesCapability(fromBinding.capability, 'sms')
     ) {
       return fromBinding.phone_e164;
     }
@@ -174,7 +177,10 @@ export function validateConsentExempt(
     return false;
   }
 
-  if (fromBinding.capability !== 'sms') {
+  // A combined 'sms_voice' binding serves both transports, so it must satisfy
+  // the SMS consent-exempt check. This mirrors the capability match used by the
+  // inbound SMS tenancy resolution.
+  if (!matchesCapability(fromBinding.capability, 'sms')) {
     Logger.audit({
       timestamp: new Date().toISOString(),
       tenant_id: msg.tenant_id,
@@ -272,29 +278,6 @@ export async function processOutboundQueue(): Promise<void> {
           to_e164: msg.to_e164,
           correlation_id: msg.correlation_id,
         },
-      });
-      continue;
-    }
-
-    // Step 1b: Re-check the current project capability (may have been disabled
-    // after the message was queued). Disabled => do not send, fail with reason.
-    if (!isSmsCapabilityEnabled(msg)) {
-      const reason = !msg.project_id
-        ? 'Outbound send refused: message has no project_id, so no project service number binding can be authorized'
-        : 'Outbound send refused: SMS capability is currently disabled for this project';
-      await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
-      Logger.audit({
-        timestamp: new Date().toISOString(),
-        tenant_id: msg.tenant_id,
-        actor: 'outbound_worker',
-        role: 'transport_worker',
-        entry_point: 'api',
-        tool_or_route: 'processOutboundQueue',
-        outcome: 'refused',
-        reason,
-        correlation_id: msg.correlation_id,
-        commercial_impact:
-          'A queued customer reply was not delivered. The customer will not receive an answer on this channel; confirm the project SMS capability and service-number binding.',
       });
       continue;
     }

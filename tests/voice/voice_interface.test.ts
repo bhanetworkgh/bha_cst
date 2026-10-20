@@ -16,6 +16,11 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
   const authToken = process.env.TWILIO_AUTH_TOKEN || 'test_auth_token_for_jest_suite_32chars';
   const twilioBaseUrl = 'http://localhost:3000';
 
+  // The programmatic voice API is authenticated (see middleware/programmatic_api_key.ts).
+  // Tests act as a service-to-service caller and present the shared secret.
+  const PROGRAMMATIC_API_KEY = 'test_programmatic_api_key_32_chars_long';
+  process.env.CST_API_KEY = PROGRAMMATIC_API_KEY;
+
   const mockSynthesizer: AudioSynthesizer = {
     synthesize: vi.fn(async ({ text, voiceId }) => ({
       audioBase64: Buffer.from(`audio-${voiceId}-${text.slice(0, 8)}`).toString('base64'),
@@ -54,15 +59,28 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       bound_at: new Date().toISOString(),
     });
 
-    // Bind Dallas voice DID
+    // Bind a second, Dallas-scoped voice DID.
+    //
+    // The number is a test fixture: the real +19715885824 is NOT owned by the
+    // Twilio account and is deliberately absent from every default.
     CoreRegistry.bindServiceNumber({
-      phone_e164: '+19715885824',
+      phone_e164: '+19715550100',
       tenant_id: 'tenant-vfarm-01',
       project_id: 'proj-vfarm-dallas',
       capability: 'voice',
       status: 'bound',
       bound_at: new Date().toISOString(),
     });
+
+    // Dallas is voice-DISABLED by default (it has no voice pointer and no
+    // owned service number). Bringing it up requires an explicit pointer and
+    // an explicit capability, which is what this test does.
+    const dallasForTest = CoreRegistry.getProject('proj-vfarm-dallas')!;
+    dallasForTest.capabilities.voice = true;
+    dallasForTest.voice_enabled = true;
+    dallasForTest.elevenlabs_voice_id = 'eleven_voice_dallas';
+    dallasForTest.elevenlabs_model_id = 'eleven_turbo_v2_5';
+    CoreRegistry.registerProject(dallasForTest);
   });
 
   afterEach(() => {
@@ -152,7 +170,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
         .set('Host', 'localhost:3000')
         .set('x-test-bypass-signature', 'true')
         .type('form')
-        .send({ CallSid: 'ISO_DID2', From: '+15559990000', To: '+19715885824', CallStatus: 'ringing' });
+        .send({ CallSid: 'ISO_DID2', From: '+15559990000', To: '+19715550100', CallStatus: 'ringing' });
 
       expect(res2.status).toBe(200);
       expect(res2.body.tenant_id).toBe('tenant-vfarm-01');
@@ -276,6 +294,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('rejects voice turn with unknown to_e164', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19998887777',
@@ -310,7 +329,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       expect(res.body.status).toBe('initiated');
       expect(res.body.tenant_id).toBe('tenant-vfarm-01');
       expect(res.body.project_id).toBe('proj-vfarm-main');
-      expect(res.body.twiml).toContain('<Gather input="speech" action="/webhooks/twilio/voice/turn" method="POST">');
+      expect(res.body.twiml).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
     });
 
     it('accepts call from removed speaker as guest caller into voice flow and refuses restricted action', async () => {
@@ -356,6 +375,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       // can continue the conversation with general questions.
       const turnRes = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15551234567',
           to_e164: '+19715885826',
@@ -374,6 +394,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       // conversation going so the caller can ask general support questions.
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15559999999',
           to_e164: '+19715885826',
@@ -391,6 +412,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('rejects voice turn from unknown speaker attempting equipment control', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15559999999',
           to_e164: '+19715885826',
@@ -404,6 +426,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('allows voice turn from unknown speaker for general guest inquiry', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15559999999',
           to_e164: '+19715885826',
@@ -532,6 +555,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19715885826',
@@ -551,6 +575,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('processes valid voice turn for speaker with farm grants through CoreEngine', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19715885826',
@@ -576,6 +601,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15550009999',
           to_e164: '+19715885826',
@@ -596,6 +622,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('preserves tenant_id and project_id on voice delivery records', async () => {
       await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19715885826',
@@ -617,6 +644,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('uses project-specific elevenlabs_voice_id for synthesis', async () => {
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19715885826',
@@ -626,11 +654,21 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('synthesized');
+      // The project must synthesize with its CONFIGURED ElevenLabs voice
+      // pointer, and never with the invalid placeholder that used to be
+      // hardcoded in the seed. The configured pointer is read from the
+      // environment, exactly as the registry does.
+      const configuredVoiceId =
+        process.env.VFARM_ELEVENLABS_VOICE_ID ||
+        process.env.ELEVENLABS_VOICE_ID ||
+        'Hmy97GCI840wuICQesiM';
+
       expect(res.body.voice_id).toBeDefined();
-      expect(res.body.voice_id).toBe('eleven_voice_jason_vfarm');
+      expect(res.body.voice_id).toBe(configuredVoiceId);
+      expect(res.body.voice_id).not.toBe('eleven_voice_jason_vfarm');
 
       expect((mockSynthesizer.synthesize as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-        expect.objectContaining({ voiceId: 'eleven_voice_jason_vfarm' })
+        expect.objectContaining({ voiceId: configuredVoiceId })
       );
     });
 
@@ -641,6 +679,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       const res = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+923082113844',
           to_e164: '+19715885826',
@@ -656,7 +695,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
     it('maintains separate voice_id per project', async () => {
       // Bind voice number for Dallas project
       CoreRegistry.bindServiceNumber({
-        phone_e164: '+19715885824',
+        phone_e164: '+19715550100',
         tenant_id: 'tenant-vfarm-01',
         project_id: 'proj-vfarm-dallas',
         capability: 'voice',
@@ -672,9 +711,10 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       const resDallas = await request(app)
         .post('/api/v1/voice/turn')
+        .set('x-cst-api-key', PROGRAMMATIC_API_KEY)
         .send({
           from_e164: '+15559990000',
-          to_e164: '+19715885824',
+          to_e164: '+19715550100',
           speech_text: 'status',
           correlation_id: 'VOICEISO_DAL_001',
         });
@@ -727,6 +767,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
         .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -755,6 +796,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       await request(app)
         .post('/webhooks/twilio/voice/status')
         .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -776,6 +818,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
         .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -792,6 +835,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       const res = await request(app)
         .post('/webhooks/twilio/voice/status')
         .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 
@@ -809,6 +853,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       await request(app)
         .post('/webhooks/twilio/voice/status')
         .set('Host', 'localhost:3000')
+        .set('x-test-bypass-signature', 'true')
         .type('form')
         .send(payload);
 

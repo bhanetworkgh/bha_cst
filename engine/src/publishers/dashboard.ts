@@ -11,6 +11,8 @@
  *  5. Logs missing configuration warning once at boot without repeated spam.
  */
 
+import { maskPhone } from '../util/privacy.js';
+import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 import { CstEventV1, CST_EVENT_SPEC_VERSION, safeParseCstEventV1 } from '../contracts/events.js';
 
@@ -149,6 +151,11 @@ export class CstDashboardPublisher {
 
     if (!this.isConfigured()) {
       CstDashboardPublisher.logMissingConfigOnce(this.dashboardUrl, this.dashboardKey);
+      await this.recordOutcome(event, eventId, {
+        status: 'missing_configuration',
+        attempts: 0,
+        error: 'MISSING_CONFIGURATION',
+      });
       return {
         success: false,
         attempts: 0,
@@ -172,6 +179,11 @@ export class CstDashboardPublisher {
         Logger.warn(
           `[CstDashboardPublisher] Dry-run validation failed for event ${eventId}: ${issues}`
         );
+        await this.recordOutcome(event, eventId, {
+          status: 'failed',
+          attempts: 0,
+          error: `VALIDATION_FAILED: ${issues}`,
+        });
         return {
           success: false,
           attempts: 0,
@@ -184,6 +196,7 @@ export class CstDashboardPublisher {
         `[CstDashboardPublisher] Dry-run: event ${eventId} (${(event as any).type}) validated against cst.event.v1; no remote request made.`
       );
       Logger.info(`[CstDashboardPublisher] Dry-run payload: ${JSON.stringify(event)}`);
+      await this.recordOutcome(event, eventId, { status: 'dry_run', attempts: 0 });
       return {
         success: true,
         attempts: 0,
@@ -235,6 +248,11 @@ export class CstDashboardPublisher {
 
         // 2xx Success
         if (response.ok) {
+          await this.recordOutcome(event, eventId, {
+            status: 'published',
+            attempts: attempt,
+            http_status: response.status,
+          });
           return {
             success: true,
             status: response.status,
@@ -255,6 +273,12 @@ export class CstDashboardPublisher {
           Logger.warn(
             `[CstDashboardPublisher] Dashboard rejected event ${eventId} with HTTP ${response.status} (non-retryable): ${errText.slice(0, 200)}`
           );
+          await this.recordOutcome(event, eventId, {
+            status: 'failed',
+            attempts: attempt,
+            http_status: response.status,
+            error: `HTTP_${response.status}`,
+          });
           return {
             success: false,
             status: response.status,
@@ -292,6 +316,13 @@ export class CstDashboardPublisher {
       `[CstDashboardPublisher] Exhausted all ${this.maxRetries} attempts for event ${eventId}. Final error: ${lastError}`
     );
 
+    await this.recordOutcome(event, eventId, {
+      status: 'failed',
+      attempts: this.maxRetries,
+      http_status: lastStatus,
+      error: lastError,
+    });
+
     return {
       success: false,
       status: lastStatus,
@@ -300,6 +331,102 @@ export class CstDashboardPublisher {
       eventId,
     };
   }
+
+  /**
+   * Persist the durable outcome of a publish attempt.
+   *
+   * Fire-and-forget by design: recording the evidence must never delay or
+   * fail the customer path, so every error here is swallowed after a log line.
+   * The stored payload is the MASKED, TTL-bounded event so the row can be
+   * replayed later without becoming an unbounded store of customer content.
+   */
+  private async recordOutcome(
+    event: CstEventV1 | Record<string, unknown>,
+    eventId: string,
+    outcome: {
+      status: 'published' | 'failed' | 'missing_configuration' | 'dry_run';
+      attempts: number;
+      http_status?: number;
+      error?: string;
+    }
+  ): Promise<void> {
+    try {
+      const anyEvent = event as any;
+      const data = anyEvent?.data || {};
+      await DbClient.recordDashboardPublishOutcome({
+        event_id: eventId,
+        event_type: String(anyEvent?.type || 'unknown'),
+        specversion: anyEvent?.specversion,
+        turn_id: data.turn_id || anyEvent?.correlation_id,
+        correlation_id: anyEvent?.correlation_id,
+        tenant_id: anyEvent?.tenant_id,
+        project_id: anyEvent?.project_id,
+        status: outcome.status,
+        http_status: outcome.http_status,
+        attempts: outcome.attempts,
+        error: outcome.error,
+        payload: maskEventForStorage(event) as Record<string, unknown>,
+      });
+    } catch (err: any) {
+      Logger.warn(
+        `[CstDashboardPublisher] Could not record publish outcome for ${eventId}: ${err?.message}`,
+      );
+    }
+  }
+}
+
+
+/**
+ * Keys whose values are phone numbers and must be masked before the event is
+ * stored for replay.
+ */
+const PHONE_KEYS = new Set([
+  'from',
+  'from_e164',
+  'to',
+  'to_e164',
+  'phone',
+  'phone_e164',
+  'phone_number',
+  'caller_number',
+  'recipient',
+  'recipient_number',
+  'speaker_phone',
+  'msisdn',
+]);
+
+/**
+ * Produce a replay-safe copy of an event: phone-number values are masked, and
+ * the copy is bounded in size. The stored payload is evidence, not a
+ * customer-content store.
+ */
+export function maskEventForStorage(event: unknown): Record<string, unknown> {
+  const MAX_DEPTH = 8;
+  const MAX_STRING = 2000;
+
+  const walk = (value: any, depth: number, keyHint?: string): any => {
+    if (depth > MAX_DEPTH) return '[depth-limited]';
+    if (value === null || value === undefined) return value ?? null;
+    if (typeof value === 'string') {
+      const masked =
+        keyHint && PHONE_KEYS.has(keyHint.toLowerCase()) ? maskPhone(value) : value;
+      return masked.length > MAX_STRING ? `${masked.slice(0, MAX_STRING)}…[truncated]` : masked;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) {
+      return value.slice(0, 200).map((item) => walk(item, depth + 1));
+    }
+    if (typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value).slice(0, 200)) {
+        out[k] = walk(v, depth + 1, k);
+      }
+      return out;
+    }
+    return null;
+  };
+
+  return walk(event, 0) as Record<string, unknown>;
 }
 
 /**
@@ -371,4 +498,69 @@ export function setActiveDashboardPublisher(publisher: CstDashboardPublisher | n
 /** The publisher every CST event path must use. */
 export function getDashboardPublisher(): CstDashboardPublisher {
   return activePublisher ?? dashboardPublisher;
+}
+
+/**
+ * Replay Dashboard events that were recorded but never ingested.
+ *
+ * The publisher is fire-and-forget, so a failed publish used to be lost once
+ * the log rotated. With the durable outcome table there is a dead-letter view
+ * (`DbClient.getUnpublishedDashboardOutcomes`) and this function re-sends
+ * those events.
+ *
+ * Operationally read-only with respect to the customer path: it only reads the
+ * dead-letter rows and re-issues the Dashboard HTTP request. A replayed event
+ * is marked so it is not replayed twice.
+ *
+ * @param publisher - The publisher instance to use (defaults to the shared one).
+ * @param limit - Maximum events to replay in this pass.
+ * @returns Per-event replay results.
+ */
+export async function replayUnpublishedDashboardEvents(
+  publisher: CstDashboardPublisher,
+  limit = 50
+): Promise<
+  Array<{ event_id: string; success: boolean; status?: number; error?: string }>
+> {
+  const outcomes = DbClient.getUnpublishedDashboardOutcomes(limit);
+  const results: Array<{
+    event_id: string;
+    success: boolean;
+    status?: number;
+    error?: string;
+  }> = [];
+
+  for (const outcome of outcomes) {
+    if (!outcome.payload) {
+      // Nothing to replay from — record the attempt so it stops resurfacing.
+      DbClient.markDashboardOutcomeReplayed(outcome.id!);
+      results.push({
+        event_id: outcome.event_id,
+        success: false,
+        error: 'NO_PAYLOAD',
+      });
+      continue;
+    }
+
+    try {
+      const result = await publisher.publish(outcome.payload);
+      if (result.success) {
+        DbClient.markDashboardOutcomeReplayed(outcome.id!);
+      }
+      results.push({
+        event_id: outcome.event_id,
+        success: result.success,
+        status: result.status,
+        error: result.error,
+      });
+    } catch (err: any) {
+      results.push({
+        event_id: outcome.event_id,
+        success: false,
+        error: err?.message || 'REPLAY_ERROR',
+      });
+    }
+  }
+
+  return results;
 }

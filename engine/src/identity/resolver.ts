@@ -1,3 +1,4 @@
+import { maskPhone } from '../util/privacy.js';
 import { IdentityContext, SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
@@ -93,7 +94,7 @@ export class IdentityResolver {
         : 'unknown') as 'owner' | 'manager' | 'tech' | 'unknown';
 
       if (speaker.is_known) {
-        Logger.info(`Resolved identity for ${cleanPhone} in org ${orgId} via tenant adapter (project=${options.projectId}, role=${speakerRole})`, {
+        Logger.info(`Resolved identity for ${maskPhone(cleanPhone)} in org ${orgId} via tenant adapter (project=${options.projectId}, role=${speakerRole})`, {
           organization_id: orgId,
           tenant_id:       orgId,
           project_id:      options.projectId,
@@ -124,7 +125,7 @@ export class IdentityResolver {
 
       // Adapter resolved the caller as unknown — fail closed, never auto-register.
       const safeRef = `opaque_unresolved_${cleanPhone.replace(/[^0-9]/g, '')}`;
-      Logger.info(`Unregistered sender ${cleanPhone} for org ${orgId} (tenant adapter, project=${options.projectId})`, {
+      Logger.info(`Unregistered sender ${maskPhone(cleanPhone)} for org ${orgId} (tenant adapter, project=${options.projectId})`, {
         organization_id: orgId,
         tenant_id:       orgId,
         project_id:      options.projectId,
@@ -198,7 +199,7 @@ export class IdentityResolver {
 
     // 2. Unknown sender — do NOT guess identity, do NOT auto-register in DB.
     // Return unresolved identity context so router can serve safe onboarding reply.
-    Logger.info(`Unregistered sender ${cleanPhone} for org ${orgId}`, {
+    Logger.info(`Unregistered sender ${maskPhone(cleanPhone)} for org ${orgId}`, {
       organization_id: orgId,
       tenant_id:       orgId,
       system_id:       systemConfig.system_id,

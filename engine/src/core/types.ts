@@ -1,4 +1,25 @@
-export type CapabilityType = 'sms' | 'voice' | 'web' | 'whatsapp' | 'email';
+export type CapabilityType = 'sms' | 'voice' | 'sms_voice' | 'web' | 'whatsapp' | 'email';
+
+/**
+ * Check if a binding's capability matches the requested capability.
+ * Supports the combined 'sms_voice' capability that matches both 'sms' and 'voice'.
+ */
+export function matchesCapability(bindingCapability: CapabilityType | string, requested: CapabilityType): boolean {
+  if (bindingCapability === requested) return true;
+  if (bindingCapability === 'sms_voice' && (requested === 'sms' || requested === 'voice')) return true;
+  return false;
+}
+
+/**
+ * The channel a single turn is on.
+ *
+ * `CapabilityType` includes the combined 'sms_voice', which describes a service
+ * number BINDING that serves both transports. A turn is always on exactly one
+ * transport, so the combined capability never appears as a turn channel. This
+ * type tracks `CapabilityType` automatically, so widening the capability set
+ * cannot silently widen the turn channel.
+ */
+export type TurnChannel = Exclude<CapabilityType, 'sms_voice'>;
 
 export type SpeakerPolicy = 'allowlist' | 'all_project_members';
 

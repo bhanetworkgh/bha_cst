@@ -20,6 +20,7 @@
 
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
+import { maskPhone } from '../util/privacy.js';
 import {
   CONSENT_WORDING_VERSION,
   getConsentWording,
@@ -123,7 +124,7 @@ export async function recordConsent(
 ): Promise<ConsentRecord> {
   const phone = cleanPhone(phoneE164);
   if (!phone || !isValidE164(phone)) {
-    throw new Error(`Invalid phone number: ${phoneE164}`);
+    throw new Error(`Invalid phone number: ${maskPhone(phoneE164)}`);
   }
 
   // Server-side determines the canonical wording. Ignore any client-supplied
@@ -163,7 +164,7 @@ export async function recordOptOut(
 ): Promise<ConsentRecord> {
   const phone = cleanPhone(phoneE164);
   if (!phone || !isValidE164(phone)) {
-    throw new Error(`Invalid phone number: ${phoneE164}`);
+    throw new Error(`Invalid phone number: ${maskPhone(phoneE164)}`);
   }
 
   const now = new Date().toISOString();
@@ -227,7 +228,7 @@ export async function canSendSms(
       entry_point: 'api',
       tool_or_route: 'canSendSms',
       outcome: 'refused',
-      reason: `Outbound SMS blocked: recipient ${phoneE164} has opted out (${record?.opted_out_at})`,
+      reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has opted out (${record?.opted_out_at})`,
       correlation_id: record?.id,
       commercial_impact:
         'An outbound SMS was blocked because the recipient previously sent a STOP keyword. The customer will not receive this message.',
@@ -235,7 +236,7 @@ export async function canSendSms(
     return {
       allowed: false,
       status: 'opted_out',
-      reason: `Recipient ${phoneE164} has opted out of SMS.`,
+      reason: `Recipient ${maskPhone(phoneE164)} has opted out of SMS.`,
     };
   }
 
@@ -248,7 +249,7 @@ export async function canSendSms(
       entry_point: 'api',
       tool_or_route: 'canSendSms',
       outcome: 'refused',
-      reason: `Outbound SMS blocked: recipient ${phoneE164} has no SMS consent record`,
+      reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has no SMS consent record`,
       correlation_id: undefined,
       commercial_impact:
         'An outbound SMS was blocked because the recipient has not consented to SMS. The customer will not receive this message.',
@@ -256,7 +257,7 @@ export async function canSendSms(
     return {
       allowed: false,
       status: 'not_consented',
-      reason: `Recipient ${phoneE164} has not consented to SMS.`,
+      reason: `Recipient ${maskPhone(phoneE164)} has not consented to SMS.`,
     };
   }
 
@@ -346,7 +347,7 @@ export async function recordConsentPrompt(
   }
 ): Promise<ConsentPrompt> {
   const cleanPhone = (phoneE164 || '').trim();
-  if (!cleanPhone) throw new Error(`Invalid phone number: ${phoneE164}`);
+  if (!cleanPhone) throw new Error(`Invalid phone number: ${maskPhone(phoneE164)}`);
 
   const wording = getConsentWording();
   const now = new Date().toISOString();
@@ -421,7 +422,7 @@ export async function activateConsentViaPrompt(
   } = {}
 ): Promise<{ prompt: ConsentPrompt; consent: ConsentRecord }> {
   const cleanPhone = (phoneE164 || '').trim();
-  if (!cleanPhone) throw new Error(`Invalid phone number: ${phoneE164}`);
+  if (!cleanPhone) throw new Error(`Invalid phone number: ${maskPhone(phoneE164)}`);
 
   // Get the prompt from in-memory store (fast path) or look up in DB
   const memKey = DbClient.consentPromptStoreKey(tenantId, cleanPhone, opts.projectId || undefined);
@@ -529,7 +530,7 @@ export async function handleInboundConsentMessage(
     return null;
   }
 
-  Logger.info(`STOP keyword received from ${phoneE164} in tenant ${tenantId}`, {
+  Logger.info(`STOP keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId}`, {
     tenant_id: tenantId,
     phone_e164: phoneE164,
     correlation_id: correlationId,
@@ -573,7 +574,7 @@ export async function handleInboundResubscribeMessage(
     return null; // Let the Core Engine handle non-STOP cases; START from other states is invalid
   }
 
-  Logger.info(`START keyword received from ${phoneE164} in tenant ${tenantId} (re-subscribe request)`, {
+  Logger.info(`START keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId} (re-subscribe request)`, {
     tenant_id: tenantId,
     phone_e164: phoneE164,
     correlation_id: correlationId,
@@ -614,7 +615,7 @@ export async function handleInboundHelpMessage(
     return null;
   }
 
-  Logger.info(`HELP keyword received from ${phoneE164} in tenant ${tenantId}`, {
+  Logger.info(`HELP keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId}`, {
     tenant_id: tenantId,
     phone_e164: phoneE164,
     correlation_id: correlationId,

@@ -117,9 +117,15 @@ describe('CST DB Tenancy Refactor & Persistence Verification', () => {
       status: 'bound',
     });
 
-    // Unbind a default number to verify it does NOT automatically rebind on restart
-    CoreRegistry.unbindServiceNumber('+19715885824');
+    // A number that is NOT in the seed and NOT in the database must never be
+    // bound — not by the seed, and not by a restart.
+    //
+    // This used to be a stale assertion about '+19715885824' being a default
+    // binding. That number is not owned by the Twilio account, so it is no
+    // longer seeded; the assertion now guards the property that matters: a
+    // phantom number is never bound.
     expect(CoreRegistry.resolveServiceNumber('+19715885824')).toBeNull();
+    expect(CoreRegistry.resolveServiceNumber('+19715885825')).toBeNull();
 
     // Simulate process restart: completely wipe in-memory CoreRegistry
     CoreRegistry.clear();
@@ -135,8 +141,9 @@ describe('CST DB Tenancy Refactor & Persistence Verification', () => {
     expect(restoredBinding?.tenant_id).toBe('tenant-custom-persist');
     expect(restoredBinding?.project_id).toBe('proj-custom-01');
 
-    // Verify the unbound number was NOT resurrected
+    // Verify the phantom number was NOT resurrected by the seed on restart
     expect(CoreRegistry.resolveServiceNumber('+19715885824')).toBeNull();
+    expect(CoreRegistry.resolveServiceNumber('+19715885825')).toBeNull();
   });
 
   // 3. Conversations and customers are project-scoped

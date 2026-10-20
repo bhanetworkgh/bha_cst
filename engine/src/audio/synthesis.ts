@@ -4,6 +4,13 @@ export interface AudioSynthesisInput {
   text: string;
   voiceId?: string;
   modelId?: string;
+  /**
+   * Cancellation signal. When the caller abandons the request (for example
+   * a voice webhook that has hit its response deadline) the in-flight TTS
+   * HTTP request is aborted rather than left running to completion, so it
+   * cannot consume quota or complete after the turn was abandoned.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AudioSynthesisResult {
@@ -41,7 +48,7 @@ export function createElevenLabsAudioSynthesizer(
   const customFetch = options.fetchFn || fetch;
 
   return {
-    synthesize: async ({ text, voiceId, modelId }: AudioSynthesisInput): Promise<AudioSynthesisResult> => {
+    synthesize: async ({ text, voiceId, modelId, signal }: AudioSynthesisInput): Promise<AudioSynthesisResult> => {
       // 1. Text validation (fail-closed if empty or whitespace)
       const normalizedText = (text || '').trim();
       if (!normalizedText) {
@@ -90,8 +97,18 @@ export function createElevenLabsAudioSynthesizer(
             text: normalizedText,
             model_id: resolvedModelId,
           }),
+          signal,
         });
       } catch (networkErr: any) {
+        // An abort is an intentional cancellation, not a provider failure:
+        // surface it distinctly so the caller can tell "abandoned" from
+        // "broken", and do not log it as an error.
+        if (networkErr?.name === 'AbortError' || signal?.aborted) {
+          const abortErr: any = new Error('ElevenLabs synthesis was aborted.');
+          abortErr.name = 'AbortError';
+          abortErr.aborted = true;
+          throw abortErr;
+        }
         const errMsg = `ElevenLabs network/connectivity failure: ${networkErr.message}`;
         Logger.error(errMsg);
         throw new Error(errMsg);

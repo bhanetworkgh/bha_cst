@@ -14,6 +14,16 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
   beforeEach(() => {
     DbClient.clearAll();
     CoreRegistry.resetToDefault();
+    // The production seed only carries service numbers the Twilio account
+    // actually owns, so a second project's DID is bound here as a fixture.
+    CoreRegistry.bindServiceNumber({
+      phone_e164: '+19715550100',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-dallas',
+      capability: 'sms',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return {
@@ -49,7 +59,7 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
   // Requirement 1: Two vFarm orgs -> two CST projects -> two DIDs; owner A cannot get owner B farms
   it('Req 1: Isolates farm access between two distinct projects and DIDs', async () => {
     // Project 1 (Austin): DID = +19715885823, Owner A = +923082113844 (owns farm_austin_main)
-    // Project 2 (Dallas): DID = +19715885824, Owner B = +15559990000 (owns farm_dallas_north)
+    // Project 2 (Dallas): DID = +19715550100, Owner B = +15559990000 (owns farm_dallas_north)
 
     const payloadAustin = {
       MessageSid: 'SM_austin_001',
@@ -81,11 +91,11 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
 
   // Requirement 2: Owner A texts project B's DID with a number not on B's speaker list -> onboarding reply, zero farm data
   it('Req 2: Owner A texting Project B DID receives onboarding reply with zero farm data', async () => {
-    // Owner A (+923082113844) texts Dallas DID (+19715885824)
+    // Owner A (+923082113844) texts Dallas DID (+19715550100)
     const payloadCross = {
       MessageSid: 'SM_cross_001',
       From: '+923082113844',
-      To: '+19715885824',
+      To: '+19715550100',
       Body: 'What is the temperature reading?',
     };
 
@@ -152,7 +162,7 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
     const payload = {
       MessageSid: 'SM_disabled_001',
       From: '+15559990000',
-      To: '+19715885824',
+      To: '+19715550100',
       Body: 'Status',
     };
 

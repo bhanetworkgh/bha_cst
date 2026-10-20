@@ -14,6 +14,7 @@
  *
  * These tests pin the invariants so a second identity system cannot creep back.
  */
+import { matchesCapability } from '../../engine/src/core/types.js';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { DbClient } from '../../engine/src/db/client.js';
@@ -82,8 +83,12 @@ describe('Active runtime identity model — Twilio To -> service_number_binding'
     const binding = CoreRegistry.resolveServiceNumber('+19715885823')!;
     expect(binding.tenant_id).toBe(TENANT);
     expect(binding.project_id).toBe(PROJECT);
-    expect(binding.capability).toBe('sms');
     expect(binding.status).toBe('bound');
+    // The service number carries the combined 'sms_voice' capability, so it
+    // must satisfy a capability lookup for EITHER transport.
+    expect(binding.capability).toBe('sms_voice');
+    expect(matchesCapability(binding.capability, 'sms')).toBe(true);
+    expect(matchesCapability(binding.capability, 'voice')).toBe(true);
   });
 
   it('an unbound receiving number resolves to nothing (fail closed)', () => {
@@ -92,8 +97,19 @@ describe('Active runtime identity model — Twilio To -> service_number_binding'
   });
 
   it('two projects of one tenant get distinct receiving numbers and projects', () => {
+    // The production seed only carries service numbers the Twilio account
+    // actually owns, so a second project's DID is bound here as a fixture.
+    CoreRegistry.bindServiceNumber({
+      phone_e164: '+19715550100',
+      tenant_id: TENANT,
+      project_id: 'proj-vfarm-dallas',
+      capability: 'sms',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
+
     expect(CoreRegistry.resolveServiceNumber('+19715885823')?.project_id).toBe(PROJECT);
-    expect(CoreRegistry.resolveServiceNumber('+19715885824')?.project_id).toBe('proj-vfarm-dallas');
+    expect(CoreRegistry.resolveServiceNumber('+19715550100')?.project_id).toBe('proj-vfarm-dallas');
   });
 });
 

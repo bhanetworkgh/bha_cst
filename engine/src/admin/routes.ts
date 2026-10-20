@@ -1,3 +1,4 @@
+import { maskPhone } from '../util/privacy.js';
 import { Router, Request, Response } from 'express';
 import { CoreRegistry } from '../core/registry.js';
 import { Tenant, Project, ServiceNumberBinding, SpeakerRecord } from '../core/types.js';
@@ -193,19 +194,39 @@ adminRouter.get('/numbers/candidate', (_req: Request, res: Response) => {
 adminRouter.post('/numbers/sync', async (req: Request, res: Response) => {
   try {
     const { tenant_id } = req.body;
-    let numbers: string[] = [];
 
-    if (tenant_id) {
-      const adapter = CoreRegistry.getAdapter(tenant_id);
-      if (adapter?.pullCandidateNumbers) {
-        numbers = await adapter.pullCandidateNumbers(tenant_id);
-      }
-    } else {
-      numbers = ['+19715885823', '+19715885824', '+19715885825'];
+    // A candidate number must come from an authoritative source: the tenant
+    // adapter's provider response, or an explicit configuration. There is NO
+    // hardcoded fallback. The previous fallback seeded three numbers, two of
+    // which the account does not own, so a sync could mark an unowned number
+    // as a candidate and make it bindable as an outbound sender — the
+    // precondition for Twilio error 21659.
+    if (!tenant_id) {
+      Logger.warn(
+        'Admin: /numbers/sync requires a tenant_id — candidate numbers are never fabricated (fail closed)',
+      );
+      res.status(400).json({
+        error: 'TENANT_ID_REQUIRED',
+        message:
+          'tenant_id is required. Candidate numbers must come from the tenant adapter or explicit configuration; they are never fabricated.',
+      });
+      return;
     }
 
+    const adapter = CoreRegistry.getAdapter(tenant_id);
+    if (!adapter?.pullCandidateNumbers) {
+      Logger.warn(`Admin: /numbers/sync — tenant ${tenant_id} has no adapter that can supply candidate numbers`);
+      res.status(409).json({
+        error: 'NO_ADAPTER',
+        message: `Tenant ${tenant_id} cannot supply candidate numbers. No numbers were added.`,
+      });
+      return;
+    }
+
+    const numbers = await adapter.pullCandidateNumbers(tenant_id);
+
     CoreRegistry.addCandidateNumbers(numbers);
-    Logger.info(`Admin: Synced ${numbers.length} candidate numbers`);
+    Logger.info(`Admin: Synced ${numbers.length} candidate numbers for tenant ${tenant_id}`);
     res.status(200).json({ status: 'synced', numbers, count: numbers.length });
   } catch (err: any) {
     Logger.error(`Admin number sync error: ${err.message}`);
@@ -641,7 +662,7 @@ adminRouter.post('/speakers', async (req: Request, res: Response) => {
       is_cache_active: true,
     };
 
-    Logger.info(`Admin: Manually onboarded speaker ${cleanPhone} (${customer_ref}) in ${tenant_id}/${project_id}`);
+    Logger.info(`Admin: Manually onboarded speaker ${maskPhone(cleanPhone)} (${customer_ref}) in ${tenant_id}/${project_id}`);
     res.status(201).json({ status: 'created', speaker });
   } catch (err: any) {
     Logger.error(`Admin POST speaker error: ${err.message}`);
@@ -1706,13 +1727,6 @@ adminRouter.get('/sms-consent', async (req: Request, res: Response) => {
       status,
       search,
     );
-
-    const maskPhone = (phone: string): string => {
-      if (!phone || phone.length < 5) return phone;
-      const digits = phone.replace(/\D/g, '');
-      if (digits.length <= 4) return phone.slice(0, -2) + '**';
-      return phone.slice(0, -digits.slice(-4).length) + '*' + digits.slice(-4);
-    };
 
     res.status(200).json({
       status: 'ok',

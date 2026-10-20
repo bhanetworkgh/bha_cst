@@ -1,9 +1,9 @@
-import { CapabilityType } from './types.js';
+import { TurnChannel } from './types.js';
 
 export interface MessageEnvelope {
   tenant_id: string;
   project_id: string;
-  channel: CapabilityType;
+  channel: TurnChannel;
   speaker_ref: string;
   text: string;
   media: string[];
@@ -16,7 +16,7 @@ export interface EnvelopeResponse {
   reply?: string;
   media_url?: string;
   correlation_id: string;
-  channel: CapabilityType;
+  channel: TurnChannel;
   tenant_id: string;
   project_id: string;
   speaker_ref: string;

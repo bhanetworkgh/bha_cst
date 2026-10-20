@@ -55,13 +55,62 @@ describe('CST Core Admin APIs & Multi-Channel Interfaces', () => {
     expect(res.body.project.speaker_policy).toBe('all_project_members');
   });
 
-  it('POST /api/v1/admin/numbers/sync syncs candidate numbers', async () => {
-    const res = await request(app)
-      .post('/api/v1/admin/numbers/sync')
-      .send({ tenant_id: 'tenant-vfarm-01' });
+  it('POST /api/v1/admin/numbers/sync syncs candidate numbers from configuration only', async () => {
+    // Candidate numbers come from VFARM_CANDIDATE_NUMBERS — never from a
+    // hardcoded list. The previous implementation seeded three literal
+    // numbers, two of which the Twilio account does not own, so a sync could
+    // make an unowned number bindable as an outbound sender.
+    const original = process.env.VFARM_CANDIDATE_NUMBERS;
+    process.env.VFARM_CANDIDATE_NUMBERS = '+19715550200,+19715550201';
 
-    expect(res.status).toBe(200);
-    expect(res.body.numbers.length).toBeGreaterThan(0);
+    try {
+      const res = await request(app)
+        .post('/api/v1/admin/numbers/sync')
+        .send({ tenant_id: 'tenant-vfarm-01' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.numbers).toEqual(['+19715550200', '+19715550201']);
+      expect(res.body.count).toBe(2);
+
+      // The unowned phantom numbers are never present.
+      expect(res.body.numbers).not.toContain('+19715885824');
+      expect(res.body.numbers).not.toContain('+19715885825');
+    } finally {
+      if (original === undefined) {
+        delete process.env.VFARM_CANDIDATE_NUMBERS;
+      } else {
+        process.env.VFARM_CANDIDATE_NUMBERS = original;
+      }
+    }
+  });
+
+  it('POST /api/v1/admin/numbers/sync refuses to fabricate candidates when none are configured', async () => {
+    const original = process.env.VFARM_CANDIDATE_NUMBERS;
+    delete process.env.VFARM_CANDIDATE_NUMBERS;
+
+    try {
+      const res = await request(app)
+        .post('/api/v1/admin/numbers/sync')
+        .send({ tenant_id: 'tenant-vfarm-01' });
+
+      // No configured candidates => no numbers, and nothing fabricated.
+      expect(res.status).toBe(200);
+      expect(res.body.numbers).toEqual([]);
+      expect(res.body.count).toBe(0);
+    } finally {
+      if (original === undefined) {
+        delete process.env.VFARM_CANDIDATE_NUMBERS;
+      } else {
+        process.env.VFARM_CANDIDATE_NUMBERS = original;
+      }
+    }
+  });
+
+  it('POST /api/v1/admin/numbers/sync requires a tenant_id', async () => {
+    const res = await request(app).post('/api/v1/admin/numbers/sync').send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('TENANT_ID_REQUIRED');
   });
 
   it('POST /api/v1/admin/numbers/bind binds an unbound DID', async () => {
