@@ -20,6 +20,14 @@ export interface VfarmAdapterConfig {
   timeoutMs?: number;
   fetchFn?: typeof fetch;
   simulateDegraded?: boolean;
+  /**
+   * Whether to seed the DEMO phone -> identity directory.
+   *
+   * Defaults to "not in production". It is an explicit config flag so a
+   * deployment (or a test) can decide without mutating `process.env`, which
+   * is shared state and can leak between concurrently executed test files.
+   */
+  seedDemoDirectory?: boolean;
 }
 
 /** Maps a vFarm organization-member `role` string onto CST's role model.
@@ -445,41 +453,66 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       { id: 'farm_dallas_north', name: 'Dallas North Facility', type: 'farm' },
     ]);
 
-    // Speakers for Project 1 (Austin) — admin-managed phone directory (dev/demo defaults).
-    const p1Speakers = new Map<string, SpeakerRecord>();
-    p1Speakers.set('+923082113844', {
-      person_id: 'usr_vfarm_003',
-      phone_e164: '+923082113844',
-      role: 'owner',
-      farm_ids: ['farm_austin_main'],
-      name: 'Test Owner',
-    });
-    p1Speakers.set('+15551234567', {
-      person_id: 'usr_vfarm_001',
-      phone_e164: '+15551234567',
-      role: 'manager',
-      farm_ids: ['farm_austin_main'],
-      name: 'John Doe',
-    });
-    p1Speakers.set('+15558887777', {
-      person_id: 'usr_vfarm_002',
-      phone_e164: '+15558887777',
-      role: 'tech',
-      farm_ids: ['farm_austin_main'],
-      name: 'Alice Smith',
-    });
-    this.speakersMap.set(proj1.project_id, p1Speakers);
+    // ── The admin-managed phone -> identity directory ────────────────────────
+    //
+    // vFarm exposes no phone field on a user, so the phone -> vFarm user_id
+    // binding is CST-owned and lives in the `customers` table. The runtime
+    // directory below is therefore populated from that durable table, at boot,
+    // by `CoreRegistry.initFromDb()`.
+    //
+    // The entries that used to be seeded here were DEMO identities
+    // (`usr_vfarm_003`, `farm_austin_main`, `bay_04` — invented identifiers,
+    // see migration 015). In production they were not harmless: the seed
+    // re-ran on every process start, so an inbound caller number resolved
+    // against a fabricated person_id, the live organisation-membership check
+    // correctly refused it, the speaker was downgraded to an unknown caller,
+    // and the caller received the GUEST onboarding reply ("a specialist will
+    // assist you shortly") instead of their own farm data.
+    //
+    // So: in production the directory starts EMPTY and is filled only from
+    // the durable customer records. In a non-production environment the demo
+    // directory is still seeded, because the test-suite and the local demo
+    // rely on it.
+    const seedDemoDirectory =
+      this.config.seedDemoDirectory ?? process.env.NODE_ENV !== 'production';
 
-    // Speakers for Project 2 (Dallas)
-    const p2Speakers = new Map<string, SpeakerRecord>();
-    p2Speakers.set('+15559990000', {
-      person_id: 'usr_vfarm_dallas_001',
-      phone_e164: '+15559990000',
-      role: 'owner',
-      farm_ids: ['farm_dallas_north'],
-      name: 'Dallas Owner',
-    });
-    this.speakersMap.set(proj2.project_id, p2Speakers);
+    if (seedDemoDirectory) {
+      // Speakers for Project 1 (Austin) — admin-managed phone directory (dev/demo defaults).
+      const p1Speakers = new Map<string, SpeakerRecord>();
+      p1Speakers.set('+923082113844', {
+        person_id: 'usr_vfarm_003',
+        phone_e164: '+923082113844',
+        role: 'owner',
+        farm_ids: ['farm_austin_main'],
+        name: 'Test Owner',
+      });
+      p1Speakers.set('+15551234567', {
+        person_id: 'usr_vfarm_001',
+        phone_e164: '+15551234567',
+        role: 'manager',
+        farm_ids: ['farm_austin_main'],
+        name: 'John Doe',
+      });
+      p1Speakers.set('+15558887777', {
+        person_id: 'usr_vfarm_002',
+        phone_e164: '+15558887777',
+        role: 'tech',
+        farm_ids: ['farm_austin_main'],
+        name: 'Alice Smith',
+      });
+      this.speakersMap.set(proj1.project_id, p1Speakers);
+
+      // Speakers for Project 2 (Dallas)
+      const p2Speakers = new Map<string, SpeakerRecord>();
+      p2Speakers.set('+15559990000', {
+        person_id: 'usr_vfarm_dallas_001',
+        phone_e164: '+15559990000',
+        role: 'owner',
+        farm_ids: ['farm_dallas_north'],
+        name: 'Dallas Owner',
+      });
+      this.speakersMap.set(proj2.project_id, p2Speakers);
+    }
   }
 
   // Dynamic helper methods for testing & administration
@@ -490,6 +523,24 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   /** Return the vFarm org_id for a project, used for org-member lookups. */
   public _getProjectOrgId(projectId: string): string | null {
     return this.projectsMap.get(projectId)?.tenant_org_id ?? null;
+  }
+
+  /**
+   * Read-only view of the admin-managed phone -> identity directory.
+   *
+   * Exposed so the runtime state can be inspected (admin panel, regression
+   * tests) without reaching into the private map. It performs NO upstream
+   * call and changes nothing.
+   */
+  public getRegisteredSpeaker(projectId: string, phoneE164: string): SpeakerRecord | null {
+    const pMap = this.speakersMap.get(projectId);
+    if (!pMap) return null;
+    return pMap.get((phoneE164 || '').trim()) || null;
+  }
+
+  /** Number of admin-managed phone bindings held for a project. */
+  public getRegisteredSpeakerCount(projectId: string): number {
+    return this.speakersMap.get(projectId)?.size || 0;
   }
 
   public registerSpeaker(projectId: string, speaker: SpeakerRecord): void {

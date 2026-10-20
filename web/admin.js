@@ -363,6 +363,26 @@ function renderSpeakersTable(speakers) {
       ? `<span class="cache-pill active"><span class="pulse-dot"></span> Active TTL</span>`
       : `<span class="cache-pill expired"><span class="pulse-dot"></span> Expired (Live resolve)</span>`;
 
+    // Runtime resolution state.
+    //
+    // The row above is a CST PROJECTION of the account. Whether an inbound
+    // caller with this number resolves as a KNOWN speaker — or is silently
+    // downgraded to a guest and answered with the generic specialist message —
+    // is a separate fact, read from the tenant adapter's live phone->identity
+    // directory. Showing only the projection made a registered-but-unresolvable
+    // account look healthy.
+    const resolutionPill =
+      speaker.identity_resolution === 'bound'
+        ? `<span class="pill active" title="An inbound caller with this number resolves as a known speaker">Resolves at runtime</span>`
+        : `<span class="pill warn" title="This account exists, but an inbound caller with this number would resolve as a GUEST and receive the generic onboarding reply">Not bound at runtime</span>`;
+
+    // Farm grants. The authoritative grant list is the upstream one, read at
+    // resolve time; this is the CST projection, so it is labelled as such.
+    const grantsNote =
+      speaker.farm_grants_state === 'granted'
+        ? '<span class="tag-chip-note">projected grants</span>'
+        : '<span class="tag-chip-note">no projected grants</span>';
+
     // Provenance badge: vFarm owns identity/role; CST owns the phone→user mapping.
     let sourceBadge;
     if (!state.vfarmCustomersLoaded) {
@@ -385,6 +405,7 @@ function renderSpeakersTable(speakers) {
               <strong>${escapeAdminHtml(speaker.customer_ref || 'Unknown Person')}</strong>
               <small>${escapeAdminHtml(speaker.phone_e164)}</small>
               <small>${sourceBadge}</small>
+              <small>${resolutionPill}</small>
             </div>
           </div>
         </td>
@@ -394,6 +415,7 @@ function renderSpeakersTable(speakers) {
         </td>
         <td>
           <span class="role-badge ${escapeAdminHtml(speaker.role)}">${escapeAdminHtml(speaker.role)}</span>
+          <div class="cell-sub">${grantsNote}</div>
         </td>
         <td>
           <div style="max-width:320px;">${farmChips}</div>

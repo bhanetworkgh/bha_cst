@@ -224,6 +224,64 @@ export class CoreRegistry {
         this.resetToDefault();
       }
     }
+
+    // 4. Restore the admin-managed phone -> identity directory from the
+    //    durable CST mapping.
+    //
+    // WHY THIS IS REQUIRED
+    //   vFarm exposes NO phone field on a user (docs handoff §6), so the
+    //   phone -> vFarm user_id binding is CST-owned and lives in the
+    //   `customers` table. The tenant adapter's runtime directory is an
+    //   IN-MEMORY map, and it was only ever written by an admin action
+    //   (registerSpeaker / syncMembers). Nothing restored it at boot.
+    //
+    //   The consequence was severe and is exactly the reported symptom: the
+    //   adapter's constructor re-seeds a DEMO directory on every process
+    //   start, so after each restart the inbound caller number resolved
+    //   against a fabricated person_id. The live organisation-membership
+    //   check then correctly refused that fabricated id, the speaker was
+    //   returned as `opaque_revoked` (an unknown caller), the engine saw
+    //   zero farm scope, and the assistant answered with the generic
+    //   specialist-escalation message instead of the caller's farm data.
+    //
+    //   On Render's free tier the service hibernates after 15 minutes idle,
+    //   so this happened many times a day.
+    //
+    // WHAT THIS DOES NOT DO
+    //   It does not grant, widen or infer any authorisation. The rows are
+    //   only the ones an operator already created through the admin
+    //   console. The live upstream verification (organisation membership,
+    //   then the authoritative farm-grants list) still runs on every
+    //   resolve, and a member removed upstream still resolves as
+    //   `opaque_revoked` and a user with no grants still resolves with
+    //   zero farm scope. Both fail closed, exactly as before.
+    const dbCustomers = await DbClient.getAllCustomers();
+    let hydrated = 0;
+    for (const c of dbCustomers) {
+      const adapter = this.adapters.get(c.tenant_id);
+      if (!adapter?.registerSpeaker) continue;
+      if (!c.customer_ref || !c.phone_e164) continue;
+      if (!c.project_id) continue;
+      try {
+        adapter.registerSpeaker(c.project_id, {
+          person_id: c.customer_ref,
+          phone_e164: c.phone_e164,
+          role: (c.role || 'manager') as 'owner' | 'manager' | 'tech',
+          farm_ids: Array.isArray(c.farm_ids) ? c.farm_ids.filter(Boolean) : [],
+        });
+        hydrated++;
+      } catch (err: any) {
+        Logger.warn(
+          `CoreRegistry: could not restore speaker binding for tenant ${c.tenant_id}: ${err?.message}`,
+        );
+      }
+    }
+    if (hydrated > 0) {
+      Logger.info(
+        `CoreRegistry: restored ${hydrated} admin-managed phone->identity binding(s) from the durable customer records`,
+      );
+    }
+
   }
 
 

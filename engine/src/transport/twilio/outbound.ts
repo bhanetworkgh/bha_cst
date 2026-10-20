@@ -48,8 +48,14 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
     return false;
   }
 
-  // Check if destination phone is registered as belonging to another tenant's system number
-  const registeredSystemForDest = SystemsRegistry.resolveSystemByPhoneNumber(msg.to_e164);
+  // Check if destination phone is registered as belonging to another tenant's system number.
+  // This is a NEGATIVE probe: a customer destination is normally not a CST
+  // system number, so a miss is expected and must not be reported as a
+  // routing failure. The fail-closed behaviour is unchanged — the result is
+  // still null and the cross-tenant check still runs.
+  const registeredSystemForDest = SystemsRegistry.resolveSystemByPhoneNumber(msg.to_e164, {
+    required: false,
+  });
   if (registeredSystemForDest && registeredSystemForDest.tenant_id !== msg.tenant_id) {
     Logger.audit({
       timestamp: new Date().toISOString(),

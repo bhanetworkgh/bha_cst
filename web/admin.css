@@ -888,6 +888,20 @@ body {
   margin: 2px;
 }
 
+/* Sub-label under a cell value: explains what the value represents. */
+.cell-sub {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  margin-top: 3px;
+  letter-spacing: 0.01em;
+}
+
+.tag-chip-note {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  margin-left: 6px;
+}
+
 .tag-chip-empty {
   color: var(--subtle);
   font-style: italic;

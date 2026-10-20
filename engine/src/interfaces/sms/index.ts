@@ -132,7 +132,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
   try {
     const tenancy = req.tenancy!;
     const binding = (req as any).serviceBinding;
-    const normalizedMsg = normalizeTwilioInbound(req.body, tenancy.tenant_id);
+    const normalizedMsg = normalizeTwilioInbound(req.body, tenancy.tenant_id, tenancy.system_id);
 
     // Deduplication check via MessageSid
     const { isDuplicate } = await DbClient.saveInboundMessage(normalizedMsg);

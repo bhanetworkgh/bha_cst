@@ -182,20 +182,45 @@ export class SystemsRegistry {
     }
   }
 
-  static resolveSystemByPhoneNumber(phoneE164: string): SystemConfig | null {
+  /**
+   * Resolve a phone number to the system (tenant) that owns it.
+   *
+   * Two callers use this, with opposite meanings for a "not found" result:
+   *
+   *   1. A POSITIVE resolution — "which system does this INBOUND number
+   *      belong to?" A miss here is a real deployment fault and is reported.
+   *   2. A NEGATIVE cross-tenant probe — "is this OUTBOUND destination a
+   *      number registered to ANOTHER tenant's system?" A miss here is the
+   *      NORMAL case: a customer's own phone is not a CST system number.
+   *
+   * Reporting both as a WARN-level tripwire made an ordinary outbound reply
+   * to a customer look like a routing failure ("Unknown receiving phone
+   * number <customer>") and wrote a spurious refusal entry into the
+   * SECURITY_LEDGER. The negative probe therefore passes `required: false`,
+   * which suppresses the warning while keeping the identical fail-closed
+   * behaviour: the result is still null, and the cross-tenant check still
+   * runs.
+   */
+  static resolveSystemByPhoneNumber(
+    phoneE164: string,
+    options: { required?: boolean } = {}
+  ): SystemConfig | null {
+    const required = options.required !== false;
     if (!phoneE164) return null;
     const system = this.numberToSystemMap.get(phoneE164.trim());
     if (!system) {
-      Logger.audit({
-        timestamp: new Date().toISOString(),
-        tenant_id: null,
-        actor: 'twilio_webhook',
-        role: 'untrusted_ingress',
-        entry_point: 'webhook',
-        tool_or_route: 'resolveSystemByPhoneNumber',
-        outcome: 'refused',
-        reason: `Unknown receiving phone number ${phoneE164}`,
-      });
+      if (required) {
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: null,
+          actor: 'twilio_webhook',
+          role: 'untrusted_ingress',
+          entry_point: 'webhook',
+          tool_or_route: 'resolveSystemByPhoneNumber',
+          outcome: 'refused',
+          reason: `Unknown receiving phone number ${phoneE164}`,
+        });
+      }
       return null;
     }
     return system;

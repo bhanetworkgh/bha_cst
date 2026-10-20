@@ -549,17 +549,47 @@ adminRouter.get('/speakers', async (req: Request, res: Response) => {
     const speakers = customers.map((c) => {
       const expiresAtMs = c.speaker_cache_expires_at ? new Date(c.speaker_cache_expires_at).getTime() : null;
       const is_cache_active = expiresAtMs ? expiresAtMs > now : true;
+
+      // RUNTIME RESOLUTION STATE.
+      //
+      // The row above is a CST projection. Whether an INBOUND caller with this
+      // number resolves as a known speaker is a different question, answered by
+      // the tenant adapter's live phone->identity directory. The two can
+      // disagree, and when they do the caller is silently downgraded to a
+      // guest — which is how "my number is registered but the bot keeps
+      // calling a specialist" happens.
+      //
+      // The UI must show BOTH, otherwise a registered-but-unresolvable account
+      // looks healthy.
+      let identityResolution: 'bound' | 'not_bound' = 'not_bound';
+      const adapter = CoreRegistry.getAdapter(c.tenant_id) as any;
+      const projectId = c.project_id || '';
+      if (adapter?.getRegisteredSpeaker && projectId) {
+        const runtime = adapter.getRegisteredSpeaker(projectId, c.phone_e164);
+        if (runtime && runtime.person_id === c.customer_ref) {
+          identityResolution = 'bound';
+        }
+      }
+
+      const farmIds = c.farm_ids || (c.farm_id ? [c.farm_id] : []);
       return {
         phone_e164: c.phone_e164,
         customer_ref: c.customer_ref,
         person_id: c.customer_ref,
         tenant_id: c.tenant_id,
-        project_id: c.project_id || '',
+        project_id: projectId,
         role: c.role || 'manager',
-        farm_ids: c.farm_ids || (c.farm_id ? [c.farm_id] : []),
-        farm_count: (c.farm_ids || (c.farm_id ? [c.farm_id] : [])).length,
+        farm_ids: farmIds,
+        farm_count: farmIds.length,
+        // 'granted' = the CST projection carries grants. 'none' = it carries
+        // none. The AUTHORITATIVE grant list is the upstream one, read at
+        // resolve time — this is the projection, and it is labelled as such.
+        farm_grants_state: farmIds.length > 0 ? 'granted' : 'none',
         speaker_cache_expires_at: c.speaker_cache_expires_at,
         is_cache_active,
+        // Whether an inbound caller with this number currently resolves as a
+        // known speaker (true) or as a guest (false).
+        identity_resolution: identityResolution,
         created_at: c.created_at,
       };
     });
@@ -1542,6 +1572,98 @@ adminRouter.get('/vfarm/users/:userId/farm-grants', async (req: Request, res: Re
   } catch (err: any) {
     Logger.error(`Admin GET vfarm/users/:userId/farm-grants error: ${err.message}`);
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+/**
+ * POST /api/v1/admin/vfarm/users/:userId/farm-grants
+ *
+ * Grants a vFarm user access to farms. This is the AUTHORITATIVE grant
+ * mechanism: vFarm owns farm membership, so the grant is made upstream
+ * through `POST /api/v1/farms/grants` and CST records nothing of its own.
+ *
+ * Body: { role_id: 'operator' | 'viewer', farm_ids: string[] }
+ *
+ * There is no farm-level `owner` role — `owner` is CST's mapping of the
+ * ORGANISATION role `admin`. The farm role is chosen explicitly.
+ */
+adminRouter.post('/vfarm/users/:userId/farm-grants', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const client = adapter.getLiveClient();
+    if (!client) {
+      res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client not configured' });
+      return;
+    }
+
+    const { userId } = req.params;
+    const { role_id, farm_ids } = req.body || {};
+    if (!userId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'userId is required' });
+      return;
+    }
+    if (role_id !== 'operator' && role_id !== 'viewer') {
+      res.status(400).json({
+        error: 'BAD_REQUEST',
+        message: "role_id must be 'operator' or 'viewer'. There is no farm-level 'owner' role.",
+      });
+      return;
+    }
+    const farmIds = Array.isArray(farm_ids) ? farm_ids.map((f: unknown) => String(f)).filter(Boolean) : [];
+    if (farmIds.length === 0) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_ids must be a non-empty array' });
+      return;
+    }
+
+    const jwt = await adapter.ensureAdminToken();
+    const result = await client.grantUserFarmRoles(userId, role_id, farmIds, jwt || undefined);
+    res.status(201).json({ status: 'ok', user_id: userId, role_id, farm_ids: farmIds, result });
+  } catch (err: any) {
+    Logger.error(`Admin POST vfarm/users/:userId/farm-grants error: ${err.message}`);
+    res.status(502).json({ error: 'VFARM_UPSTREAM_ERROR', message: err.message });
+  }
+});
+
+/**
+ * DELETE /api/v1/admin/vfarm/users/:userId/farm-grants
+ *
+ * Revokes a vFarm user's access to farms. Body: { farm_ids: string[] }
+ */
+adminRouter.delete('/vfarm/users/:userId/farm-grants', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    const client = adapter.getLiveClient();
+    if (!client) {
+      res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client not configured' });
+      return;
+    }
+
+    const { userId } = req.params;
+    const { farm_ids } = req.body || {};
+    if (!userId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'userId is required' });
+      return;
+    }
+    const farmIds = Array.isArray(farm_ids) ? farm_ids.map((f: unknown) => String(f)).filter(Boolean) : [];
+    if (farmIds.length === 0) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_ids must be a non-empty array' });
+      return;
+    }
+
+    const jwt = await adapter.ensureAdminToken();
+    const result = await client.revokeUserFarmRoles(userId, farmIds, jwt || undefined);
+    res.status(200).json({ status: 'ok', user_id: userId, farm_ids: farmIds, result });
+  } catch (err: any) {
+    Logger.error(`Admin DELETE vfarm/users/:userId/farm-grants error: ${err.message}`);
+    res.status(502).json({ error: 'VFARM_UPSTREAM_ERROR', message: err.message });
   }
 });
 

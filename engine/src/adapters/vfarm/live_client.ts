@@ -369,6 +369,120 @@ export class VfarmLiveClient {
     return parseSchema.parse(body);
   }
 
+  // ── Farm role grants (authoritative farm access) ──────────────────────────
+
+  /**
+   * POST /api/v1/farms/grants
+   * Grants a user a farm role. This is the AUTHORITATIVE way to give someone
+   * farm access: vFarm owns farm membership, so the grant must be made
+   * upstream, not in CST.
+   *
+   * Request body (verified against the deployed OpenAPI, `BulkGrantRequest`):
+   *   { user_id: string, role_id: 'operator' | 'viewer', farm_ids: string[] }
+   *
+   * There is no farm-level `owner` role — `owner` is CST's mapping of the
+   * ORGANISATION role `admin`.
+   */
+  async grantUserFarmRoles(
+    userId: string,
+    roleId: 'operator' | 'viewer',
+    farmIds: string[],
+    token?: string
+  ): Promise<{ grants: unknown[]; total: number }> {
+    const path = '/api/v1/farms/grants';
+    return this.writeRequest(
+      path,
+      'POST',
+      { user_id: userId, role_id: roleId, farm_ids: farmIds },
+      this.authHeaders(token)
+    );
+  }
+
+  /**
+   * DELETE /api/v1/farms/grants
+   * Revokes a user's access to the given farms.
+   *
+   * Request body (verified against the deployed OpenAPI, `BulkRevokeRequest`):
+   *   { user_id: string, farm_ids: string[] }
+   */
+  async revokeUserFarmRoles(
+    userId: string,
+    farmIds: string[],
+    token?: string
+  ): Promise<{ grants: unknown[]; total: number }> {
+    const path = '/api/v1/farms/grants';
+    return this.writeRequest(
+      path,
+      'DELETE',
+      { user_id: userId, farm_ids: farmIds },
+      this.authHeaders(token)
+    );
+  }
+
+  /**
+   * Perform a write request against the vFarm API with a JSON body.
+   *
+   * Mirrors `request()` — same auth rules, same timeout, same error mapping —
+   * but sends a verb and a body. The auth token is never logged.
+   */
+  private async writeRequest<T>(
+    path: string,
+    method: 'POST' | 'DELETE' | 'PATCH' | 'PUT',
+    body: unknown,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> {
+    if (!this.apiKey && !(extraHeaders && extraHeaders['Authorization'])) {
+      throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
+    }
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.apiToken && !extraHeaders?.['Authorization']
+        ? { 'Authorization': `Bearer ${this.apiToken}` }
+        : {}),
+      ...(extraHeaders || {}),
+    };
+
+    let res: Response;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        res = await this.fetchFn(url, {
+          method,
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err: any) {
+      const msg = err?.name === 'AbortError'
+        ? `vFarm request timed out after ${this.timeoutMs}ms: ${method} ${path}`
+        : `vFarm network error: ${err?.message ?? String(err)}`;
+      Logger.warn(msg);
+      throw new VfarmNetworkError(msg);
+    }
+
+    if (!res.ok) {
+      const msg = `vFarm HTTP ${res.status} from ${method} ${path}`;
+      Logger.warn(msg);
+      throw new VfarmHttpError(res.status, msg);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      // A write may legitimately answer with no body.
+      parsed = {};
+    }
+    return parsed as T;
+  }
+
   // ── Organization members ──────────────────────────────────────────────────
 
   /**
