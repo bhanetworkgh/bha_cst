@@ -96,4 +96,11 @@ export interface SpeakerIdentity {
   permissions: string[];
   farm_ids: string[];
   unit_context?: Record<string, unknown>;
+  /**
+   * Set to 'degraded' ONLY when the caller could not be resolved because the
+   * identity lookup itself failed (adapter error / timeout). Such a caller is
+   * `is_known: false` for safety (fail closed) but is NOT a genuinely unknown
+   * number, so channels must not answer them with the generic onboarding text.
+   */
+  resolution_state?: 'degraded';
 }

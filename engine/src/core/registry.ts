@@ -475,6 +475,7 @@ export class CoreRegistry {
         role: 'unknown',
         permissions: [],
         farm_ids: [],
+        resolution_state: 'degraded',
       };
     }
   }

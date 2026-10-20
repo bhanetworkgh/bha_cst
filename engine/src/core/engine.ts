@@ -567,6 +567,9 @@ export class CoreEngine {
           reason,
           status: 'onboarding',
           duration_ms: durationMs,
+          // Marks the generic onboarding reply so the voice layer can avoid
+          // repeating it verbatim on every turn of the same call.
+          metadata: { onboarding_gate: true },
         };
 
         this.publishTurn({

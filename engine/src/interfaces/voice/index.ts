@@ -69,6 +69,10 @@ export interface VoiceTurnResult {
   tenant_id?: string;
   project_id?: string;
   httpStatus?: number;
+  /** True when the caller is a guest and the engine answered with an onboarding-status reply. */
+  guest_onboarding?: boolean;
+  /** True when that reply is the generic project onboarding text (the one the caller already heard as the greeting). */
+  onboarding_gate?: boolean;
 }
 
 function escapeXml(unsafe: string): string {
@@ -107,6 +111,67 @@ function getVoiceTurnActionUrl(req?: Request): string {
     }
   }
   return '/webhooks/twilio/voice/turn';
+}
+
+// ── Per-call loop guards ─────────────────────────────────────────────────────
+// Twilio re-posts to the Gather `action` URL after every turn, and the webhook is
+// stateless. Without a counter, a caller who is silent / not recognised hears the
+// exact same sentence forever. The counters ride on the action URL's query string,
+// so they survive across requests (and across instances) with no server state.
+// They are only ever appended to a *retry* prompt; a normal successful turn
+// returns the plain action URL, which resets them.
+const MAX_EMPTY_REPROMPTS = 2;
+const MAX_GUEST_ONBOARDING_TURNS = 1;
+
+const GUEST_NOT_REGISTERED_SPEECH =
+  "I'm sorry, I can only help callers whose phone number is registered, and this number is not registered yet. Please contact our onboarding team to get set up.";
+const GUEST_GOODBYE_SPEECH =
+  "I'm sorry, I still can't help without a registered phone number. Please contact our onboarding team. Goodbye.";
+const EMPTY_SPEECH_GOODBYE =
+  "I'm still not hearing anything, so I'll end the call. Thank you for calling. Goodbye.";
+const SERVICE_UNAVAILABLE_SPEECH =
+  "I'm having trouble verifying your account right now. Please try your call again in a few minutes. Goodbye.";
+
+interface TurnCounters {
+  guest: number;
+  empty: number;
+}
+
+function parseCounter(raw: unknown): number {
+  const n = Number.parseInt(Array.isArray(raw) ? String(raw[0]) : String(raw ?? ''), 10);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, 9);
+}
+
+function readTurnCounters(req: Request): TurnCounters {
+  return { guest: parseCounter(req.query?.g), empty: parseCounter(req.query?.empty) };
+}
+
+/** Action URL with loop counters appended. The result is already XML-attribute safe (`&amp;`). */
+function buildTurnActionUrl(base: string, counters: Partial<TurnCounters>): string {
+  const params: string[] = [];
+  if (counters.guest) params.push(`g=${counters.guest}`);
+  if (counters.empty) params.push(`empty=${counters.empty}`);
+  return params.length ? `${base}?${params.join('&amp;')}` : base;
+}
+
+/**
+ * What to say for a refused turn, and whether to hang up afterwards.
+ * Never speaks internal reasons (e.g. "Tenant adapter unavailable (degraded state)").
+ */
+function getRefusalSpeech(result: VoiceTurnResult): { text: string; hangup: boolean } {
+  if (result.error === 'SERVICE_UNAVAILABLE') {
+    // Retrying cannot help while identity lookup is down, so end the call cleanly.
+    return { text: SERVICE_UNAVAILABLE_SPEECH, hangup: true };
+  }
+  const refusalText = result.reason || result.text || '';
+  const hangup = (
+    refusalText.includes('not authorized') ||
+    refusalText.includes('step-up') ||
+    refusalText.includes('cross-tenant') ||
+    refusalText.includes('FORBIDDEN')
+  );
+  return { text: refusalText || 'I was unable to complete that request.', hangup };
 }
 
 function isTwilioVoiceRequest(req: Request): boolean {
@@ -382,7 +447,23 @@ export class VoiceInterface {
 
     // 3. Resolve caller speaker identity via Tenant Adapter (Fail-closed on degraded adapter)
     const adapterHealthFailure = await this.getAdapterHealthFailure(binding.tenant_id);
-    if (adapterHealthFailure) {
+    const resolvedSpeaker = adapterHealthFailure
+      ? undefined
+      : await CoreRegistry.resolveSpeaker({
+          tenantId: binding.tenant_id,
+          projectId: binding.project_id,
+          phoneE164: from_e164,
+        });
+    // A failed identity lookup is reported by the registry as an unknown-looking
+    // speaker (fail closed). Treat it as a degraded service, NOT as a guest, or a
+    // registered caller is greeted with the generic onboarding text on every turn.
+    const degradedReason: string | null =
+      adapterHealthFailure ||
+      (resolvedSpeaker?.resolution_state === 'degraded'
+        ? 'Speaker identity lookup failed (adapter error or timeout)'
+        : null);
+    if (degradedReason || !resolvedSpeaker) {
+      const degradedDetail = degradedReason || 'Speaker identity could not be resolved';
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
@@ -391,7 +472,7 @@ export class VoiceInterface {
         entry_point: 'api',
         tool_or_route: 'VoiceInterface.processVoiceTurn',
         outcome: 'error',
-        reason: `Speaker resolve failed for tenant ${binding.tenant_id} (degraded): ${adapterHealthFailure}`,
+        reason: `Speaker resolve failed for tenant ${binding.tenant_id} (degraded): ${degradedDetail}`,
         correlation_id,
         details: { tripwire: true },
       });
@@ -404,7 +485,7 @@ export class VoiceInterface {
         character_count: 0,
         audio_bytes: 0,
         error_code: 'ADAPTER_DEGRADED',
-        error_message: adapterHealthFailure,
+        error_message: degradedDetail,
         correlation_id,
       });
 
@@ -419,11 +500,7 @@ export class VoiceInterface {
       };
     }
 
-    const speaker = await CoreRegistry.resolveSpeaker({
-      tenantId: binding.tenant_id,
-      projectId: binding.project_id,
-      phoneE164: from_e164,
-    });
+    const speaker = resolvedSpeaker;
 
     const isGuest = !speaker.is_known || speaker.role === 'unknown';
     const activeSpeaker: SpeakerIdentity = isGuest
@@ -755,6 +832,8 @@ export class VoiceInterface {
       tenant_id: binding.tenant_id,
       project_id: binding.project_id,
       httpStatus: 200,
+      guest_onboarding: engineResponse.status === 'onboarding',
+      onboarding_gate: engineResponse.metadata?.onboarding_gate === true,
     };
   }
 
@@ -1049,13 +1128,8 @@ export class VoiceInterface {
         } else {
           // Distinguish hard security failures (hang up) from soft/recoverable
           // refusals (say a safe message, then re-gather so the caller can continue).
-          const refusalText = turnResult.reason || turnResult.text || '';
-          const isHardFailure = (
-            refusalText.includes('not authorized') ||
-            refusalText.includes('step-up') ||
-            refusalText.includes('cross-tenant') ||
-            refusalText.includes('FORBIDDEN')
-          );
+          const refusal = getRefusalSpeech(turnResult);
+          const isHardFailure = refusal.hangup;
           if (turnResult.status === 'dropped' || turnResult.status === 'failed') {
             const safeErrMsg = 'I apologize, but I am currently experiencing technical difficulties. Please try again shortly or contact your account representative. Goodbye.';
             const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeErrMsg}</Say>\n  <Hangup/>\n</Response>`;
@@ -1063,7 +1137,7 @@ export class VoiceInterface {
             res.status(200).send(twiml);
             return;
           }
-          const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
+          const safeMsg = escapeXml(refusal.text);
           let twiml: string;
           if (isHardFailure) {
             twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
@@ -1149,6 +1223,7 @@ export class VoiceInterface {
       });
 
       const actionUrl = getVoiceTurnActionUrl(req);
+      const counters = readTurnCounters(req);
 
       // Fast-path: Empty speech or silent gather timeout
       if (!speechText) {
@@ -1162,7 +1237,18 @@ export class VoiceInterface {
           return;
         }
 
-        const repromptTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>I am sorry, I did not catch that. Could you please repeat what you said?</Say>\n  </Gather>\n  <Say>I still did not hear anything. Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+        // Bounded: after MAX_EMPTY_REPROMPTS consecutive silent/empty turns, end the
+        // call instead of replaying the same prompt forever.
+        if (counters.empty >= MAX_EMPTY_REPROMPTS) {
+          Logger.info(`Voice turn: ${counters.empty} consecutive empty turns; ending call`, { call_sid: callSid });
+          const byeTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(EMPTY_SPEECH_GOODBYE)}</Say>\n  <Hangup/>\n</Response>`;
+          res.setHeader('Content-Type', 'text/xml; charset=utf-8');
+          res.status(200).send(byeTwiml);
+          return;
+        }
+
+        const retryUrl = buildTurnActionUrl(actionUrl, { guest: counters.guest, empty: counters.empty + 1 });
+        const repromptTwiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${retryUrl}" method="POST">\n    <Say>I am sorry, I did not catch that. Could you please repeat what you said?</Say>\n  </Gather>\n  <Say>I still did not hear anything. Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(repromptTwiml);
         return;
@@ -1196,20 +1282,30 @@ export class VoiceInterface {
       }
 
       if (result.status === 'synthesized') {
-        const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
+        let twiml: string;
+        if (result.guest_onboarding) {
+          // Unregistered caller. The generic onboarding text was already played as the
+          // call greeting, so never replay it verbatim on every turn: say something
+          // distinct once, then say goodbye if the caller keeps trying.
+          if (counters.guest >= MAX_GUEST_ONBOARDING_TURNS) {
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${escapeXml(GUEST_GOODBYE_SPEECH)}</Say>\n  <Hangup/>\n</Response>`;
+          } else {
+            const spoken = result.onboarding_gate ? GUEST_NOT_REGISTERED_SPEECH : (result.text || '');
+            const guestUrl = buildTurnActionUrl(actionUrl, { guest: counters.guest + 1 });
+            twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${guestUrl}" method="POST">\n    <Say>${escapeXml(spoken)}</Say>\n  </Gather>\n  <Say>Thank you for calling. Goodbye.</Say>\n</Response>`;
+          }
+        } else {
+          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
+        }
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
       } else if (result.status === 'refused') {
         // Hard security failures hang up; soft refusals (farm gate, no farm resources)
         // speak a safe reply and re-gather so the caller can continue the conversation.
-        const refusalText = result.reason || result.text || '';
-        const isHardFailure = (
-          refusalText.includes('not authorized') ||
-          refusalText.includes('step-up') ||
-          refusalText.includes('cross-tenant') ||
-          refusalText.includes('FORBIDDEN')
-        );
-        const safeMsg = escapeXml(refusalText || 'I was unable to complete that request.');
+        // Internal reasons (e.g. degraded adapter) are mapped to a caller-safe message.
+        const refusal = getRefusalSpeech(result);
+        const isHardFailure = refusal.hangup;
+        const safeMsg = escapeXml(refusal.text);
         let twiml: string;
         if (isHardFailure) {
           twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Say>${safeMsg}</Say>\n  <Hangup/>\n</Response>`;
