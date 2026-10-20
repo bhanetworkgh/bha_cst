@@ -609,7 +609,23 @@ Verified twice: `GET /api/v1/users/{id}/farm-grants` → 1 grant (role operator)
 
 **Report:** `CST_VFARM_IDENTITY_RESOLUTION_REPORT.md` — §4.2 entitlement, §4.3 the executed grant, §4.3 the unit/unit-id gap, §6 the new admin endpoints, §10 the remaining blockers.
 
-### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)
+### E.1h Release gate — 2026-10-20T20:24Z → 20:40Z (Ahad)
+
+**Release state at the gate:** branch `fix/cst-identity-resolution-farm-access` (local only), commit **`c8be411`**, parent `63a2219`. **Live deploy: `63a2219`** (deploy `dep-dbbrodpsrm7s73fb6sl0`, finished 2026-10-20T19:09:24Z) — the identity fix is **not** deployed. Working tree clean at the commit; nothing pushed.
+
+**Migration decision — 020/021 are ALREADY APPLIED.** They were introduced by `358ccef`; the production ledger reads `0 applied, 22 already recorded` and the log shows `already applied, skipping: 021_repair_service_number_bindings.sql`. **No new migration is required** for this window's work: the identity fix, the admin grant endpoints, the phone masking and the inbound `project_id` are code-only (`messages_in.project_id` already exists from migration 010). **No schema uncertainty identified**, with one exception: the production `customers` row for the test phone is still unverified from here because the DB IP allowlist is empty and no bypass was attempted.
+
+**Safety validation (all confirmed in code):** Twilio signature verification is route middleware on the voice inbound/turn/status routes, so it precedes any database read ✔ · tenant/project routing fails closed (404 `SYSTEM_NOT_FOUND` / `CAPABILITY_DISABLED`) ✔ · identity is re-verified against the live vFarm organisation on every resolve and a removed member yields `opaque_revoked` ✔ · farm scope comes from the upstream grant list and fails closed when the authority is unavailable ✔ · no demo identity in production (`seedDemoDirectory` defaults off) ✔ · the fabricated farm names in the diagnostic `resourceScopesMap` are **not** an authorisation source — `getDiscoveredFarmIds()` uses the live discovered list ✔ · no automatic grant, no cross-tenant fallback, no BHARAG fallback for farm telemetry ✔ · the admin grant routes validate `operator`/`viewer` only, sit behind `requireAdminAuth`, and never echo the upstream token ✔.
+
+**Deploy action Jason needs (two steps, in this order):**
+1. **Set `CST_API_KEY` in the Render dashboard** — the programmatic voice guard fails closed, so without it five routes return 503. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`, store it in 1Password `BHA Render Production Vault`.
+2. **Merge and push:** `git checkout main && git merge --no-ff fix/cst-identity-resolution-farm-access && git push origin main`. Render's `autoDeploy: yes` on `commit` then deploys and runs `node ../scripts/migrate.js && npm start` — no new migrations will apply (020/021 are already recorded).
+
+**Production verification is still to be performed after that deploy** (§4 checklist in the release-gate output): deployed SHA, health, the caller resolving to `debf555c-…` with the correct tenant/project, only the authorised farm visible, one authorised voice call, one authorised SMS, inbound receipt, outbound delivery, conversation persistence, project attribution, and a log sweep for `opaque_revoked`, guest fallback, incorrect tenant routing and the misleading unknown-recipient warning.
+
+**EOD:** `docs/eod-2026-10-20.md` — the 08:30Z–20:30Z window: six workstreams, the test trajectory 618 → 733, the verification evidence, the 21-gap status, the migration decision, the file inventory, the blockers with owners, and the commercial impact.
+
+### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)
 
 | Date | Summary |
 |---|---|
