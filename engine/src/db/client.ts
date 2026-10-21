@@ -1596,6 +1596,60 @@ export class DbClient {
   /**
    * Delete or revoke a customer/speaker.
    */
+  /**
+   * Deactivate a customer binding WITHOUT deleting it.
+   *
+   * The phone -> customer_ref binding is CST-owned: vFarm exposes no phone
+   * field on a user, so a deleted row's mapping cannot be reconstructed from
+   * the upstream. Expiring keeps the record an operator needs in order to
+   * repair it, and is the same "no longer active" mechanism
+   * `/speakers/invalidate` uses.
+   *
+   * The runtime honours the expiry: `lookupCustomerByPhoneAsync` treats an
+   * expired row as a miss, and the Admin Panel reports `is_cache_active:false`.
+   */
+  static async expireCustomer(
+    phoneE164: string,
+    tenantId: string,
+    projectId?: string
+  ): Promise<boolean> {
+    const cleanPhone = phoneE164.trim();
+    const expiredAt = new Date(Date.now() - 1000).toISOString();
+    let expired = false;
+    const pool = this.getPool();
+
+    if (pool) {
+      try {
+        const query = projectId
+          ? `UPDATE customers SET speaker_cache_expires_at = $4, updated_at = CURRENT_TIMESTAMP
+              WHERE (tenant_id = $1 OR organization_id = $1) AND project_id = $2 AND phone_e164 = $3`
+          : `UPDATE customers SET speaker_cache_expires_at = $4, updated_at = CURRENT_TIMESTAMP
+              WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $3`;
+        const params = projectId
+          ? [tenantId, projectId, cleanPhone, expiredAt]
+          : [tenantId, projectId, cleanPhone, expiredAt];
+        const res = await pool.query(query, params);
+        expired = (res.rowCount ?? 0) > 0;
+      } catch (err: any) {
+        Logger.error(`DbClient.expireCustomer Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory store
+    const keys = projectId
+      ? [`${tenantId}:${projectId}:${cleanPhone}`]
+      : [`${tenantId}:${projectId}:${cleanPhone}`, `${tenantId}:${cleanPhone}`];
+    for (const key of keys) {
+      const record = this.customersStore.get(key);
+      if (record) {
+        record.speaker_cache_expires_at = expiredAt;
+        this.customersStore.set(key, record);
+        expired = true;
+      }
+    }
+    return expired;
+  }
+
   static async deleteCustomer(
     phoneE164: string,
     tenantId: string,

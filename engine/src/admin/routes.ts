@@ -489,39 +489,83 @@ adminRouter.post('/speakers/sync', async (req: Request, res: Response) => {
       });
     }
 
-    // Prune users the adapter dropped because they are no longer members of the
-    // vFarm org (pullSpeakers removes them after a live org-members check).
-    // Without this the Admin Panel keeps showing — and re-syncing would keep
-    // resurrecting — a speaker vFarm has already revoked.
+    // Deactivate users the adapter could not confirm as members of the vFarm
+    // org (pullSpeakers drops them after a live org-members check).
     //
-    // Guarded on live mode on purpose: when the adapter cannot verify upstream
-    // it returns its last-known directory intact, so pruning there would delete
-    // real rows on an outage. Fail-closed authorization already happens at
-    // resolve time; this only makes the projection tell the truth.
+    // TWO DIFFERENT OUTCOMES, AND THE DISTINCTION MATTERS
+    //   The phone -> customer_ref binding is CST-OWNED. vFarm exposes no
+    //   phone field on a user, so a DELETED row's mapping cannot be
+    //   reconstructed from the upstream — it can only be re-entered by an
+    //   operator who knows both the customer's number and their vFarm user
+    //   id.
+    //
+    //   (a) The reference IS a vFarm identifier but the user is no longer a
+    //       member: the upstream really revoked them. The binding is stale
+    //       and must go — the Admin Panel must stop showing a speaker vFarm
+    //       has removed. → DELETE.
+    //
+    //   (b) The reference is not a vFarm identifier at all — a PHONE NUMBER
+    //       stored where the vFarm user id belongs. Such a row was never an
+    //       upstream member, so it cannot have been "revoked". It is a DATA
+    //       problem with a data fix, and deleting it destroys the very record
+    //       an operator needs in order to fix it. → EXPIRE (preserved, and
+    //       reported separately so the operator can see it needs repair).
+    //
+    //   Expiring is the repository's existing "no longer active" mechanism —
+    //   the same one `/speakers/invalidate` uses — and it is honoured by the
+    //   runtime lookup.
+    //
+    // The live-mode guard is kept: when the adapter cannot verify upstream it
+    // returns its last-known directory intact, so deactivating there would
+    // expire real rows on an outage.
     const verifiedLive = typeof (adapter as any).isLiveMode === 'function'
       ? (adapter as any).isLiveMode() === true
       : false;
+    // A customer_ref that is an E.164 phone number is not a vFarm identifier:
+    // vFarm exposes no phone field on a user, and its identifiers are UUIDs.
+    const isPhoneShapedReference = (ref: string): boolean => /^\+?[0-9]{7,}$/.test((ref || '').trim());
     let pruned: string[] = [];
+    let needsRepair: string[] = [];
     if (verifiedLive) {
       const upstreamPersonIds = new Set(speakers.map((s) => s.person_id));
       const existing = await DbClient.getAllCustomers(tenant_id, project_id);
       for (const row of existing) {
         if (upstreamPersonIds.has(row.customer_ref)) continue;
-        await DbClient.deleteCustomer(row.phone_e164, tenant_id, project_id);
+        if (isPhoneShapedReference(row.customer_ref)) {
+          // Case (b): the reference is not a vFarm id. Preserve the row —
+          // it holds the phone -> customer mapping an operator has to
+          // repair — and deactivate it so it stops being served.
+          await DbClient.expireCustomer(row.phone_e164, tenant_id, project_id);
+          needsRepair.push(row.customer_ref);
+        } else {
+          // Case (a): genuinely revoked upstream.
+          await DbClient.deleteCustomer(row.phone_e164, tenant_id, project_id);
+          pruned.push(row.customer_ref);
+        }
         unmirrorSpeakerFromAdapter(project_id, row.phone_e164);
-        pruned.push(row.customer_ref);
       }
     }
 
-    Logger.info(`Admin speakers/sync: synced ${synced.length} speakers for tenant=${tenant_id} project=${project_id}${pruned.length ? ` (pruned ${pruned.length} revoked: ${pruned.join(',')})` : ''}`);
+    Logger.info(
+      `Admin speakers/sync: synced ${synced.length} speakers for tenant=${tenant_id} project=${project_id}` +
+        `${pruned.length ? ` (pruned ${pruned.length} revoked: ${pruned.join(',')})` : ''}` +
+        `${needsRepair.length ? ` (deactivated ${needsRepair.length} reference(s) that are not vFarm user ids and need repair)` : ''}`,
+    );
     res.status(200).json({
       status: 'synced',
       tenant_id,
       project_id,
       count: synced.length,
       speakers: synced,
+      // Genuinely revoked upstream: the row was removed.
       pruned_count: pruned.length,
       pruned,
+      // The reference is not a vFarm user id, so it cannot have been revoked.
+      // The row was DEACTIVATED, not deleted, because it holds the
+      // phone -> customer mapping an operator has to repair — and vFarm
+      // cannot supply it (it exposes no phone field on a user).
+      deactivated_count: needsRepair.length,
+      deactivated: needsRepair,
     });
   } catch (err: any) {
     Logger.error(`Admin speakers/sync error: ${err.message}`);

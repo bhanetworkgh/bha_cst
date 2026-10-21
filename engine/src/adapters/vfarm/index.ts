@@ -1042,7 +1042,13 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         const members = await this.httpClient.listOrganizationMembers(orgId);
         const targetRef = (speaker.person_id || '').trim().toLowerCase();
         const upstream = members.find((m) => {
-          if (m.user_id === speaker.person_id) return true;
+          // Compare the SAME way for every key. The id comparison used to be
+          // an exact, untrimmed, case-sensitive match while the email and name
+          // comparisons were normalised, so a reference that differed only by
+          // case or padding silently failed to match. Normalising all three
+          // can only ever select the SAME upstream record — it cannot widen
+          // the authorization beyond what the upstream actually granted.
+          if (m.user_id && m.user_id.trim().toLowerCase() === targetRef) return true;
           if (m.email && m.email.toLowerCase() === targetRef) return true;
           if (m.name && m.name.toLowerCase() === targetRef) return true;
           if ((targetRef === 'own' || targetRef === 'owner') && m.role === 'admin') return true;
@@ -1051,6 +1057,35 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         if (!upstream) {
           // Removed/revoked upstream — fail closed even though a local
           // record still exists.
+          //
+          // DIAGNOSTIC. This branch used to be completely silent, which is why
+          // an operator could not tell "vFarm denied this caller" from "the
+          // local record does not identify a vFarm member" from "the project
+          // points at the wrong vFarm organization". They are different
+          // problems with different fixes, and they must be distinguishable
+          // from the log alone.
+          //
+          // Only counts and the classification are logged: no identifier, no
+          // email, no name, no phone number.
+          const memberListEmpty = members.length === 0;
+          Logger.warn(
+            `vFarm resolveSpeaker: the local customer reference identifies no member of the vFarm organization for project ${params.projectId}; failing closed`,
+            {
+              tenant_id: params.tenantId,
+              project_id: params.projectId,
+              upstream_member_count: members.length,
+              // 'upstream_organization_has_no_members' means the project is
+              // pointed at an organization that has no members — a MAPPING
+              // problem. 'local_reference_matches_no_member' means the
+              // organization is populated but the stored reference does not
+              // identify any of its members — a CUSTOMER-RECORD problem, which
+              // is fixable by storing the caller's vFarm user id as the
+              // customer reference.
+              reason: memberListEmpty
+                ? 'upstream_organization_has_no_members'
+                : 'local_reference_matches_no_member',
+            },
+          );
           return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_revoked');
         }
         effectivePersonId = upstream.user_id;

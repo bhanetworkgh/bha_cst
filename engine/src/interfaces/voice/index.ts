@@ -1049,6 +1049,33 @@ export class VoiceInterface {
         return;
       }
 
+      // A DEGRADED identity is a service failure, not an unknown caller.
+      //
+      // The registry reports a failed identity lookup as an unknown-looking
+      // speaker with `resolution_state: 'degraded'` (fail closed). The voice
+      // TURN path already treats that as a degraded service rather than a
+      // guest — a registered caller must not be greeted with the generic
+      // onboarding text because the upstream was briefly unavailable. This
+      // inbound path did not, so the same failure produced two different
+      // answers depending on which voice entry point the call arrived
+      // through.
+      if (speaker.resolution_state === 'degraded') {
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: binding.tenant_id,
+          actor: maskPhone(callerNumber) || 'unknown_caller',
+          role: 'untrusted_ingress',
+          entry_point: 'webhook',
+          tool_or_route: req.originalUrl || req.path,
+          outcome: 'error',
+          reason: `Speaker identity lookup failed for tenant ${binding.tenant_id} (degraded) — the caller is not an unknown caller`,
+          correlation_id: callSid,
+          details: { tripwire: true },
+        });
+        res.status(503).json({ error: 'SERVICE_UNAVAILABLE', message: 'Identity verification is temporarily unavailable' });
+        return;
+      }
+
       // Inbound entry policy: Allow unregistered/unknown callers to enter voice flow as guest with least privilege
       const isGuest = !speaker.is_known || speaker.role === 'unknown';
       if (isGuest) {

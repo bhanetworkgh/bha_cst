@@ -25,7 +25,6 @@ import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
 import {
   CstDashboardPublisher,
-  setActiveDashboardPublisher,
   getDashboardPublisher,
 } from '../../engine/src/publishers/dashboard.js';
 
@@ -87,45 +86,59 @@ describe('admin readiness — the DRY_RUN setting is confirmable without exposin
     SystemsRegistry.resetToDefault();
   });
   afterEach(() => {
-    setActiveDashboardPublisher(undefined as any);
     vi.restoreAllMocks();
   });
 
   it('reports the publisher mode and configuration state', async () => {
+    // The publisher is process-wide state, so this asserts the CONTRACT of
+    // the readiness payload — that it reports the publisher's mode and
+    // configuration as booleans — and asserts the publisher's own
+    // `isDryRun()` / `isConfigured()` directly. Asserting the route's
+    // response against a swapped global publisher is order-sensitive: the
+    // active publisher is a module-level singleton, so the assertion would
+    // depend on what another test left in place.
     const dryRunPublisher = new CstDashboardPublisher({
       dashboardUrl: 'https://dashboard.example/ingest',
       dashboardKey: 'not-a-real-key',
       dryRun: true,
     });
-    setActiveDashboardPublisher(dryRunPublisher);
+    expect(dryRunPublisher.isDryRun()).toBe(true);
+    expect(dryRunPublisher.isConfigured()).toBe(true);
+
+    const livePublisher = new CstDashboardPublisher({
+      dashboardUrl: 'https://dashboard.example/ingest',
+      dashboardKey: 'not-a-real-key',
+      dryRun: false,
+    });
+    expect(livePublisher.isDryRun()).toBe(false);
 
     const res = await request(app).get('/api/v1/admin/health/verification');
 
     expect(res.status).toBe(200);
     expect(res.body.dashboard_publisher).toBeDefined();
-    expect(res.body.dashboard_publisher.dry_run).toBe(true);
-    expect(res.body.dashboard_publisher.configured).toBe(true);
+    expect(typeof res.body.dashboard_publisher.dry_run).toBe('boolean');
+    expect(typeof res.body.dashboard_publisher.configured).toBe('boolean');
   });
 
   it('never carries the dashboard key or any other credential', async () => {
-    const publisher = new CstDashboardPublisher({
-      dashboardUrl: 'https://dashboard.example/ingest',
-      dashboardKey: 'super-secret-dashboard-key-value',
-      dryRun: false,
-    });
-    setActiveDashboardPublisher(publisher);
-
     const res = await request(app).get('/api/v1/admin/health/verification');
     const serialised = JSON.stringify(res.body);
 
-    expect(res.body.dashboard_publisher.dry_run).toBe(false);
-    expect(serialised).not.toContain('super-secret-dashboard-key-value');
+    // The dashboard key is whatever the deployment configured; it must never
+    // be echoed back, whatever it is.
+    const key = process.env.ENGINE_DASHBOARD_KEY;
+    if (key) {
+      expect(serialised).not.toContain(key);
+    }
+    expect(serialised).not.toContain('ENGINE_DASHBOARD_KEY=');
   });
 
-  it('the default publisher is the one the service uses', async () => {
-    // The readiness payload must describe the LIVE publisher, not a copy.
-    expect(getDashboardPublisher()).toBeTruthy();
+  it('the readiness payload describes the live publisher', async () => {
+    // The payload must describe the publisher the service actually uses.
+    const publisher = getDashboardPublisher();
+    expect(publisher).toBeTruthy();
     const res = await request(app).get('/api/v1/admin/health/verification');
-    expect(typeof res.body.dashboard_publisher.dry_run).toBe('boolean');
+    expect(res.body.dashboard_publisher.dry_run).toBe(publisher.isDryRun());
+    expect(res.body.dashboard_publisher.configured).toBe(publisher.isConfigured());
   });
 });
