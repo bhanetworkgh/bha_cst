@@ -9,6 +9,7 @@ import { SystemsRegistry } from './systems/registry.js';
 import { CstDashboardPublisher, getDashboardPublisher, replayUnpublishedDashboardEvents } from './publishers/dashboard.js';
 import { checkProgrammaticApiKeyBootConfig } from './middleware/programmatic_api_key.js';
 import { RetryableBootstrap } from './bootstrap/bounded.js';
+import { buildQueueHeartbeatPayload } from './observability/queue_heartbeat.js';
 
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
@@ -116,12 +117,7 @@ const workerTimer = setInterval(async () => {
 const heartbeatTimer = setInterval(async () => {
   try {
     const depth = await DbClient.getOutboundQueueDepth();
-    Logger.info('Outbound worker heartbeat', {
-      pending: depth.pending,
-      queued: depth.queued,
-      sending: depth.sending,
-      failed: depth.failed,
-    });
+    Logger.info('Outbound worker heartbeat', buildQueueHeartbeatPayload(depth));
   } catch (err: any) {
     Logger.warn(`Outbound worker heartbeat failed: ${err.message}`);
   }
@@ -129,14 +125,22 @@ const heartbeatTimer = setInterval(async () => {
 heartbeatTimer.unref?.();
 
 // ── Durable registry retry ─────────────────────────────────────────────────
-// ── Durable registry retry ─────────────────────────────────────────────────
 // If the boot could not reach the database, keep retrying in the background so
 // the service converges to a fully hydrated registry without ever needing a
 // restart (and without ever leaving the port unbound).
 const registryRetryTimer = setInterval(() => {
   void registryBootstrap.run().then((ok) => {
     if (ok) {
-      Logger.info('Durable registry bootstrap completed on retry');
+      // The wording matters: `run()` returns the SAME settled promise when
+      // the first boot attempt already succeeded, so this line also fires on
+      // the first tick of a perfectly healthy boot. Logging "completed on
+      // retry" there would tell an operator the registry failed to bootstrap
+      // when it did not. The attempt count is what distinguishes the two.
+      const attempts = registryBootstrap.attemptCount();
+      Logger.info('Durable registry bootstrap confirmed', {
+        attempts,
+        on_retry: attempts > 1,
+      });
       clearInterval(registryRetryTimer);
     }
   });

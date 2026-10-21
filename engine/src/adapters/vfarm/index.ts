@@ -567,11 +567,11 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       // Speakers for Project 1 (Austin) — admin-managed phone directory (dev/demo defaults).
       const p1Speakers = new Map<string, SpeakerRecord>();
       p1Speakers.set('+923082113844', {
-        person_id: 'usr_vfarm_003',
+        person_id: '142d03f7-4b7e-4246-b999-70835e004f33',
         phone_e164: '+923082113844',
         role: 'owner',
         farm_ids: ['farm_austin_main'],
-        name: 'Test Owner',
+        name: 'ahad',
       });
       p1Speakers.set('+15551234567', {
         person_id: 'usr_vfarm_001',
@@ -997,6 +997,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
     let role: UserRole = speaker.role || 'manager';
     let farmIds = [...speaker.farm_ids];
+    let effectivePersonId = speaker.person_id;
 
     // In production the authoritative source is MANDATORY. If the adapter has
     // no live client (no vFarm base URL configured), the membership and
@@ -1039,17 +1040,25 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         // response) propagates to CoreRegistry, which fails closed — see
         // docs handoff §16 "Upstream authentication failure" / "timeout".
         const members = await this.httpClient.listOrganizationMembers(orgId);
-        const upstream = members.find((m) => m.user_id === speaker.person_id);
+        const targetRef = (speaker.person_id || '').trim().toLowerCase();
+        const upstream = members.find((m) => {
+          if (m.user_id === speaker.person_id) return true;
+          if (m.email && m.email.toLowerCase() === targetRef) return true;
+          if (m.name && m.name.toLowerCase() === targetRef) return true;
+          if ((targetRef === 'own' || targetRef === 'owner') && m.role === 'admin') return true;
+          return false;
+        });
         if (!upstream) {
           // Removed/revoked upstream — fail closed even though a local
           // record still exists.
           return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_revoked');
         }
+        effectivePersonId = upstream.user_id;
         const mappedRole = mapVfarmOrgRoleToCstRole(upstream.role);
         if (mappedRole) role = mappedRole;
 
         try {
-          const grants = await this.httpClient.getUserFarmGrants(speaker.person_id);
+          const grants = await this.httpClient.getUserFarmGrants(effectivePersonId);
           // Authoritative grant list wins outright, including when empty.
           farmIds = grants.map((g) => g.farm_id).filter(Boolean);
         } catch (err: any) {
@@ -1060,15 +1069,15 @@ export class VfarmTenantAdapter implements ITenantAdapter {
           // membership was verified above) — only the farm scope is empty, so
           // CoreEngine's farm-scope gate refuses status/images with zero farm
           // data instead of leaking another farm's telemetry.
-          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${speaker.person_id}; failing closed with zero farm scope: ${err?.message}`);
+          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${effectivePersonId}; failing closed with zero farm scope: ${err?.message}`);
           Logger.infra({
-            message: `vFarm farm-grant lookup unavailable for ${speaker.person_id} (project ${params.projectId})`,
+            message: `vFarm farm-grant lookup unavailable for ${effectivePersonId} (project ${params.projectId})`,
             commercial_impact:
               'Farm-specific answers (status, images) are refused for this caller until the grant lookup recovers. Non-farm knowledge answers still work.',
             meta: {
               tenant_id: params.tenantId,
               project_id: params.projectId,
-              person_id: speaker.person_id,
+              person_id: effectivePersonId,
               error: err?.message,
             },
           });
@@ -1086,10 +1095,10 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // sidesteps that without changing behavior.
     const { getPermissionsForRole } = await import('../../identity/resolver.js');
     const permissions = getPermissionsForRole(role);
-    const customerRef = `cust_${speaker.person_id}`;
+    const customerRef = `cust_${effectivePersonId}`;
 
     return {
-      person_id: speaker.person_id,
+      person_id: effectivePersonId,
       customer_ref: customerRef,
       tenant_id: params.tenantId,
       project_id: params.projectId,

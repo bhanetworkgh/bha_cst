@@ -11,6 +11,7 @@ import {
   getConsentStatus,
 } from '../consent/service.js';
 import { getConsentWording, CONSENT_WORDING_VERSION } from '../consent/wording.js';
+import { getDashboardPublisher } from '../publishers/dashboard.js';
 
 export const adminRouter = Router();
 
@@ -325,6 +326,17 @@ adminRouter.get('/health/verification', async (_req: Request, res: Response) => 
 
     const pendingOutbound = await DbClient.getPendingOutboundMessages();
 
+    // The Dashboard publisher's effective mode.
+    //
+    // `DRY_RUN` decides whether CST events are actually delivered to the
+    // Dashboard. It is a deployment setting, and an operator needs to be able
+    // to CONFIRM it without reading a secret out of a log stream. This is an
+    // ADMIN-AUTHENTICATED response, so it reports the boolean and never the
+    // underlying value or the dashboard key. The general log stream is not
+    // the right place for it: a retained, widely-read log is the wrong
+    // surface for a configuration fact.
+    const dashboardPublisher = getDashboardPublisher();
+
     const readiness = {
       status: 'ready',
       platform: 'CST Core Multi-Tenant Platform',
@@ -349,9 +361,25 @@ adminRouter.get('/health/verification', async (_req: Request, res: Response) => 
           status: 'healthy',
         },
       },
+      dashboard_publisher: {
+        configured: dashboardPublisher.isConfigured(),
+        // True means events are validated and logged locally but NOT sent to
+        // the Dashboard. This is the operator's confirmation that no
+        // production Dashboard records are being written.
+        dry_run: dashboardPublisher.isDryRun(),
+      },
       voice_lane: {
         recent_24h_deliveries_count: voiceDeliveries24h.length,
-        healthy: true,
+        // DERIVED, not asserted. This used to be hard-coded `true`, which
+        // meant the admin readiness view claimed the voice lane was healthy
+        // while the public `/health/voice` endpoint was correctly reporting
+        // it as degraded and refusing with 503. The two views contradicted
+        // each other, and the admin one was the optimistic one.
+        //
+        // The gate is the same one `/health/voice` uses: at least one
+        // successful voice delivery in the last 24 hours. Zero deliveries
+        // means the lane is unverified, so it is not healthy.
+        healthy: voiceDeliveries24h.length > 0,
       },
     };
 

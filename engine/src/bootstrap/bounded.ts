@@ -65,6 +65,7 @@ export async function runBounded(
  */
 export class RetryableBootstrap {
   private attempt: Promise<boolean> | null = null;
+  private attempts = 0;
 
   constructor(
     private readonly label: string,
@@ -73,12 +74,24 @@ export class RetryableBootstrap {
   ) {}
 
   /**
+   * How many attempts have actually been STARTED.
+   *
+   * A first attempt that succeeds is still one attempt; a later call that
+   * joins the settled promise starts no new one. This is what distinguishes
+   * "the registry bootstrapped on the first try" from "it needed a retry".
+   */
+  attemptCount(): number {
+    return this.attempts;
+  }
+
+  /**
    * Run (or join) the bootstrap.
    *
    * @returns `true` when every step completed inside its window.
    */
   run(): Promise<boolean> {
     if (this.attempt) return this.attempt;
+    this.attempts++;
     const attempt = (async () => {
       let ok = true;
       for (const step of this.steps) {

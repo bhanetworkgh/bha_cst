@@ -110,4 +110,73 @@ describe('RetryableBootstrap', () => {
     await Promise.all([a, b]);
     expect(calls).toBe(1);
   });
+
+  it('reports ONE attempt when the first attempt succeeds', async () => {
+    // The production log said "Durable registry bootstrap completed on
+    // retry" on a perfectly healthy boot, because `run()` returns the same
+    // settled promise and the retry tick could not tell the difference. The
+    // attempt count is what distinguishes the two cases.
+    const bootstrap = new RetryableBootstrap(
+      'registry',
+      [async () => undefined],
+      1000,
+    );
+
+    expect(await bootstrap.run()).toBe(true);
+    expect(bootstrap.attemptCount()).toBe(1);
+
+    // A later call joins the settled attempt and starts nothing new.
+    expect(await bootstrap.run()).toBe(true);
+    expect(bootstrap.attemptCount()).toBe(1);
+  });
+
+  it('reports the attempt count after a failure that is then retried', async () => {
+    let calls = 0;
+    const bootstrap = new RetryableBootstrap(
+      'registry',
+      [
+        async () => {
+          calls++;
+          if (calls === 1) throw new Error('first attempt failed');
+        },
+      ],
+      1000,
+    );
+
+    expect(await bootstrap.run()).toBe(false);
+    expect(bootstrap.attemptCount()).toBe(1);
+
+    expect(await bootstrap.run()).toBe(true);
+    expect(bootstrap.attemptCount()).toBe(2);
+  });
+
+  it('a rejected step is reported as failed and does not block the retry', async () => {
+    // A rejected step must not be swallowed into a false "ok", and must not
+    // wedge the bootstrap: the service has to be able to converge on a later
+    // tick.
+    const ran: string[] = [];
+    let calls = 0;
+    const bootstrap = new RetryableBootstrap(
+      'registry',
+      [
+        async () => {
+          ran.push('first');
+          calls++;
+          if (calls === 1) throw new Error('database unavailable');
+        },
+        async () => {
+          ran.push('second');
+        },
+      ],
+      1000,
+    );
+
+    expect(await bootstrap.run()).toBe(false);
+    // The chain stopped at the failed step — the second step did not run.
+    expect(ran).toEqual(['first']);
+
+    expect(await bootstrap.run()).toBe(true);
+    expect(ran).toEqual(['first', 'first', 'second']);
+    expect(bootstrap.attemptCount()).toBe(2);
+  });
 });
