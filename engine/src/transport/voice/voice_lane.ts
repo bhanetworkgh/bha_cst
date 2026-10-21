@@ -1,3 +1,4 @@
+import { runVoiceTurnWithDeadline } from './turn_deadline.js';
 import { maskPhone } from '../../util/privacy.js';
 import { randomUUID } from 'crypto';
 import { InboundMessage, OutboundMessage, SystemConfig } from '../twilio/types.js';
@@ -20,6 +21,12 @@ export interface ProcessVoiceTurnInput {
   speech_text: string;
   correlation_id?: string;
   synthesizer?: AudioSynthesizer;
+  /**
+   * Cancellation signal. The response deadline aborts this so the in-flight
+   * synthesis stops instead of completing and leaving a delivery row for a
+   * turn the caller never received.
+   */
+  signal?: AbortSignal;
 }
 
 export interface VoiceTurnSuccessResult {
@@ -74,6 +81,39 @@ export class VoiceLaneService {
    * 3. Fail-closed: Missing clone config or missing voice_id drops turn — never fall back to generic voice.
    * 4. Audit & Transcripts: Link render to conversation transcripts, alert_audit_log, and audit ledgers.
    */
+  /**
+   * Run a voice-lane turn under the SHARED bounded deadline.
+   *
+   * The voice-lane path (`POST /voice/turn`, `POST /audio/speak`) is bounded by
+   * exactly the same rules as the Twilio webhook path, so a slow or cold
+   * instance cannot hold either response open past the provider's budget.
+   * The turn is abandoned on expiry WITHOUT persisting a transcript, a
+   * voice-delivery row, or an outbound message.
+   */
+  static async processVoiceTurnWithDeadline(input: ProcessVoiceTurnInput): Promise<VoiceTurnResult> {
+    const correlation_id = input.correlation_id || `voice_${randomUUID()}`;
+
+    const result = await runVoiceTurnWithDeadline(
+      (signal) => this.processVoiceTurn({ ...input, signal }),
+      {
+        correlationId: correlation_id,
+        tool: 'VoiceLaneService.processVoiceTurnWithDeadline',
+        tenantId: null,
+      },
+    );
+
+    if (!result) {
+      return {
+        status: 'failed',
+        reason: 'The response took too long to prepare',
+        text: 'I am sorry, I took too long to prepare that. Please try again.',
+        error: 'TURN_TIMEOUT',
+        correlation_id,
+      } as unknown as VoiceTurnResult;
+    }
+    return result;
+  }
+
   static async processVoiceTurn(input: ProcessVoiceTurnInput): Promise<VoiceTurnResult> {
     const correlation_id = input.correlation_id || `voice_${randomUUID()}`;
     const from_e164 = (input.from_e164 || '').trim();
@@ -297,8 +337,18 @@ export class VoiceLaneService {
         text: outboundMessage.body,
         voiceId,
         modelId: system.elevenlabs_model_id,
+        signal: input.signal,
       });
     } catch (synthErr: any) {
+      // A synthesis abandoned by the response deadline is a timeout, not a
+      // provider failure, and it must NOT leave a 'synthesized' delivery row
+      // behind: that would assert a turn the caller never received.
+      if (synthErr?.aborted || input.signal?.aborted || synthErr?.name === 'AbortError') {
+        const abortErr: any = new Error('Voice synthesis was abandoned: the response deadline expired.');
+        abortErr.name = 'AbortError';
+        abortErr.aborted = true;
+        throw abortErr;
+      }
       const errorMsg = synthErr.message || 'ElevenLabs synthesis failed';
       Logger.audit({
         timestamp: new Date().toISOString(),
@@ -500,17 +550,22 @@ export class VoiceLaneService {
       delivered_at: new Date().toISOString(),
     });
 
-    // Alert Audit Log
-    const outboundId = `speak_${randomUUID()}`;
-    await AlertAuditLog.write(
-      outboundId,
-      tenantId,
-      normalizedText,
-      {
-        template_id: 'voice_direct_speak',
-        params: { voice_id: voiceId, model_id: modelId, correlation_id },
-      }
-    );
+    // NO alert_audit_log row here, deliberately.
+    //
+    // `alert_audit_log.outbound_message_id` is NOT NULL and REFERENCES
+    // messages_out(id): the table models ONE AUDIT ROW PER OUTBOUND SMS
+    // MESSAGE, and the FK is what enforces that. A direct TTS synthesis is not
+    // an outbound SMS message and produces no `messages_out` row, so there is
+    // nothing valid to reference. The previous code invented an id
+    // (`speak_<uuid>`) that was never persisted, so every write failed with
+    // `alert_audit_log_outbound_message_id_fkey` and no audit row was ever
+    // stored.
+    //
+    // The synthesis IS audited, in the stores that actually model it: the
+    // `voice_deliveries` row written above (status, voice_id, model_id,
+    // character_count, audio_bytes, mime_type, correlation_id) and the
+    // structured audit entry below. Inventing a `messages_out` row to satisfy
+    // the FK would fabricate a message that was never sent.
 
     Logger.audit({
       timestamp: new Date().toISOString(),

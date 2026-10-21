@@ -68,7 +68,9 @@ voiceRouter.post('/voice/turn', requireProgrammaticApiKey, async (req: Request, 
   }
 
   try {
-    const result = await VoiceLaneService.processVoiceTurn({
+    // Bounded by the SHARED voice-turn deadline, so this path cannot hold the
+    // response open past the provider's budget.
+    const result = await VoiceLaneService.processVoiceTurnWithDeadline({
       from_e164: parsed.data.from_e164,
       to_e164: parsed.data.to_e164,
       speech_text: parsed.data.speech_text,

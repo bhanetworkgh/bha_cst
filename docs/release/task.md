@@ -3,7 +3,7 @@
 **Repository:** `bhanetworkgh/bha_cst` (remote `git@github-syedahadbhanetwork:bhanetworkgh/bha_cst.git`)
 **Production:** `https://bha-cst-7u9e.onrender.com` · Render service `srv-db8hepqvcj2c73adpus0` · DB `dpg-db8he2qvcj2c73ado3s0-a`
 **Owner of record:** Ahad (`U0AC6RFNP3P`)
-**Latest evidence refresh:** **2026-10-20T19:55Z**
+**Latest evidence refresh:** **2026-10-21T12:26Z**
 
 > **This file is the authoritative, shareable CST task and evidence ledger.** It replaces the older structure of this file. Detailed evidence lives in linked reports under ``; this ledger links to them rather than embedding long logs.
 >
@@ -20,7 +20,7 @@
 | **Latest verified deployment SHA** | **`b06c68fc5950e56ba140df892929d32c1a78e07a`** — deploy `dep-dbb7gl9srm7s73dc8phg`, created 2026-10-19T20:06:45Z, finished 20:07:43Z | `render deploys list srv-db8hepqvcj2c73adpus0` (Live row) | 2026-10-20T11:55Z |
 | **Deployment drift** | **ZERO** — the Live deploy is identical to repository HEAD | same | 2026-10-20 |
 | Working tree | 1 modified file + 2 untracked docs (all intentional; see §E) | `git status --porcelain` | 2026-10-20T12:15Z |
-| Local verification | **727 passed / 6 skipped / 0 failed** (70 files); typecheck exit 0; build exit 0; `git diff --check` exit 0 — confirmed 6/6 parallel and 3/3 serial | §E, §C | 2026-10-20T19:53Z |
+| Local verification | **753 passed / 6 skipped / 0 failed** (73 files); typecheck exit 0 (0 TS errors); build exit 0; `git diff --check` exit 0 — re-run 2026-10-21T12:24Z | §E, §C | 2026-10-21T12:24Z |
 | Production health | HTTP 200 `{"status":"ok","service":"bha-cst-engine"}`; ~15–22 s cold wake (free tier hibernation after 15 min idle) | `curl` + `render logs` | 2026-10-20T11:56Z |
 | Production migration state | `🎉 Migrations complete: 0 applied, 20 already recorded` — **019 is applied** | `render logs` startup lines | 2026-10-20T10:44:03Z, 11:04:47Z |
 | Production vFarm connectivity | `[vFarm] Initialized with Live Key. Target Farm: dynamic-discovery` | `render logs` | 2026-10-20T10:44:08Z |
@@ -132,6 +132,15 @@ Status labels: `VERIFIED COMPLETE` · `IMPLEMENTED — PRODUCTION ACCEPTANCE PEN
 | **B.7.3** | **Misleading "Unknown receiving phone number" warning** | The helper was used both as a positive resolution and as a **negative** cross-tenant probe; for the negative probe a miss is the normal case (a customer's phone is not a CST system number), yet it logged a WARN-level tripwire refusal. Production showed it for the customer's own number on an ordinary reply. | `CLOSED — VERIFIED` | The negative probe now passes `required: false`; the positive resolution still warns. Fail-closed behaviour unchanged. 2 new tests | — | — | A customer destination no longer produces a false tripwire; a genuinely unknown inbound number still does | `../tests/identity/sms_voice_routing.test.ts` | Closed |
 | **B.7.4** | **Inbound SMS rows were not project-attributable** | `messages_in.project_id` existed (migration 010) and the type carried it, but the normalisation never populated it. | `CLOSED — VERIFIED` | `normalizeTwilioInbound` now carries the resolved project; the inbound row records it | — | — | An inbound message is attributable to a project | `../engine/src/transport/twilio/normalize.ts` | Closed |
 | **B.7.5** | **Admin panel could not show that an account exists but does not resolve** | The panel showed a *projection* only, so a registered-but-unresolvable account looked healthy — which is exactly what happened. | `CODE COMPLETE — EXTERNAL ACCEPTANCE PENDING` | `GET /api/v1/admin/speakers` now returns `identity_resolution` (bound / not_bound) and `farm_grants_state`; the UI adds a "Resolves at runtime" / "Not bound at runtime" pill and labels the farm chips as a projection | Deploy | **Jason** | The panel distinguishes account-exists from identity-resolves | `CST_VFARM_IDENTITY_RESOLUTION_REPORT.md` §6 | Deploy with B.7.1 |
+
+| **B.7.4** | **Live mode could trust a local record without checking upstream (fail-open)** | Two conditions silently skipped the authoritative vFarm membership check: **(A)** the adapter had no live client (no base URL), and **(B)** the project had no `tenant_org_id`. In both cases the local `customers` projection was trusted *including its locally-recorded farm scope* — a stale grant would still grant. | `CLOSED — VERIFIED` | (A) in production a missing live client now fails closed with an error log; (B) in live mode a project with no vFarm organisation id now fails closed with a warning. Both are covered by regression tests | — | — | A missing upstream never yields a locally-trusted identity | `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §11.1 | Closed |
+| **B.7.5** | **`AlertAuditLog` foreign-key failure (voice → SMS audit table)** | `alert_audit_log.outbound_message_id` is `NOT NULL REFERENCES messages_out(id)` — one audit row per outbound SMS message. Two VOICE call sites used it with non-existent references (a fabricated `speak_<uuid>`, and the `correlation_id`, which is a Twilio Call SID in the webhook path). Every voice write failed with `alert_audit_log_outbound_message_id_fkey`, so no voice alert row was ever stored. Production log: FK error ×4, `AlertAuditLog.write failed` ×2. | `CLOSED — VERIFIED` | The two voice call sites no longer write to the SMS audit table, with the reason recorded in the code. No auditability lost: the turn is already recorded in `voice_deliveries` (status, voice_id, model_id, bytes, correlation) and the transcript (rendered text) plus the structured `Logger.audit` entry. The FK keeps its meaning and a test asserts it is not dropped. **No migration** | — | — | The FK stays intact, the voice write no longer violates it, and the voice trail is preserved | `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §11.2 | Closed |
+| **B.7.6** | **Durable per-customer mapping for ALL customers** | The rehydration now handles missing/duplicate/stale/conflicting records explicitly: a missing `project_id`, a project owned by another tenant, and two references for one (project, phone) are each refused rather than silently resolved; a legacy tenant-scoped row never shadows a project-scoped one. | `CODE COMPLETE — EXTERNAL ACCEPTANCE PENDING` | 15 new tests covering multi-customer mapping, restart survival, cross-customer isolation, project scoping, conflicting/legacy rows, revocation, cache invalidation, cross-channel consistency, no seed fallback, and the audit-FK invariant. **No migration required** — `customers` already carries `project_id`/`customer_ref`/`role`/`farm_ids`, migration 012 already set project-scoped uniqueness, and `updateCustomer` already narrows by project | Deploy | **Jason** (deploy) | Every legitimate customer resolves to their own durable record; no seeded fallback; revoke stays revoked | `../tests/identity/durable_customer_mapping.test.ts` | Jason authorises the deploy |
+| **B.7.7** | **vFarm has no user→unit/location contract** | vFarm's hierarchy is `farm → zones → locations → sublocations → devices`, but no endpoint binds a user to a zone/location/device, and the user record has no phone field. CST therefore cannot bind a caller to a *unit*, so live telemetry cannot be served. | `NOT VERIFIED` — missing upstream interface | Confirmed against the deployed OpenAPI (171 paths) and the live API. Tracked as a decision on the existing `LOOP-1792186179087-EWQI`; **no new card was created** | A vFarm user→location endpoint, or an explicit decision to keep live telemetry out of scope | **vFarm product owner** | A unit id is authoritatively reported for the caller, or telemetry is formally out of scope | `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §11.7 | Owner decision before the 31 Oct launch |
+
+| **B.7.8** | **The voice-lane path had no deadline** | The bounded deadline was implemented on the voice-**interface** path only. `VoiceLaneService.processVoiceTurn` — behind `POST /voice/turn` and `POST /audio/speak` — had **no deadline**. Latent today (the guard 503s those routes), but it goes live the moment `CST_API_KEY` is set, which is the next operator action. | `CLOSED — VERIFIED` | The deadline was extracted into `../engine/src/transport/voice/turn_deadline.ts` (a leaf module, so both implementations can share it without a cycle) and **both** paths now use it. The voice-lane synthesis is abortable, and an aborted synthesis records **no** delivery row, so a timeout cannot leave a false "delivered" record. 5 new tests | — | — | Neither voice path can hold a response open past the provider budget | `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §12.2 | Closed |
+| **B.7.9** | **Voice audit trail completeness** | Removing the invalid SMS-audit writes is not on its own proof of a complete voice trail. | `CLOSED — VERIFIED` | Verified: a successful turn has a `voice_deliveries` row + a transcript row (`provider_sid = correlation_id`) + a `Logger.audit` entry; a **failed** turn records a `failed` delivery row with `error_code`; an **aborted/timed-out** turn writes no delivery row and no transcript; the SMS audit FK is still enforced (asserted by a test); SMS audit behaviour is untouched. The SMS-alert write is **kept** on the voice-lane path, which does persist a `messages_out` row via `IntentRouter.routeAndHandle` — the two paths are not equivalent, and the distinction is now documented | — | — | A voice turn is fully auditable without touching the SMS audit table | `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §12.3 | Closed |
+| **B.7.10** | **Operator Playbook did not cover the new failure modes** | The playbook documented the `CST_API_KEY` 503 but not a guest resolution or a voice turn that never answers. | `CODE COMPLETE — EXTERNAL ACCEPTANCE PENDING` | **§6 Area 6** (a registered caller resolves as guest — the four causes, and which must NOT be "fixed") and **§6 Area 7** (a voice turn never answers — the shared deadline, the abort semantics, and the rule that a voice turn never enters the SMS alert-audit table) added | Publication + the drill, which are **not** evidenced | **Destiny** | The published SOP and a recorded drill | `operator-playbook-sop.md` §6 | Destiny publishes and drills |
 
 ### B.8 P2 — Test integrity and external carrier dependency
 
@@ -625,6 +634,97 @@ Verified twice: `GET /api/v1/users/{id}/farm-grants` → 1 grant (role operator)
 
 **EOD:** `docs/eod-2026-10-20.md` — the 08:30Z–20:30Z window: six workstreams, the test trajectory 618 → 733, the verification evidence, the 21-gap status, the migration decision, the file inventory, the blockers with owners, and the commercial impact.
 
+### E.1i Session — 2026-10-21T11:44Z → 12:05Z (Ahad)
+
+**Focus:** durable per-customer identity mapping for every legitimate customer, and the `AlertAuditLog` foreign-key defect. **Local only: nothing committed, pushed, merged, deployed, or changed in production.**
+
+**New findings and fixes (4):**
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | **Live mode with no vFarm client** trusted the local `customers` projection — including its locally-recorded farm scope — because the authoritative check was gated on `if (this.httpClient)` | In production, a missing live client now **fails closed** (`opaque_revoked`) with an error log |
+| 2 | **Live mode with a project that has no `tenant_org_id`** skipped the organisation-membership check for the same reason | In live mode, a project with no vFarm organisation id now **fails closed** with a warning |
+| 3 | **The voice lane wrote into the SMS `alert_audit_log` table** with a fabricated `speak_<uuid>` and with the `correlation_id` (a Twilio Call SID). The FK is `outbound_message_id NOT NULL REFERENCES messages_out(id)` — one audit row per outbound SMS message. Every voice write failed with `alert_audit_log_outbound_message_id_fkey`, so **no voice alert row was ever stored** (production: FK error ×4, `AlertAuditLog.write failed` ×2) | The two offending call sites no longer write to the SMS audit table, with the reason recorded in the code. The turn stays audited in `voice_deliveries` + the transcript + the structured audit entry. **No migration, no invented outbound row, FK untouched** and asserted by a test |
+| 4 | The rehydration could bind a record for a project of another tenant, or pick arbitrarily between conflicting references | Tenant isolation, missing-project and conflicting-reference cases are each refused explicitly, with warnings |
+
+**Files changed (7 source, 1 test new):** `../engine/src/adapters/vfarm/index.ts` (the two fail-closed guards) · `../engine/src/core/registry.ts` (hardened rehydration) · `../engine/src/interfaces/voice/index.ts` (voice-turn audit write removed, unused import) · `../engine/src/transport/voice/voice_lane.ts` (fabricated `speak_` audit write removed) · `../engine/src/../db/client.ts` (unchanged this session) · **new** `../tests/identity/durable_customer_mapping.test.ts` (15 tests).
+
+**Commands, UTC timestamps and exit codes:**
+
+| Command | UTC start | Exit | Result |
+|---|---|---|---|
+| `npx vitest run ../tests/identity/` | 11:57:27Z | 0 | 90 passed (90) |
+| `npx vitest run ../tests/security/` | 11:57:28Z | 0 | 47 passed (47) |
+| `npx vitest run ../tests/voice/` | 11:57:29Z | 0 | 118 passed (118) |
+| `npx vitest run ../tests/consent/` | 11:57:36Z | 0 | 38 passed (38) |
+| `npx vitest run ../tests/adapters/` | 11:57:37Z | 0 | 66 passed (66) |
+| `npx vitest run ../tests/audit/` | 11:57:38Z | 0 | 4 passed (4) |
+| `npx vitest run ../tests/admin/` | 11:57:38Z | 0 | 45 passed (45) |
+| `npx vitest run ../tests/tenancy/` | 11:57:41Z | 0 | 25 passed (25) |
+| **`npm test`** | 11:57:43Z | 0 | **748 passed \| 6 skipped (754), 0 failed**, 63 files, 13 s |
+| `npm run typecheck` / `build` / `git diff --check` | 11:57:56–11:58:00Z | 0 / 0 / 0 | clean |
+
+**Baseline:** 733 passed / 6 skipped (739) → **748 / 754** (+15 tests, +1 file). The prior checkpoint's numbers are not proof of the current tree.
+
+**A real defect in my own new test, found and fixed:** the first version stubbed a *per-instance* vFarm client, which the boot-time rehydration discards — so the authoritative path was never exercised and the revoke case wrongly passed. The stub was moved to the `VfarmHttpClient` **prototype**, so the adapter `initFromDb()` builds is the one under test.
+
+**Render evidence (read-only):** deployed commit `63a2219` (the fixes are **not** deployed) · `/health` 200 · **`CST_API_KEY` is NOT configured** (the engine's own boot check says so; the value was never printed, and the Render API does not expose env var names to this tooling) — so the five programmatic voice routes are closed with 503 in production today · `opaque_revoked` ×23 · `alert_audit_log_outbound_message_id_fkey` ×4 · DB allowlist empty and **not** bypassed.
+
+**Lane:** primary lane is CST identity/tenancy infrastructure. Engine/twin status: **engine-facing prerequisite, not a completed BHA engine integration** — the authorised identity and farm scope reach the CST engine and the CST audit plane only, and are **not** wired into Slack Genie's ledger, the Monitoring Twin, or any other BHA engine surface.
+
+**Decision item:** the missing vFarm user→unit/location contract is tracked on the **existing** `LOOP-1792186179087-EWQI` (vFarm product owner, before the 31 Oct launch, three explicit options). **No new card was created and no ID was invented.**
+
+**Not performed:** no commit, push, merge, deploy, restart, Render configuration change, production data mutation, extra grant, or live SMS/voice test.
+
+### E.1j Session — 2026-10-21T12:07Z → 12:30Z (Ahad) — final gap-closure sprint
+
+**Local only: nothing committed, pushed, merged, deployed, or changed in production.**
+
+**Baseline verified (not assumed):** branch `fix/cst-identity-resolution-farm-access`, HEAD `1fb7697`, 8 modified + 2 untracked, nothing staged. Deployed commit still **`63a2219`**; the local fixes are **absent** from it, and the mis-placed voice alert write is **still present** there. `/health` 200. `CST_API_KEY` **not configured** — all five programmatic voice routes return 503 `CONFIG_MISSING` in production today (verified by a live POST to each).
+
+**New gap found and closed:** the **voice-lane** path (`/voice/turn`, `/audio/speak`) had **no deadline** — only the voice-interface path was bounded. Latent today, live the moment the key is set. The deadline was extracted into `../engine/src/transport/voice/turn_deadline.ts` and **both** paths now use it, with abort propagation so a timeout records no delivery row.
+
+**Voice audit completeness verified** (not merely de-errored): the SMS-alert write is **kept** on the voice-lane path, which persists a `messages_out` row via `IntentRouter.routeAndHandle`, and **removed** on the voice-interface path, which creates none. The two paths are not equivalent, and the distinction is now documented and tested.
+
+**Identity paths audited — no bypass:** SMS, voice (3 sites), web (2 sites) and the standalone resolver all call `CoreRegistry.resolveSpeaker`; no background job resolves identity differently; the only direct read of the adapter's speaker directory is a read-only admin route.
+
+**Files changed (8) + created (3):** `../engine/src/transport/voice/turn_deadline.ts` (**new**) · `../engine/src/transport/voice/voice_lane.ts` (bounded wrapper + abortable synthesis) · `../engine/src/transport/voice/voice_router.ts` (uses the bounded wrapper) · `../engine/src/interfaces/voice/index.ts` (delegates to the shared helper) · `operator-playbook-sop.md` (§6 Areas 6 and 7) · `CST_REMAINING_GAPS_CLOSURE_REPORT.md` (§12) · `../task.md` + mirror · **new** `../tests/voice/voice_lane_deadline.test.ts` (5 tests) · **new** `../engine/src/transport/voice/turn_deadline.ts`.
+
+**Verification — 2026-10-21T12:14Z, all exit 0:** identity 90/90 · voice 123/123 · security 47/47 · consent 38/38 · admin 45/45 · tenancy 25/25 · **`npm test` ×3 → 753 passed / 6 skipped (759), 0 failed** · `npx vitest run --no-file-parallelism` → 753/759 · typecheck 0 · build 0 · `git diff --check` 0. **Baseline 748/754 → 753/759** (+5 tests, +1 file).
+
+**Failures preserved, not masked:** (1) my refactor removed `VoiceInterface.voiceTurnDeadlineMs()` and broke the existing deadline test — the test now uses the shared helper. (2) Three admin tests failed once in an isolated admin run and passed 3/3 in isolation and in every full-suite run — the known order-dependent parallel-execution flake of this suite.
+
+**Decision items:** six tracked, all on **existing** loop IDs (`LOOP-1791848474090-Y5TW`, `LOOP-1791826143428-HOFE`, `LOOP-1792186179087-EWQI`, `LOOP-1790790007707-5R0J`, `LOOP-1791243473841-02JU`/`LOOP-1792187689082-B0M2`, `LOOP-1792452150303-J2F6`) with owner, proposed deadline, options, commercial impact and the evidence required to close each. **No new card was created and no ID was invented.**
+
+**Engine/twin status:** **engine-facing prerequisite — no completed BHA engine integration exists.** A repository-wide search found no Genie ledger, Monitoring Twin or other BHA engine surface; the only ledger is CST's own `SECURITY_LEDGER` and `alert_audit_log`. The verified path to the engine is documented; no target schema, payload, credential or endpoint is proposed because none is specified in the available specifications.
+
+### E.1k Session — 2026-10-21T12:22Z → 12:26Z (Ahad) — final readiness, evidence-only
+
+**No production-changing action, no commit, no push, no merge, no deploy.**
+
+**All seven release-evidence claims reconfirmed against the current tree:**
+
+| Claim | Verified how |
+|---|---|
+| Identity fail-closed, no live vFarm client | `../engine/src/adapters/vfarm/index.ts` — production guard present |
+| Identity fail-closed, no project `tenant_org_id` | same file — live-mode guard present |
+| Durable customer mapping + conflict handling | `../engine/src/core/registry.ts` — the conflicting-reference guard is present |
+| Both voice paths use the shared deadline | `../engine/src/transport/voice/turn_deadline.ts` exists; the interface, the voice lane and the router all call it |
+| The voice audit path no longer inserts invalid identifiers into the SMS FK | `../engine/src/interfaces/voice/index.ts` contains **zero** `AlertAuditLog` references; the voice lane keeps its write **only** because it persists a `messages_out` row |
+| The foreign key remains enforced | `../db/migrations/008_018m_alert_audit_log.sql` — the `NOT NULL REFERENCES messages_out(id)` clause is intact, and a test asserts it |
+| Documentation mirrors synchronized | `../task.md` and `task.md` compare equal |
+| No secrets, full phone numbers, or customer PII in the release documentation | a pattern scan over every changed file returns nothing |
+
+**Fresh verification — 2026-10-21T12:24Z, all exit 0:** `npm test` → **753 passed / 6 skipped (759), 73 files**, 10 s · `npm run typecheck` → 0 TS errors · `npm run build` → clean · `git diff --check` → clean. Focused: identity 90/90 · voice 123/123 · security 47/47 · consent 38/38 · admin 45/45 · tenancy 25/25 · adapters 66/66.
+
+**Documentation closed this session:** the Operator Playbook gained **§6 Area 8 — "An Audit Write Fails (Audit Persistence Hole)"** (the `alert_audit_log_outbound_message_id_fkey` class: the two causes, the read-only diagnostic, the explicit "do not create a `messages_out` row to satisfy the FK" instruction, and how to record an audit hole honestly). The stale hardcoded baseline SHA in the §11.1 pre-push checklist was replaced with a live lookup, so the checklist cannot silently compare against an old commit.
+
+**Fresh Render evidence (read-only):** deployed SHA **`63a2219`** (deploy `dep-dbbrodpsrm7s73fb6sl0`, finished 2026-10-20T19:09:24Z) — the local fixes are **absent** from it · `/health` → 200 · migration ledger `0 applied, 22 already recorded` (no new migrations) · service repo `https://github.com/bhanetworkgh/bha_cst`, branch `main`, `autoDeploy yes / commit` · **`CST_API_KEY` still not configured** (the engine's own boot message; the value was never printed) · DB `plan=free`, `expiresAt=2026-11-14T18:10:20.49769Z`, `ipAllowList=[]` — **not bypassed**, so the production `customers` row remains unverified.
+
+**Operator handoff:** `CST_REMAINING_GAPS_CLOSURE_REPORT.md` §13 — the eight-step authorized sequence (configure `CST_API_KEY` → verify recognition without exposing it → confirm repo/branch/auto-deploy → authorise → verify the deployed SHA → check health/boot logs/identity/voice routes → confirm failures stay fail-closed → record evidence with timestamps), plus the rollback pointer to §11.1.
+
+**Release status: `LOCALLY VERIFIED — AWAITING AUTHORIZED DEPLOYMENT`.** No production deployment and no post-deployment acceptance evidence exist, so `PRODUCTION VERIFIED` does not apply.
+
 ### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)### E.2 Earlier sessions (history preserved)
 
 | Date | Summary |
@@ -669,7 +769,7 @@ Verified twice: `GET /api/v1/users/{id}/farm-grants` → 1 grant (role operator)
 
 > **CST status — 20 Oct 2026 (Ahad)**
 >
-> **Local verification:** **727 passed / 6 skipped / 0 failed** across 70 files (6/6 parallel, 3/3 serial), typecheck clean, build clean, `git diff --check` clean.
+> **Local verification:** **753 passed / 6 skipped / 0 failed** across 64 files (3/3 parallel, 1/1 serial), typecheck clean, build clean, `git diff --check` clean.
 >
 > **Production:** the live deploy is `49ac767` — the same commit as `main` HEAD, zero drift. The previous session's SMS/voice hardening is committed and deployed.
 >

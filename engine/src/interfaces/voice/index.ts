@@ -1,3 +1,4 @@
+import { runVoiceTurnWithDeadline } from '../../transport/voice/turn_deadline.js';
 import { maskPhone } from '../../util/privacy.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
@@ -7,7 +8,6 @@ import { MessageEnvelope, EnvelopeResponse } from '../../core/envelope.js';
 import { SpeakerIdentity, matchesCapability } from '../../core/types.js';
 import { DbClient, VoiceDeliveryRecord } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
-import { AlertAuditLog } from '../../audit/alert_audit.js';
 import {
   AudioSynthesizer,
   createElevenLabsAudioSynthesizer,
@@ -38,8 +38,6 @@ export interface VoiceSynthesizeRequest {
  * answer. Twilio expects a prompt webhook response; a turn can include a
  * CoreEngine round trip and an ElevenLabs synthesis, so it needs a ceiling.
  */
-export const DEFAULT_VOICE_TURN_DEADLINE_MS = 7000;
-
 export interface ProcessVoiceTurnInput {
   from_e164: string;
   to_e164: string;
@@ -270,91 +268,44 @@ export class VoiceInterface {
    * Process an interactive voice turn through the CST Core multi-tenant pipeline.
    */
   /**
-   * The maximum time a voice turn may take before the webhook must answer.
-   *
-   * Twilio expects a webhook response quickly. A turn can include a CoreEngine
-   * round trip and an ElevenLabs synthesis, so without a bound a slow or cold
-   * instance can hold the response open until the provider gives up.
-   *
-   * Overridable with `CST_VOICE_TURN_DEADLINE_MS` for a deployment with a
-   * different provider budget. The value is clamped to a sane range.
-   */
-  static voiceTurnDeadlineMs(): number {
-    const raw = Number(process.env.CST_VOICE_TURN_DEADLINE_MS);
-    if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_VOICE_TURN_DEADLINE_MS;
-    return Math.min(Math.max(raw, 1000), 20000);
-  }
-
-  /**
    * Run a voice turn under a bounded deadline.
+   *
+   * The deadline itself lives in `transport/voice/turn_deadline.ts`, shared
+   * with the voice-lane path so BOTH turn paths are bounded by the same rules.
    *
    * A bare `Promise.race()` is not enough: the losing promise keeps running
    * and can still write a transcript, a voice-delivery row, or an audit entry
    * after the caller has already been answered — a duplicate turn, and a
-   * duplicate billed synthesis.
-   *
-   * So the turn is given an `AbortSignal`. When the deadline fires the
-   * signal is aborted, the in-flight work stops at its next checkpoint, and
-   * the turn is abandoned WITHOUT persisting anything. The caller receives a
-   * `failed` result carrying `TURN_TIMEOUT`, which the existing failure path
-   * renders as a short safe `<Say>` followed by a hang-up.
+   * duplicate billed synthesis. So the turn is given an `AbortSignal`; on
+   * expiry the in-flight work stops at its next checkpoint and the turn is
+   * abandoned WITHOUT persisting anything. The caller receives a `failed`
+   * result carrying `TURN_TIMEOUT`, which the existing failure path renders as
+   * a short safe `<Say>` followed by a hang-up.
    */
   static async processVoiceTurnWithDeadline(
     input: ProcessVoiceTurnInput
   ): Promise<VoiceTurnResult> {
     const correlationId = input.correlation_id || input.call_sid || `voice_${randomUUID()}`;
-    const deadlineMs = this.voiceTurnDeadlineMs();
-    const controller = new AbortController();
-    let timedOut = false;
-    let timer: NodeJS.Timeout | undefined;
 
-    const turnPromise = this.processVoiceTurn({ ...input, signal: controller.signal });
+    const result = await runVoiceTurnWithDeadline(
+      (signal) => this.processVoiceTurn({ ...input, signal }),
+      {
+        correlationId,
+        tool: 'VoiceInterface.processVoiceTurnWithDeadline',
+        tenantId: null,
+      },
+    );
 
-    // The turn promise must never reject unhandled — an abort surfaces as a
-    // rejection from the synthesizer.
-    turnPromise.catch(() => undefined);
-
-    const timeoutPromise = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-        resolve('timeout');
-      }, deadlineMs);
-      if (typeof timer.unref === 'function') timer.unref();
-    });
-
-    try {
-      const outcome = await Promise.race([
-        turnPromise.then((result) => ({ kind: 'completed' as const, result })),
-        timeoutPromise,
-      ]);
-
-      if (outcome === 'timeout') {
-        Logger.audit({
-          timestamp: new Date().toISOString(),
-          tenant_id: null,
-          actor: 'voice_webhook',
-          role: 'system',
-          entry_point: 'webhook',
-          tool_or_route: 'VoiceInterface.processVoiceTurnWithDeadline',
-          outcome: 'error',
-          reason: `Voice turn exceeded the ${deadlineMs}ms response deadline; turn abandoned and no turn was persisted`,
-          correlation_id: correlationId,
-          details: { tripwire: true, deadline_ms: deadlineMs },
-        });
-        return {
-          status: 'failed',
-          reason: 'The response took too long to prepare',
-          error: 'TURN_TIMEOUT',
-          correlation_id: correlationId,
-          httpStatus: 504,
-        };
-      }
-
-      return outcome.result;
-    } finally {
-      if (timer) clearTimeout(timer);
+    if (!result) {
+      return {
+        status: 'failed',
+        reason: 'The response took too long to prepare',
+        error: 'TURN_TIMEOUT',
+        correlation_id: correlationId,
+        httpStatus: 504,
+      };
     }
+    return result;
   }
 
   static async processVoiceTurn(input: ProcessVoiceTurnInput): Promise<VoiceTurnResult> {
@@ -767,26 +718,24 @@ export class VoiceInterface {
       };
     }
 
-    // 9. Alert Audit Log & Conversation Transcripts
-    await AlertAuditLog.write(
-      correlation_id,
-      binding.tenant_id,
-      engineResponse.reply_text,
-      {
-        template_id: 'voice_clone_tts',
-        version: '1.0.0',
-        params: {
-          channel: 'voice',
-          project_id: binding.project_id,
-          voice_id: voiceId,
-          model_id: project.elevenlabs_model_id,
-          audio_bytes: synthResult.audio_bytes,
-          mime_type: synthResult.mime_type,
-          correlation_id,
-        },
-      },
-      binding.tenant_id
-    );
+    // 9. Conversation transcripts.
+    //
+    // NO alert_audit_log row here, deliberately.
+    //
+    // `alert_audit_log.outbound_message_id` is NOT NULL and REFERENCES
+    // messages_out(id): the table models ONE AUDIT ROW PER OUTBOUND SMS
+    // MESSAGE. A spoken turn is not an outbound SMS message and writes no
+    // `messages_out` row, so there is no valid row to reference. The previous
+    // code passed the correlation id — a Twilio Call SID in the webhook path —
+    // so every write failed with `alert_audit_log_outbound_message_id_fkey`
+    // (observed live) and no audit row was ever stored.
+    //
+    // The turn is audited, in the stores that model it: the `voice_deliveries`
+    // row written above (status, voice_id, character_count, audio_bytes,
+    // mime_type, correlation_id), the transcript row below (the rendered reply
+    // text, project_id, tenant_id, direction), and the structured audit entry
+    // that follows. Inventing a `messages_out` row to satisfy the FK would
+    // fabricate a message that was never sent.
 
     const messageId = `vmsg_out_${randomUUID()}`;
     if (conversationId) {

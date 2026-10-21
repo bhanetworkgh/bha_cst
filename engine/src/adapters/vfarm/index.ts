@@ -911,12 +911,43 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     let role: UserRole = speaker.role || 'manager';
     let farmIds = [...speaker.farm_ids];
 
+    // In production the authoritative source is MANDATORY. If the adapter has
+    // no live client (no vFarm base URL configured), the membership and
+    // farm-grant checks cannot run, and trusting the local record would be a
+    // fail-OPEN path. Fail closed instead.
+    if (process.env.NODE_ENV === 'production' && !this.httpClient) {
+      Logger.error(
+        `vFarm resolveSpeaker: no live vFarm client is configured for tenant ${this.tenantId}; failing closed`,
+      );
+      return this.unknownIdentity(
+        { tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone },
+        'opaque_revoked',
+      );
+    }
+
     // Live mode: re-verify the locally-registered speaker against the
     // authoritative vFarm organization-members list before trusting it.
     if (this.httpClient) {
       await this.ensureAdminToken();
       const orgId = this._getProjectOrgId(params.projectId);
-      if (orgId) {
+      if (!orgId) {
+        // The authoritative membership check CANNOT be performed for this
+        // project: it has no vFarm organization id, so the org-members
+        // endpoint cannot be queried for it. Falling through would TRUST the
+        // local record — including the locally-recorded farm scope — without
+        // ever checking it upstream. That is a fail-OPEN path. A project that
+        // is registered without its vFarm organization id (a dynamic
+        // registration, or a row predating the G19 org-id fix) must not be
+        // able to authorise anybody.
+        Logger.warn(
+          `vFarm resolveSpeaker: project ${params.projectId} has no vFarm organization id, so membership cannot be verified; failing closed`,
+        );
+        return this.unknownIdentity(
+          { tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone },
+          'opaque_revoked',
+        );
+      }
+      {
         // Any thrown VfarmApiError (auth/timeout/network/upstream/invalid
         // response) propagates to CoreRegistry, which fails closed — see
         // docs handoff §16 "Upstream authentication failure" / "timeout".

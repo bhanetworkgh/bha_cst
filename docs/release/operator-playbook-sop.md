@@ -20,6 +20,7 @@
 > - §2.2 handoff template "See docs/release/task.md" → **`docs/task.md`**.
 > - **Added §11 Rollback & Incident Handling** and **§12 Evidence Collection & Sanitization** — both were required for operational handover and were missing.
 > - **Added §6 Area 5 (Programmatic Voice API Guard) and the `CST_API_KEY` deployment precondition in §11.1** — the programmatic voice routes (`/api/v1/voice/turn`, `/api/v1/voice/synthesize`, `/api/v1/voice/status`, `/voice/turn`, `/audio/speak`) are behind a shared secret that **fails closed**. This is an operator-visible behaviour change: a deployment without `CST_API_KEY` leaves those five routes returning 503.
+> - **Added §6 Area 6 (a registered caller resolves as guest), §6 Area 7 (a voice turn never answers) and §6 Area 8 (an audit write fails)** — 21 October 2026. Area 6 documents the four distinct causes of a guest resolution and which of them must NOT be "fixed" (a genuinely revoked identity). Area 7 documents the shared voice-turn deadline, the abort semantics, and the rule that a voice turn must never be written into the SMS alert-audit table.
 
 ---
 
@@ -223,6 +224,134 @@ Certain operations are restricted to Ahad due to cryptographic access, environme
     secret to a Twilio callback.
 
 
+
+### Area 6: A Registered Caller Resolves as Guest / Identity Revoked
+
+- **Symptoms**: a caller who IS registered in CST Admin (and may exist upstream in
+  vFarm) is answered as a guest — the generic onboarding reply, or zero farm
+  scope — and the log shows an `opaque_unresolved` / `opaque_revoked` speaker
+  reference instead of their own customer reference.
+- **Cause 1 — the durable binding was not restored.** The phone → identity
+  binding lives in the `customers` table (vFarm exposes no phone field, so CST
+  owns it). It is rehydrated into the tenant adapter at boot by
+  `CoreRegistry.initFromDb()`. If the deployment predates that, or the row is
+  missing, the caller cannot resolve.
+- **Cause 2 — the project has no vFarm organisation id.** With no
+  `tenant_org_id` the authoritative organisation-membership check cannot be
+  performed, so CST **fails closed** rather than trusting a local record.
+- **Cause 3 — the adapter has no live vFarm client.** Without a vFarm base URL
+  the upstream cannot be consulted, and in **production** CST **fails closed**.
+- **Cause 4 — genuinely revoked upstream.** The vFarm organisation no longer
+  lists the user, or the user has no farm grants. This is correct behaviour and
+  must not be "fixed" by re-granting.
+- **Diagnostic Step**:
+  ```bash
+  # Which of the four causes? The speaker reference tells you.
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "opaque_revoked" --limit 20
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "opaque_unresolved" --limit 20
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "no vFarm organization id" --limit 20
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "no live vFarm client" --limit 20
+  ```
+  Then confirm the durable record exists. **The production database is not
+  reachable from the Render service account and its IP allowlist is empty — do
+  not attempt to bypass it.** An authorized operator with database access must
+  run the read-only query in
+  `docs/release/CST_REMAINING_GAPS_CLOSURE_REPORT.md` §11.5.
+- **Fix**:
+  1. Cause 1 → confirm the deployment includes the rehydration, and that the
+     `customers` row exists for that number in that project.
+  2. Cause 2 → set the project's `tenant_org_id` to the real vFarm organisation
+     UUID (migration 012 corrected the old placeholders).
+  3. Cause 3 → set `VFARM_API_BASE_URL` (and the API key / JWT) in Render.
+  4. Cause 4 → **no action.** The identity was revoked upstream; the correct
+     response is to keep failing closed. A new valid identity is established
+     through the vFarm admin, never by reactivating the old reference.
+- **Do not** register an unknown caller, associate a number with an arbitrary
+  account, or grant a farm to make the chatbot work. `POST /speakers` in the
+  admin console creates a CST-owned binding for a number that a human has
+  identified; it is not an authorisation mechanism.
+
+### Area 7: A Voice Turn Never Answers (Deadline / Cancellation)
+
+- **Symptoms**: a voice call is answered by the generic apology, or the turn
+  never completes. The log shows a `TURN_TIMEOUT` tripwire entry.
+- **Cause**: both voice turn paths are bounded by the shared deadline
+  (`CST_VOICE_TURN_DEADLINE_MS`, default 7000 ms, clamped 1000–20000). A
+  slow CoreEngine round trip or a slow ElevenLabs synthesis trips it. The turn is
+  **abandoned**: the synthesis request is aborted and **no** transcript, voice
+  delivery or outbound message row is written, so a timeout can never leave a
+  false "delivered" record.
+- **Diagnostic Step**:
+  ```bash
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "response deadline" --limit 20
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "TURN_TIMEOUT" --limit 20
+  ```
+- **Fix**: raise `CST_VOICE_TURN_DEADLINE_MS` only after confirming the upstream
+  latency (a larger budget holds the caller's response open longer). Do not
+  remove the deadline — an unbounded turn holds the provider response open
+  until it gives up.
+- **Note**: a voice turn is not an outbound SMS message. The SMS alert-audit
+  table (`alert_audit_log`) references `messages_out(id)` and models one row per
+  outbound SMS message; a Twilio Call SID or a fabricated identifier must never
+  be written there.
+
+
+### Area 8: An Audit Write Fails (Audit Persistence Hole)
+
+- **Symptoms**: the log shows
+  `AlertAuditLog.write failed for outbound_message_id=…: insert or update on table
+  "alert_audit_log" violates foreign key constraint
+  "alert_audit_log_outbound_message_id_fkey"`.
+  The customer interaction usually still completes — the write is caught and
+  logged rather than thrown — so the visible symptom is an error line, not an
+  outage. The real consequence is a **hole in the audit trail**.
+- **Cause**: `alert_audit_log.outbound_message_id` is `NOT NULL REFERENCES
+  messages_out(id)`. The table models **one audit row per outbound SMS
+  message**, and the foreign key is what enforces it. A write fails when the
+  identifier it was given is not an existing `messages_out` row.
+  Two classes:
+  1. **Wrong identifier (a defect).** A caller-supplied identifier that was
+     never persisted — a Twilio Call SID, a correlation id, or a fabricated
+     `speak_<uuid>` — was used as the reference. This was the case for the
+     voice turn path, and it is fixed: the voice turn no longer writes to the
+     SMS audit table, and the voice-lane path keeps its write only because it
+     does persist a `messages_out` row.
+  2. **A genuinely missing row (an environment fault).** The outbound message
+     was never inserted, or was rolled back. Then the reference is correct but
+     the parent row is absent.
+- **Diagnostic Step**:
+  ```bash
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "AlertAuditLog.write failed" --limit 20
+  render logs -r srv-db8hepqvcj2c73adpus0 --text "alert_audit_log_outbound_message_id_fkey" --limit 20
+  ```
+  Then establish which class it is — an authorized operator with database
+  access checks whether the referenced `messages_out` row exists:
+  ```sql
+  SELECT id, status, provider_sid, created_at, sent_at
+  FROM messages_out
+  WHERE id = '<the referenced id>';
+  ```
+- **Fix**:
+  1. Class 1 (wrong identifier) → this is a code defect, not an operator
+     action. Do **not** work around it by creating a `messages_out` row: that
+     fabricates a message that was never sent. Raise it against the code that
+     wrote the row.
+  2. Class 2 (missing parent row) → the outbound dispatch did not persist its
+     message. Check the dispatcher logs for the same correlation id, and the
+     migration/DB state.
+  3. Re-verify that the audit table is writable:
+     ```bash
+     render logs -r srv-db8hepqvcj2c73adpus0 --text "AlertAuditLog" --limit 20
+     ```
+- **Do not** drop or disable the foreign key, and do not silence the error
+  log. The constraint is the contract that keeps the SMS audit table
+  meaningful, and an audit row that points at a message which was never sent
+  is worse than a missing one.
+- **Audit-hole remediation**: because a failed write leaves a gap, record the
+  affected correlation ids and the window from the log timestamps, and note
+  them in the incident record. The evidence surface is then honest about the
+  gap rather than silently incomplete.
+
 ## 7. Escalation Protocol & SLAs
 
 ```mermaid
@@ -305,7 +434,8 @@ The Render service is `srv-db8hepqvcj2c73adpus0`, branch `main`, `autoDeploy: ye
 ```bash
 npm run typecheck && npm test && npm run build && git diff --check
 render deploys list srv-db8hepqvcj2c73adpus0     # note the current Live SHA
-git log --oneline 3e88058..HEAD                   # what will be deployed
+# Compare that SHA with the branch — do NOT use a hardcoded baseline:
+git log --oneline <the Live SHA from the line above>..HEAD
 ls db/migrations/                                 # any new migration in this push?
 ```
 

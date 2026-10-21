@@ -11,6 +11,7 @@
  * audit entry for a response the caller never received. That is what prevents
  * a duplicate turn and a duplicate billed synthesis.
  */
+import { voiceTurnDeadlineMs } from '../../engine/src/transport/voice/turn_deadline.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CoreEngine } from '../../engine/src/core/engine.js';
 import { CoreRegistry } from '../../engine/src/core/registry.js';
@@ -237,19 +238,19 @@ describe('Voice turn response deadline', () => {
 
   it('reads the deadline from the environment and clamps it to a sane range', () => {
     process.env.CST_VOICE_TURN_DEADLINE_MS = '2500';
-    expect(VoiceInterface.voiceTurnDeadlineMs()).toBe(2500);
+    expect(voiceTurnDeadlineMs()).toBe(2500);
 
     process.env.CST_VOICE_TURN_DEADLINE_MS = '1';
-    expect(VoiceInterface.voiceTurnDeadlineMs()).toBe(1000);
+    expect(voiceTurnDeadlineMs()).toBe(1000);
 
     process.env.CST_VOICE_TURN_DEADLINE_MS = '999999';
-    expect(VoiceInterface.voiceTurnDeadlineMs()).toBe(20000);
+    expect(voiceTurnDeadlineMs()).toBe(20000);
 
     process.env.CST_VOICE_TURN_DEADLINE_MS = 'not-a-number';
-    expect(VoiceInterface.voiceTurnDeadlineMs()).toBe(7000);
+    expect(voiceTurnDeadlineMs()).toBe(7000);
 
     delete process.env.CST_VOICE_TURN_DEADLINE_MS;
-    expect(VoiceInterface.voiceTurnDeadlineMs()).toBe(7000);
+    expect(voiceTurnDeadlineMs()).toBe(7000);
   });
 
   // ── 8. The deadline applies at the HTTP boundary ─────────────────────────

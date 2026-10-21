@@ -1,3 +1,4 @@
+import { maskPhone } from '../util/privacy.js';
 import { Tenant, Project, ServiceNumberBinding, SpeakerIdentity, CapabilityType, matchesCapability } from './types.js';
 import { ITenantAdapter } from '../adapters/types.js';
 import { VfarmTenantAdapter, VfarmAdapterConfig } from '../adapters/vfarm/index.js';
@@ -257,11 +258,57 @@ export class CoreRegistry {
     //   zero farm scope. Both fail closed, exactly as before.
     const dbCustomers = await DbClient.getAllCustomers();
     let hydrated = 0;
+
+    // A phone is only ever bound WITHIN one project, so a conflicting mapping
+    // is detected before anything is written: if the same phone resolves to two
+    // different customer references in the SAME project, NEITHER is bound.
+    // Silently picking one would let one customer impersonate another.
+    const byProjectPhone = new Map<string, Set<string>>();
+    for (const c of dbCustomers) {
+      if (!c.project_id || !c.phone_e164 || !c.customer_ref) continue;
+      const key = `${c.project_id}::${c.phone_e164.trim()}`;
+      if (!byProjectPhone.has(key)) byProjectPhone.set(key, new Set());
+      byProjectPhone.get(key)!.add(c.customer_ref);
+    }
+
     for (const c of dbCustomers) {
       const adapter = this.adapters.get(c.tenant_id);
       if (!adapter?.registerSpeaker) continue;
       if (!c.customer_ref || !c.phone_e164) continue;
-      if (!c.project_id) continue;
+      if (!c.project_id) {
+        Logger.warn(
+          `CoreRegistry: skipping customer binding for ${maskPhone(c.phone_e164)} in tenant ${c.tenant_id} — the record has no project_id`,
+        );
+        continue;
+      }
+
+      // Tenant isolation: the project must belong to the record's tenant. A
+      // record that names a project of another tenant is conflicting data and
+      // is refused rather than bound.
+      const project = this.projects.get(c.project_id);
+      if (!project) {
+        Logger.warn(
+          `CoreRegistry: skipping customer binding for ${maskPhone(c.phone_e164)} — project ${c.project_id} does not exist`,
+        );
+        continue;
+      }
+      if (project.tenant_id !== c.tenant_id) {
+        Logger.warn(
+          `CoreRegistry: skipping customer binding for ${maskPhone(c.phone_e164)} — record tenant ${c.tenant_id} does not own project ${c.project_id} (tenant isolation)`,
+        );
+        continue;
+      }
+
+      // Conflicting mapping: the same phone bound to two references in one
+      // project. Bind neither.
+      const key = `${c.project_id}::${c.phone_e164.trim()}`;
+      if ((byProjectPhone.get(key)?.size || 0) > 1) {
+        Logger.warn(
+          `CoreRegistry: skipping customer binding for ${maskPhone(c.phone_e164)} in project ${c.project_id} — conflicting customer references are bound to the same number`,
+        );
+        continue;
+      }
+
       try {
         adapter.registerSpeaker(c.project_id, {
           person_id: c.customer_ref,
