@@ -94,6 +94,18 @@ export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
  */
 export const VFARM_SYSTEM_STATS_TIMEOUT_MS = 60000;
 
+/**
+ * Strict upper bound for the vFarm HEALTH PROBE.
+ *
+ * The probe is a liveness/readiness signal, not a data path. It runs on the
+ * admin/health surfaces, so it must never hold a request open for the general
+ * request budget. The effective probe timeout is
+ * `min(configured timeout, VFARM_HEALTH_PROBE_TIMEOUT_MS)`, so an operator
+ * who lowered `VFARM_API_TIMEOUT_MS` still gets the tighter bound, and an
+ * operator who raised it does not accidentally make the probe unbounded.
+ */
+export const VFARM_HEALTH_PROBE_TIMEOUT_MS = 3000;
+
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface VfarmLiveClientConfig {
@@ -648,17 +660,17 @@ export class VfarmLiveClient {
    * Returns OrgListResponse { organizations[], total }.
    * Requires Bearer JWT (org routes use JWT, not X-Farm-Key).
    */
-  async listOrganizations(jwt?: string): Promise<OrgListResponse> {
+  async listOrganizations(jwt?: string, timeoutMs?: number): Promise<OrgListResponse> {
     const url = `${this.baseUrl}/api/v1/organizations?limit=100`;
-    return this.requestWithJwt(url, orgListResponseSchema, jwt);
+    return this.requestWithJwt(url, orgListResponseSchema, jwt, timeoutMs);
   }
 
   /**
    * GET /api/v1/organizations/{org_id}
    */
-  async getOrganization(orgId: string, jwt?: string): Promise<OrgResponse> {
+  async getOrganization(orgId: string, jwt?: string, timeoutMs?: number): Promise<OrgResponse> {
     const url = `${this.baseUrl}/api/v1/organizations/${encodeURIComponent(orgId)}`;
-    return this.requestWithJwt(url, orgResponseSchema, jwt);
+    return this.requestWithJwt(url, orgResponseSchema, jwt, timeoutMs);
   }
 
   /**
@@ -881,13 +893,22 @@ export class VfarmLiveClient {
   /**
    * Make a request with Bearer JWT instead of X-Farm-Key.
    * Used for org-scoped endpoints that require JWT auth.
+   *
+   * `timeoutMs` overrides the client-wide request budget for a single call.
+   * It is used by the health probe, which must stay strictly bounded.
+   *
+   * The upstream response BODY is never included in the thrown error: an
+   * upstream error body can echo back internal detail or credential material,
+   * and a health probe must not be able to leak it into a log line.
    */
   private async requestWithJwt<T>(
     url: string,
     parseSchema: { parse: (data: unknown) => T },
     jwt?: string,
+    timeoutMs?: number,
   ): Promise<T> {
     const token = jwt || '';
+    const budget = timeoutMs ?? this.timeoutMs;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
     };
@@ -899,7 +920,7 @@ export class VfarmLiveClient {
     let res: Response;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      const timeoutId = setTimeout(() => controller.abort(), budget);
       try {
         res = await this.fetchFn(url, { headers, signal: controller.signal });
       } finally {
@@ -909,8 +930,7 @@ export class VfarmLiveClient {
       throw new VfarmNetworkError(`vFarm network error: ${err?.message ?? String(err)}`);
     }
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new VfarmHttpError(res.status, `vFarm HTTP ${res.status}: ${text}`);
+      throw new VfarmHttpError(res.status, `vFarm HTTP ${res.status} from ${url}`);
     }
     let body: unknown;
     try {

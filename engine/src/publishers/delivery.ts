@@ -21,6 +21,7 @@
 
 import { randomUUID } from 'crypto';
 import { Logger } from '../config/logger.js';
+import { maskProviderSid } from '../util/privacy.js';
 import { getDashboardPublisher } from './dashboard.js';
 import {
   CstDeliveryEventV1,
@@ -137,7 +138,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
   const sid = providerSid || messageId || correlationId;
   if (!isMonotonicAdvance(sid, status)) {
     Logger.info(
-      `[DeliveryPublisher] Dropping regressed/duplicate status "${status}" for ${sid} (monotonic guard)`
+      `[DeliveryPublisher] Dropping regressed/duplicate status "${status}" for ${maskProviderSid(sid)} (monotonic guard)`
     );
     return;
   }
@@ -148,7 +149,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
   // in) cross-project reporting. Drop it loudly instead.
   if (!projectId || !projectId.trim()) {
     Logger.warn(
-      `[DeliveryPublisher] Refusing to publish cst.delivery for ${sid}: empty project_id (status="${status}", tenant="${tenantId}")`
+      `[DeliveryPublisher] Refusing to publish cst.delivery for ${maskProviderSid(sid)}: empty project_id (status="${status}", tenant="${tenantId}")`
     );
     Logger.audit({
       timestamp: new Date().toISOString(),
@@ -158,7 +159,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
       entry_point: 'api',
       tool_or_route: 'publishDelivery',
       outcome: 'refused',
-      reason: `cst.delivery refused: no project_id could be resolved for provider sid ${sid}`,
+      reason: `cst.delivery refused: no project_id could be resolved for provider sid ${maskProviderSid(sid)}`,
       correlation_id: correlationId,
     });
     return;
@@ -204,7 +205,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
     });
   } catch (err: any) {
     Logger.warn(
-      `[DeliveryPublisher] Failed to build cst.delivery event for ${sid}: ${err?.message}`
+      `[DeliveryPublisher] Failed to build cst.delivery event for ${maskProviderSid(sid)}: ${err?.message}`
     );
     return;
   }
@@ -217,7 +218,7 @@ export function publishDelivery(params: PublishDeliveryParams): void {
     getDashboardPublisher().publishFireAndForget(event);
   } catch (err: any) {
     Logger.warn(
-      `[DeliveryPublisher] publishFireAndForget threw synchronously for ${sid}: ${err?.message}`
+      `[DeliveryPublisher] publishFireAndForget threw synchronously for ${maskProviderSid(sid)}: ${err?.message}`
     );
   }
 }

@@ -36,8 +36,27 @@ export interface ITenantAdapter {
     serial: string;
     speaker: SpeakerIdentity;
   }): Promise<CabinetConfig | null>;
-  getHealth?(tenantId: string): Promise<{
-    status: 'healthy' | 'degraded' | 'down';
+  /**
+   * Upstream health for this tenant.
+   *
+   * `healthy` means a tenant-scoped, read-only upstream request SUCCEEDED and
+   * the reported latency was measured — never that credentials merely exist.
+   * `configured` means the upstream is configured and reachable but upstream
+   * health is NOT asserted (the probe could not be scoped to this tenant, or
+   * the probe was skipped). `degraded` means the upstream answered with an
+   * error. `unavailable` means the upstream could not be reached or could not
+   * authenticate.
+   *
+   * `options.probe === false` returns the adapter's OPERATIONAL readiness
+   * WITHOUT contacting the upstream. The per-request authorization path uses
+   * that mode: a liveness probe is a network round trip, and making
+   * authorization depend on the upstream's liveness at that instant would
+   * couple a customer's turn to an unrelated upstream outage. The actual
+   * identity resolution performs its own authoritative upstream check and
+   * fails closed on its own, so nothing is weakened by not probing here.
+   */
+  getHealth?(tenantId: string, options?: { probe?: boolean }): Promise<{
+    status: 'configured' | 'healthy' | 'degraded' | 'unavailable';
     latency_ms?: number;
     details?: Record<string, unknown>;
   }>;

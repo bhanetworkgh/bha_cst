@@ -24,8 +24,8 @@ through an 8-step pipeline, and dispatches a contextually relevant reply via the
 ## Architecture summary
 
 - **Inbound path**: Twilio → \`POST /webhooks/twilio/sms\` → Signature verification → Tenancy resolution → Identity resolution → Intent routing → Connector dispatch
-- **Delivery callbacks**: Twilio → \`POST /webhooks/twilio/delivery-status\` → DB status update
-- **Outbound worker**: Background loop every 5 s polls the DB for \`pending\` messages and delivers them via Twilio
+- **Delivery callbacks**: Twilio → \`POST /webhooks/twilio/delivery-status\` → DB status update → \`cst.delivery\` publication, attributed from the persisted outbound row
+- **Outbound worker**: Background loop every 5 s polls the DB for \`pending\`/\`queued\` messages and delivers them via Twilio. A claimed row holds a 5-minute lease; a row whose worker died mid-send is reclaimed and re-queued.
 
 ## Security
 
@@ -34,7 +34,9 @@ Requests with an invalid or missing signature are rejected with \`403 FORBIDDEN\
 
 ## Multi-tenancy
 
-Tenant scope is resolved entirely **server-side** from the receiving Twilio number (\`To\` field).
+Tenant scope is resolved entirely **server-side**. On the inbound path it comes from the receiving
+Twilio number (\`To\`); on the delivery-status path it comes from the persisted outbound message
+row, because in a status callback \`To\` is the recipient rather than the sending number.
 Clients cannot inject or override the tenant_id.
 
 ## Environments
@@ -530,13 +532,25 @@ and the conversation transcript.
 
 | Twilio \`MessageStatus\` | Internal status |
 |-------------------------|-----------------|
-| \`sent\`                 | \`sent\`         |
-| \`delivered\`            | \`delivered\`    |
-| \`failed\`               | \`failed\`       |
+| \`accepted\`, \`queued\`  | \`queued\`       |
+| \`sent\`, \`partial\`    | \`sent\`         |
+| \`delivered\`, \`read\`   | \`delivered\`    |
 | \`undelivered\`          | \`undelivered\`  |
-| (all others)            | \`delivered\`    |
+| \`failed\`, \`canceled\`  | \`failed\`       |
+| \`sending\`              | *(no CST equivalent — state unchanged, nothing published)* |
+| *(unknown)*             | *(no CST equivalent — state unchanged, nothing published)* |
 
-Tenant context is resolved server-side from the \`To\` parameter (the outbound sending number).
+An unrecognised status is NEVER treated as \`delivered\`. Delivery state is monotonic, so
+recording a \`queued\` message as \`delivered\` would both report a false delivery and suppress the
+genuine \`sent\`/\`delivered\` callbacks that follow it.
+
+**Attribution**: the persisted outbound message row is the only attribution source. It is the
+message that was actually sent and it carries the tenant, project and turn the send was authorised
+under. In a Twilio status callback \`To\` is the **recipient** of the message and \`From\` is the
+**sending** number, so \`To\` is never used to resolve tenancy. When the stored row carries no
+tenancy the callback is acknowledged to Twilio, recorded as a refusal, and no \`cst.delivery\` event
+is published — the event is never published against an inferred project.
+
 An \`ErrorCode\` value, if present, is stored in the \`error_message\` field for audit and debugging.
         `.trim(),
         security: [{ TwilioSignature: [] }],

@@ -167,7 +167,7 @@ describe('Durable Dashboard publish outcomes', () => {
     await publisher.publish(buildTurnEvent());
     await publisher.publish(buildTurnEvent('turn_evt_durable_002'));
 
-    const unpublished = DbClient.getUnpublishedDashboardOutcomes();
+    const unpublished = await DbClient.getUnpublishedDashboardOutcomes();
     expect(unpublished).toHaveLength(1);
     expect(unpublished[0].event_id).toBe('turn_evt_durable_001');
     expect(unpublished[0].status).toBe('failed');
@@ -187,7 +187,7 @@ describe('Durable Dashboard publish outcomes', () => {
     });
 
     await publisher.publish(buildTurnEvent());
-    expect(DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(1);
+    expect(await DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(1);
 
     const results = await replayUnpublishedDashboardEvents(publisher);
 
@@ -195,7 +195,7 @@ describe('Durable Dashboard publish outcomes', () => {
     expect(results[0].event_id).toBe('turn_evt_durable_001');
     expect(results[0].success).toBe(true);
     // The replayed event is no longer outstanding.
-    expect(DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(0);
+    expect(await DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(0);
   });
 
   it('does not replay a published event', async () => {
@@ -230,7 +230,7 @@ describe('Durable Dashboard publish outcomes', () => {
     // file's dead letters surface in the next file's view.
     DbClient.clearAll();
     expect(DbClient.getAllDashboardPublishOutcomes()).toHaveLength(0);
-    expect(DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(0);
+    expect(await DbClient.getUnpublishedDashboardOutcomes()).toHaveLength(0);
   });
 
   // ── 5. The stored payload is masked ──────────────────────────────────────

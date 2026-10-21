@@ -9,6 +9,32 @@ import { CoreRegistry } from '../core/registry.js';
 import { deliveryStatusRank } from '../contracts/events.js';
 import type { Project, ServiceNumberBinding, Tenant } from '../core/types.js';
 
+/**
+ * Raised when an outbound message row could not be persisted.
+ *
+ * The `messages_out` row is the durable parent of:
+ *   - `alert_audit_log.outbound_message_id` (FK, ON DELETE CASCADE);
+ *   - the delivery-status callback's attribution (`provider_sid` join);
+ *   - the queue the worker drains.
+ *
+ * When the INSERT fails there is no parent row, so any child write would
+ * violate the foreign key and the message would never be queued. Callers
+ * MUST abandon the turn rather than continue with an id that has no row —
+ * that id is exactly what produces an `alert_audit_log` foreign-key
+ * violation. The constraint is correct and is deliberately left in place.
+ */
+export class OutboundPersistenceError extends Error {
+  public readonly code = 'OUTBOUND_PERSISTENCE_FAILED';
+  constructor(
+    message: string,
+    public readonly tenantId: string,
+    public readonly outboundMessageId: string,
+  ) {
+    super(message);
+    this.name = 'OutboundPersistenceError';
+  }
+}
+
 export interface CustomerRecord {
   phone_e164:       string;
   customer_ref:     string;
@@ -23,6 +49,40 @@ export interface CustomerRecord {
   speaker_cache_expires_at?: string;
   created_at?:      string;
 }
+
+/**
+ * Maximum time a database CONNECT may take before the pool gives up.
+ *
+ * Without this, `pg` waits forever for a connection and a hibernating or
+ * unreachable PostgreSQL silently stalls every caller — including the
+ * delivery-status webhook, which is what produced Twilio error 11203.
+ */
+export const DB_CONNECTION_TIMEOUT_MS = 10_000;
+
+/**
+ * Maximum time a single statement may run before PostgreSQL cancels it.
+ */
+export const DB_STATEMENT_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a claimed outbound message may stay in `sending` before another
+ * worker is allowed to reclaim it.
+ *
+ * The claim is a lease, not a lock: `claimOutboundMessage` flips the row to
+ * `sending` and the row is invisible to `getPendingOutboundMessages` until it
+ * reaches a terminal state. If the process dies between the claim and the
+ * completion (a deploy, a crash, an OOM kill, a free-tier instance being
+ * destroyed), the row stayed in `sending` FOREVER — never selected, never
+ * claimable, never failed, never dead-lettered. The message was silently lost.
+ *
+ * The lease must be LONGER than the worst-case time a live worker can hold a
+ * claim, so a healthy in-flight send is never stolen and duplicated. The
+ * worst case is three attempts, each bounded by the Twilio send timeout, plus
+ * the retry backoff — comfortably under a minute — so five minutes is a safe
+ * margin that still recovers a stranded message within minutes rather than
+ * hours.
+ */
+export const OUTBOUND_CLAIM_LEASE_MS = 5 * 60 * 1000;
 
 /**
  * Raised when a conversation row could not be persisted.
@@ -190,6 +250,23 @@ export class DbClient {
         connectionString: process.env.DATABASE_URL,
         max: 10,
         idleTimeoutMillis: 30000,
+        // BOUNDED CONNECT + BOUNDED STATEMENTS.
+        //
+        // `pg` defaults `connectionTimeoutMillis` to 0, i.e. it waits for a
+        // free/establishable connection FOREVER. On a managed PostgreSQL that
+        // is hibernating, restarting, or unreachable, every caller of
+        // `pool.query()` would then hang indefinitely.
+        //
+        // That is not a theoretical concern for this service: the outbound
+        // worker's claim/status writes and the Twilio delivery-status webhook
+        // both run through this pool. A stalled connection therefore blocked
+        // the webhook handler (Twilio gave up on the callback — error 11203)
+        // and starved the outbound queue for as long as the stall lasted.
+        //
+        // `statement_timeout` does the same for a query that connects but
+        // never returns (a lock wait, for example).
+        connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+        statement_timeout: DB_STATEMENT_TIMEOUT_MS,
       });
       Logger.info('DbClient: Initialized PostgreSQL database connection pool');
     } catch (err: any) {
@@ -328,7 +405,20 @@ export class DbClient {
           record.created_at,
         ]);
       } catch (err: any) {
+        // A FAILED PERSISTENCE MUST NOT BE REPORTED AS SUCCESS.
+        //
+        // The returned record carries an `id` that the caller will use to
+        // write child rows — most importantly `alert_audit_log`, whose
+        // `outbound_message_id` REFERENCES `messages_out(id)`. If this INSERT
+        // failed there is no parent row, so the audit write fails with a
+        // foreign-key violation and the message is not in the queue at all:
+        // the customer never gets a reply, and the failure surfaces only as a
+        // confusing constraint error far from its cause.
+        //
+        // So the failure is raised. Callers already handle it as a failed
+        // turn rather than proceeding as though the reply was queued.
         Logger.error(`DbClient.saveOutboundMessage Postgres Error: ${err.message}`);
+        throw new OutboundPersistenceError(err.message, msg.tenant_id, id);
       }
     }
 
@@ -365,6 +455,10 @@ export class DbClient {
           retry_count: r.retry_count,
           error_message: r.error_message,
           created_at: r.created_at,
+          // The retry schedule must survive the DB -> memory copy, otherwise
+          // the in-memory view of a deferred retry disagrees with the row the
+          // worker actually claimed.
+          next_retry_at: r.next_retry_at ? new Date(r.next_retry_at).toISOString() : undefined,
         }));
 
         for (const msg of dbPending) {
@@ -441,7 +535,7 @@ export class DbClient {
     error?: string,
     retryCount?: number,
     nextRetryAt?: string
-  ): Promise<void> {
+  ): Promise<boolean> {
     const msg = this.messagesOutStore.get(id);
     if (msg) {
       msg.status = status;
@@ -455,16 +549,200 @@ export class DbClient {
     const pool = this.getPool();
     if (pool) {
       try {
+        // `next_retry_at` MUST be persisted here.
+        //
+        // It used to be accepted and applied to the in-memory store only; the
+        // UPDATE statement never mentioned the column. In production — where
+        // the worker reads the queue from Postgres — that silently discarded
+        // the retry schedule: a retriable failure was stored as `queued` with
+        // `next_retry_at = NULL`, and `getPendingOutboundMessages` treats a
+        // NULL `next_retry_at` as "due now". The documented exponential
+        // backoff therefore never applied and every retry fired on the next
+        // 5-second poll, burning all attempts within seconds and turning a
+        // transient failure into a permanent one.
+        //
+        // `COALESCE` is used so that omitting `nextRetryAt` leaves an
+        // existing schedule untouched instead of clearing it.
         const query = `
           UPDATE messages_out
-          SET status = $1, error_message = COALESCE($2, error_message), retry_count = COALESCE($3, retry_count)
+          SET status = $1,
+              error_message = COALESCE($2, error_message),
+              retry_count = COALESCE($3, retry_count),
+              next_retry_at = COALESCE($5, next_retry_at)
           WHERE id = $4
         `;
-        await pool.query(query, [status, error || null, retryCount || null, id]);
+        await pool.query(query, [status, error || null, retryCount || null, id, nextRetryAt || null]);
+        return true;
       } catch (err: any) {
+        // A failed status write means the DURABLE state and the in-memory
+        // state now disagree: the row is still `sending` in the database
+        // while the worker believes it moved on. That is exactly the state
+        // the lease recovery inspects, so it must be reported rather than
+        // swallowed.
         Logger.error(`DbClient.updateOutboundStatus Postgres Error: ${err.message}`);
+        Logger.infra({
+          message: `Outbound message state could not be persisted (${status})`,
+          commercial_impact:
+            'The durable delivery state of an outbound message did not update. The message will be recovered by the lease reaper on the next pass and will not be re-sent if the provider already accepted it.',
+          meta: { outbound_message_id: id, status, tenant_id: msg?.tenant_id || null },
+        });
+        return false;
       }
     }
+    return true;
+  }
+
+  /**
+   * Count the outbound messages in each state.
+   *
+   * Read-only. Used by the worker's heartbeat so an operator can tell
+   * "the worker is running and the queue is empty" apart from "the worker is
+   * not running at all" — from outside the process those look identical.
+   */
+  static async getOutboundQueueDepth(): Promise<{
+    pending: number;
+    queued: number;
+    sending: number;
+    failed: number;
+    outcome_unknown: number;
+  }> {
+    const depth = { pending: 0, queued: 0, sending: 0, failed: 0, outcome_unknown: 0 };
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT status, COUNT(*)::int AS count FROM messages_out GROUP BY status`,
+        );
+        for (const row of res.rows || []) {
+          switch (row.status) {
+            case 'pending': depth.pending = row.count; break;
+            case 'queued': depth.queued = row.count; break;
+            case 'sending': depth.sending = row.count; break;
+            case 'failed': depth.failed = row.count; break;
+            case 'outcome_unknown': depth.outcome_unknown = row.count; break;
+            default: break;
+          }
+        }
+        return depth;
+      } catch (err: any) {
+        Logger.error(`DbClient.getOutboundQueueDepth Postgres Error: ${err.message}`);
+      }
+    }
+    for (const msg of this.messagesOutStore.values()) {
+      if (msg.status === 'pending') depth.pending++;
+      else if (msg.status === 'queued') depth.queued++;
+      else if (msg.status === 'sending') depth.sending++;
+      else if (msg.status === 'failed') depth.failed++;
+      else if (msg.status === 'outcome_unknown') depth.outcome_unknown++;
+    }
+    return depth;
+  }
+
+  /**
+   * Recover outbound messages whose worker died mid-send.
+   *
+   * `claimOutboundMessage` flips a row to `sending` before the Twilio call.
+   * If the process dies at that point the row stays in `sending` forever: it
+   * is not selected by `getPendingOutboundMessages` (which only looks at
+   * `pending` and `queued`), it cannot be claimed again (the claim only
+   * accepts `pending`/`queued`), and nothing fails or dead-letters it. The
+   * customer message was silently lost — it never became "delivered hours
+   * later", it simply never went out.
+   *
+   * THE ROW IS NEVER RE-QUEUED. A stale claim carries one of two very
+   * different meanings, and re-queueing either of them is unsafe:
+   *
+   *   - `provider_sid` IS SET — the provider returned a MessageSid, so the
+   *     message WAS created. The status write is what failed. Re-queueing
+   *     would deliver a SECOND copy to the customer. The truthful status is
+   *     `sent`: the provider accepted it.
+   *   - `provider_sid` IS NULL — the worker died around the dispatch, so it
+   *     cannot be established whether the provider created the message. This
+   *     is the same ambiguity as a send timeout, and re-queueing it would
+   *     risk a duplicate.
+   *
+   * So a stale claim is moved to a state that is durable, visible and
+   * reconcilable, and is NEVER re-dispatched automatically. The operator
+   * reconciliation procedure is in the operations runbook.
+   *
+   * @returns the ids that were recovered, and how.
+   */
+  static async reclaimStaleOutboundMessages(
+    leaseMs: number = OUTBOUND_CLAIM_LEASE_MS
+  ): Promise<string[]> {
+    const reclaimed: string[] = [];
+    const now = Date.now();
+    const cutoff = new Date(now - leaseMs).toISOString();
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        // `provider_sid IS NOT NULL` -> the provider accepted the message:
+        // record it as `sent` (truthful) and never re-dispatch it.
+        const accepted = await pool.query(
+          `UPDATE messages_out
+              SET status = 'sent',
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'sending'
+              AND provider_sid IS NOT NULL
+              AND updated_at IS NOT NULL
+              AND updated_at < $1
+            RETURNING id`,
+          [cutoff],
+        );
+        for (const row of accepted.rows || []) {
+          if (row.id) reclaimed.push(row.id);
+        }
+
+        // `provider_sid IS NULL` -> the outcome of the dispatch is unknown.
+        // Park it so it is visible and reconcilable, and NOT re-dispatched.
+        const unknown = await pool.query(
+          `UPDATE messages_out
+              SET status = 'outcome_unknown',
+                  error_message = COALESCE(error_message, 'worker stopped mid-send; provider outcome unknown'),
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'sending'
+              AND provider_sid IS NULL
+              AND updated_at IS NOT NULL
+              AND updated_at < $1
+            RETURNING id`,
+          [cutoff],
+        );
+        for (const row of unknown.rows || []) {
+          if (row.id) reclaimed.push(row.id);
+        }
+      } catch (err: any) {
+        Logger.error(`DbClient.reclaimStaleOutboundMessages Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory mode (no pool): the same rules apply to the local store.
+    for (const msg of this.messagesOutStore.values()) {
+      if (msg.status !== 'sending') continue;
+      const updatedAt = msg.updated_at ? new Date(msg.updated_at).getTime() : 0;
+      if (!updatedAt || now - updatedAt < leaseMs) continue;
+      if (msg.provider_sid) {
+        // The provider accepted the message.
+        msg.status = 'sent';
+      } else {
+        // The dispatch outcome is unknown.
+        msg.status = 'outcome_unknown';
+        msg.error_message =
+          msg.error_message || 'worker stopped mid-send; provider outcome unknown';
+      }
+      msg.next_retry_at = undefined;
+      msg.updated_at = new Date().toISOString();
+      this.messagesOutStore.set(msg.id!, msg);
+      if (msg.id) reclaimed.push(msg.id);
+    }
+
+    if (reclaimed.length > 0) {
+      Logger.warn(
+        `Outbound worker recovered ${reclaimed.length} message(s) stuck in "sending" (lease expired) — a previous worker stopped mid-send. None were re-dispatched: accepted messages are marked "sent" and the rest are parked as "outcome_unknown" for operator reconciliation.`,
+        { recovered_count: reclaimed.length },
+      );
+    }
+    return reclaimed;
   }
 
   /** Record the Twilio from-number that was used to send this outbound message. */
@@ -504,19 +782,25 @@ export class DbClient {
   }
 
   /**
- * Update delivery status across outbound queue and message transcripts by provider_sid or correlation_id.
- *
- * Monotonic: a delivery state never moves backwards. Once a terminal status
- * (delivered / undelivered / failed) is recorded, a late duplicate or regressing
- * callback (e.g. Twilio re-sending `sent`) leaves the stored state untouched.
- *
- * Returns the resolved correlation context so the caller can build a
- * `cst.delivery` event whose `turn_id` matches the originating `cst.turn` and
- * whose `project_id` is never empty.
- */
+   * Update delivery status across outbound queue and message transcripts by provider_sid or correlation_id.
+   *
+   * Monotonic: a delivery state never moves backwards. Once a terminal status
+   * (delivered / undelivered / failed) is recorded, a late duplicate or regressing
+   * callback (e.g. Twilio re-sending `sent`) leaves the stored state untouched.
+   *
+   * The accepted vocabulary is the RANKED subset of the outbound status
+   * vocabulary. `sending` is deliberately excluded: in CST `sending` means
+   * "claimed by a worker", and a provider-side status callback must never be
+   * able to move a row into that state — such a row would be invisible to the
+   * queue and could never be claimed or retried.
+   *
+   * Returns the resolved correlation context so the caller can build a
+   * `cst.delivery` event whose `turn_id` matches the originating `cst.turn` and
+   * whose `project_id` is never empty.
+   */
   static async updateDeliveryStatusByProviderSid(
     providerSid: string,
-    status: 'sent' | 'delivered' | 'failed' | 'undelivered',
+    status: 'queued' | 'sent' | 'delivered' | 'failed' | 'undelivered',
     errorDetails?: string
   ): Promise<{
     updated: boolean;
@@ -596,11 +880,30 @@ export class DbClient {
         // empty, so delivery state stopped persisting AND the callback resolved
         // no tenant/project and refused to publish — real deliveries silently
         // vanished from the dashboard.
+        //
+        // EXACTLY ONE ROW IS UPDATED. `provider_sid` carries a plain (not
+        // unique) index and the `correlation_id` fallback is a wildcard, so
+        // the predicate could match more than one row. A single callback must
+        // never mutate several messages — least of all messages belonging to
+        // different tenants. The sub-select picks the single most recent
+        // match, and the row's OWN tenant/project are what the event is
+        // attributed to, so a callback can never cross a tenant boundary.
         const query1 = `
           UPDATE messages_out SET status = $1, error_message = $2
-          WHERE (provider_sid = $3 OR id = $3 OR correlation_id LIKE $4)
+          WHERE id = (
+            SELECT id FROM messages_out
+            WHERE provider_sid = $3 OR id = $3 OR correlation_id LIKE $4
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
             AND COALESCE(
-              (CASE status WHEN 'queued' THEN 1 WHEN 'sending' THEN 2 WHEN 'sent' THEN 3 ELSE 4 END),
+              (CASE status
+                 WHEN 'pending' THEN 0
+                 WHEN 'outcome_unknown' THEN 0
+                 WHEN 'queued' THEN 1
+                 WHEN 'sending' THEN 2
+                 WHEN 'sent' THEN 3
+                 ELSE 4 END),
               0
             ) < $5
           RETURNING tenant_id, project_id, id, turn_id, correlation_id, to_e164, from_e164
@@ -625,9 +928,21 @@ export class DbClient {
 
         const query2 = `
           UPDATE messages SET delivery_status = $1
-          WHERE (message_id = $2 OR provider_sid = $3)
+          WHERE message_id = (
+            SELECT message_id FROM messages
+            WHERE message_id = $2 OR provider_sid = $3
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
             AND COALESCE(
-              (CASE delivery_status WHEN 'queued' THEN 1 WHEN 'sending' THEN 2 WHEN 'sent' THEN 3 ELSE 4 END),
+              (CASE delivery_status
+                 WHEN 'received' THEN 0
+                 WHEN 'pending' THEN 0
+                 WHEN 'outcome_unknown' THEN 0
+                 WHEN 'queued' THEN 1
+                 WHEN 'sending' THEN 2
+                 WHEN 'sent' THEN 3
+                 ELSE 4 END),
               0
             ) < $4
           RETURNING tenant_id, project_id, message_id, from_e164, to_e164
@@ -1985,8 +2300,58 @@ export class DbClient {
     return record;
   }
 
-  /** Outcomes that were not ingested, oldest first — the dead-letter view. */
-  static getUnpublishedDashboardOutcomes(limit = 50): DashboardPublishOutcome[] {
+  /**
+   * Outcomes that were not ingested, oldest first — the dead-letter view.
+   *
+   * READS THE DATABASE, not just the in-memory map. The publisher is
+   * fire-and-forget and the process can restart at any time, so an
+   * in-memory-only view is empty after a restart and the events that failed
+   * to publish would be unrecoverable — exactly the events most in need of a
+   * replay.
+   */
+  static async getUnpublishedDashboardOutcomes(limit = 50): Promise<DashboardPublishOutcome[]> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT id, event_id, event_type, specversion, turn_id, correlation_id,
+                  tenant_id, project_id, status, http_status, attempts, error,
+                  payload, created_at, expires_at, replayed_at
+             FROM dashboard_publish_outcomes
+            WHERE status <> 'published'
+              AND replayed_at IS NULL
+              AND expires_at > NOW()
+            ORDER BY created_at ASC
+            LIMIT $1`,
+          [limit],
+        );
+        const rows: DashboardPublishOutcome[] = (res.rows || []).map((r) => ({
+          id: r.id,
+          event_id: r.event_id,
+          event_type: r.event_type,
+          specversion: r.specversion ?? undefined,
+          turn_id: r.turn_id ?? undefined,
+          correlation_id: r.correlation_id ?? undefined,
+          tenant_id: r.tenant_id ?? undefined,
+          project_id: r.project_id ?? undefined,
+          status: r.status,
+          http_status: r.http_status ?? undefined,
+          attempts: r.attempts ?? 0,
+          error: r.error ?? undefined,
+          payload: r.payload ?? undefined,
+          created_at: r.created_at ? new Date(r.created_at).toISOString() : undefined,
+          expires_at: r.expires_at ? new Date(r.expires_at).toISOString() : undefined,
+          replayed_at: r.replayed_at ? new Date(r.replayed_at).toISOString() : undefined,
+        }));
+        // Keep the in-memory view in step with the durable one.
+        for (const row of rows) {
+          if (row.id) this.dashboardOutcomeStore.set(row.id, row);
+        }
+        return rows;
+      } catch (err: any) {
+        Logger.error(`DbClient.getUnpublishedDashboardOutcomes Postgres Error: ${err.message}`);
+      }
+    }
     return Array.from(this.dashboardOutcomeStore.values())
       .filter((o) => o.status !== 'published' && o.replayed_at === undefined)
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
@@ -2000,11 +2365,32 @@ export class DbClient {
     );
   }
 
-  /** Mark a dead-letter row as replayed. */
-  static markDashboardOutcomeReplayed(id: string, replayedAt?: string): void {
+  /**
+   * Mark a dead-letter row as replayed.
+   *
+   * PERSISTS the mark. Without this the row stays `replayed_at IS NULL` in
+   * the database, so a replayed event would be published a second time on the
+   * next pass — a duplicate Dashboard event for one customer turn.
+   */
+  static async markDashboardOutcomeReplayed(id: string, replayedAt?: string): Promise<void> {
+    const stamp = replayedAt || new Date().toISOString();
     const record = this.dashboardOutcomeStore.get(id);
-    if (!record) return;
-    record.replayed_at = replayedAt || new Date().toISOString();
+    if (record) {
+      record.replayed_at = stamp;
+      this.dashboardOutcomeStore.set(id, record);
+    }
+
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `UPDATE dashboard_publish_outcomes SET replayed_at = $2 WHERE id = $1`,
+          [id, stamp],
+        );
+      } catch (err: any) {
+        Logger.error(`DbClient.markDashboardOutcomeReplayed Postgres Error: ${err.message}`);
+      }
+    }
   }
 
   // ── SMS Consent Persistence (sms_consents + sms_consent_audit) ─────────────

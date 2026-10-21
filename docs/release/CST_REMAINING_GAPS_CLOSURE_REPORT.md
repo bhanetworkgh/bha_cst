@@ -921,3 +921,205 @@ traffic and carry their own approval (`LOOP-1791243473841-02JU` /
 ### 13.3 Rollback
 
 `docs/release/operator-playbook-sop.md` §11.1 is the authoritative procedure: **Deploys → select the deploy → "Rollback to this deploy"**. The rollback is authorised for a confirmed P0 (outage, data exposure, or a stuck outbound worker) by a second operator, logged immediately. **Migrations are forward-only** — a rollback does not undo a migration, and no migration is introduced by this release (020 and 021 are already applied). The release is **code-only**, so a rollback is a pure code redeploy with no data implication.
+
+---
+
+## 14. Session 2026-10-21T14:35Z — final gap closure (5R0J auth, identity, voice config, schema, vFarm contract)
+
+**Local only. No commit, push, merge, deploy, Render change, secret change, production
+mutation, farm-grant change, SMS or voice traffic.** The deployed release remains
+`b50588c` and is **not** affected by this session's work.
+
+### 14.1 Priority 1 — 5R0J API authentication: route surface audited, two defects fixed
+
+Every registration in `engine/src/app.ts` was extracted programmatically with its
+middleware, rather than inferred from route names:
+
+| Route(s) | Method | Guard | Verdict |
+|---|---|---|---|
+| `/api/devices`, `/api/v1/devices` | GET | `requireVfarmAdminSession` | Correct. A caller JWT is **refused with 403**, not silently upgraded to CST's farm key. |
+| `/api/dashboard`, `/api/v1/dashboard` | GET | `requireVfarmAdminSession` | Correct, same rule. |
+| `/api/farms`, `/api/v1/farms` | GET | `requireVfarmAdminSessionOrJwt` | Correct. The caller's own JWT is forwarded **verbatim**; CST's admin credential is never substituted. |
+| `/api/tokens`, `/api/v1/tokens` | POST | `requireVfarmAdminSessionOrJwt` | **Two defects found and fixed — see below.** |
+| `/health`, `/api/health`, `/api-docs*`, `/`, `/admin*`, `/debug/state` | GET | none / production-guarded | Intended public surfaces. `/debug/state` returns 404 in production. |
+
+No other verb is registered on these paths, and no nested router re-exports them.
+
+**Defect 1 — token issuance was not audited at all.** `engine/src/app.ts` had **no
+`Logger.audit` call anywhere**, so minting a farm-scoped credential left no
+trace. Fixed: `POST /api/tokens` and `POST /api/v1/admin/vfarm/tokens` now write
+a `SECURITY_LEDGER` entry on **success and on refusal**, naming the farm, the
+authentication mode and the outcome — and **never** the key material.
+
+**Defect 2 — a tenant-scoped caller could re-point the process-wide farm key.**
+`adapter.issueFarmToken()` replaced the adapter's configured `apiKey` and rebuilt
+its upstream clients, so a single `POST /api/tokens` by a **caller JWT** changed
+the key that **every other tenant's** identity resolution uses. The smallest
+correct fix: the adapter now takes an explicit `switchActiveKey` option, and the
+route passes `switchActiveKey: !callerJwt`. A caller JWT still mints a key for
+the caller's own farm (vFarm enforces the organisation scope, because the JWT is
+forwarded verbatim) and still receives it — but it **no longer mutates shared
+state**. The operator path (CST admin session) keeps the re-pointing behaviour,
+which is what that endpoint exists for.
+
+**Token revocation:** vFarm exposes revocation on its own surface
+(`DELETE /api/v1/farms/{farm_id}/api-keys/{key_id}`, and a flat `/api/v1/tokens`
+surface with rotate/list/get per the live OpenAPI). **CST proxies neither**, so
+CST has no revocation route. This is recorded as a gap, not implemented, because
+the brief forbids inventing upstream endpoints and the flat surface's exact
+revoke semantics would need confirming against the provider.
+
+**Historical exposure:** no gateway log was obtained, and none was fabricated.
+The 5R0J historical question remains an **external acceptance requirement**.
+
+### 14.2 Priority 2 — durable customer identity and isolation
+
+The existing rehydration fix and its 15 tests were re-reviewed. Confirmed:
+mappings survive restart (rehydration runs **after** projects and bindings are
+loaded — the ordering was verified, because the tenant-ownership check reads
+`this.projects`); production/demo identities cannot shadow registered mappings;
+missing live client, missing `tenant_org_id`, unresolved identity,
+cross-tenant mapping and ambiguous records all fail closed; live vFarm membership
+is checked on each resolution; farm scope comes only from the upstream grant
+list; duplicate `(project, phone)` and tenant/project mismatches are rejected; a
+user-supplied farm name is never treated as authority (it is only used to
+*detect* a violation — `CoreEngine.detectOutOfScopeFarmMention`).
+
+**One genuinely uncovered case was added:** a **valid `CST_API_KEY` must not
+confer farm scope**. The programmatic API key authenticates the caller to the
+service; it is not an authorisation grant.
+
+### 14.3 Priority 3 — voice API configuration and authorisation
+
+The contract is as designed: missing configuration → 503 `CONFIG_MISSING`
+(missing and empty `CST_API_KEY` both); missing credential → 401; invalid,
+empty, whitespace-only, malformed or prefix credential → 403; valid credential →
+authorised, and **still subject to role, tenant, project and farm scope** (the
+new test above). The secret never appears in an error body, a log line, a test
+snapshot or the documentation.
+
+**Operator steps to configure the secret (not performed here):**
+
+1. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+2. In the Render dashboard for `bha-cst` → Environment → add `CST_API_KEY` with
+   that value. **Never print, log, paste or commit the value.**
+3. Store it in 1Password → `BHA Render Production Vault`.
+4. Confirm recognition **without exposing it**: after the next boot the log must
+   no longer contain `Missing configuration: CST_API_KEY`.
+5. Confirm the routes answer **401/403, not 503**:
+   `curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' https://bha-cst-7u9e.onrender.com/api/v1/voice/synthesize` → expect 401.
+6. The environment needs **no restart**: the guard reads the variable per request.
+
+### 14.4 Priority 4 — voice lifecycle, deadline and audit correctness
+
+Re-verified: an aborted or timed-out turn cannot be recorded as delivered (the
+abort checkpoints sit **before** the `voice_deliveries` write and before the
+transcript write); synthesis honours the signal; no voice path writes a
+Call SID or a fabricated id into the SMS alert-audit foreign key; the FK stays
+enforced. **One real defect in this session's own test work was found and
+fixed:** the new voice-lane and durable-mapping tests replaced the **static**
+`VoiceLaneService` synthesizer and never restored it, so a later file in the
+same worker inherited the mock. Now captured in `beforeEach` and restored in
+`afterEach`.
+
+A second order-dependence in the **new** route-surface test was found and fixed:
+`DbClient.getPool()` is static, and a pool inherited from another test file made
+`resolveAdminSession` read the database instead of the in-memory session map.
+The suite now clears and restores the pool, matching the hermetic pattern the
+5R0J suite already used.
+
+### 14.5 Priority 5 — HOFE schema readiness (read-only, non-destructive)
+
+A new assertion suite (`tests/db/schema_assertions.test.ts`, 10 tests) checks the
+required database state **from the migration files** — no migration is applied and
+no database is touched. It pins: every `customers` column the rehydration reads
+(`phone_e164`, `customer_ref`, `tenant_id`, `project_id`, `organization_id`,
+`workspace_id`, `role`, `unit_id`, `farm_id`, `farm_ids`,
+`speaker_cache_expires_at`); the project-scoped uniqueness
+`unq_customers_tenant_project_phone UNIQUE (tenant_id, project_id, phone_e164)`
+and the removal of the stale per-tenant constraint; the `systems` foreign key on
+`customers`; the three consent tables; the consent-audit foreign key, the
+append-only trigger and the unique index; the single active prompt index; the
+`alert_audit_log` foreign key (asserting every reference on that column targets
+`messages_out`); the `voice_deliveries` columns the voice trail writes; and
+migration-set contiguity.
+
+**Production schema objects remain unverified** — the database IP allowlist is
+empty and was not bypassed. The approved read-only procedure for the authorised
+operator is in §9 of this report.
+
+### 14.6 Priority 6 — the vFarm user-to-location contract **does not exist**
+
+Determined from the **deployed** vFarm OpenAPI (171 paths) and the live API:
+
+| Question | Answer from upstream evidence |
+|---|---|
+| Does a location hierarchy exist? | **Yes**: `farm → zones → locations → sublocations → devices`. |
+| Does `cabinet` exist? | **Yes, but only as a zone attribute**: `cabinet_serial` on `ZoneCreate`, and `cabinet` on `LayoutZone` / `ZoneResponse` / `ZoneUpdate`. It is not an endpoint and not a user attribute. |
+| Is there a user→zone/location/sublocation binding? | **No.** No endpoint binds a user to any of them. `POST /api/v1/farms/{farm_id}/users` takes `{email, password, name, role_id}` — a farm-level member with **no** location. |
+| Is there a user→device binding? | **No.** Farm membership is role-based only. |
+| What CST needs | CST's `unit_context.unit_id` is used as the **device id** in `GET /api/v1/devices/{device_id}/readings`. |
+
+**Conclusion: the contract CST needs does not exist upstream, and none was
+invented.** The closest existing primitives are the farm grant (user→farm) and
+`cabinet_serial` (farm→zone→cabinet), but there is no user→zone/location link
+and a farm can hold several zones, so a caller's cabinet cannot be derived.
+**Live telemetry stays out of scope** until the vFarm product owner supplies
+either a user→location/device binding or an explicit decision that telemetry is
+not offered. The exact gap is recorded on the existing `LOOP-1792186179087-EWQI`.
+
+### 14.7 Priority 7 — loop reconciliation
+
+| Loop | Status | Change from the previous record |
+|---|---|---|
+| **`LOOP-1792452150303-J2F6`** (SMS delay) | **NOT REOPENED** | The earlier CST timing investigation is recorded as closed. The 5 s poll and 2–4 s backoff are ruled out by code, and the **cause is still unproven** — there is no evidence of a CST-side defect. If a delay remains, it is a **carrier/platform** investigation, tracked separately with timestamps and provider evidence, not a reopening of the CST investigation. |
+| **`LOOP-1791826143428-HOFE`** | Schema readiness **separated** from production acceptance | Migration/schema readiness is asserted locally (§14.5) and 020/021 are applied in production; **production customer-row and schema-object verification remain outstanding** and are tracked as their own item. |
+| **`LOOP-1790790007707-5R0J`** | **Code complete**, historical review still open | §14.1 completes the code surface; the gateway-history review (or a formally accepted substitute) is still required, and no gateway log was invented. |
+| Voice/SMS acceptance loops | **Still pending** | No authorised real traffic has produced provider or identity-resolution evidence. |
+| **`LOOP-1791922936305-VU6R`** | **NOT EVIDENCED** | No session notes and no recorded decision exist. Nothing was fabricated. |
+
+### 14.8 Priority 8 — database continuity decision checklist
+
+**No plan, data, or networking change was made.** The expiry is **unverified
+from this environment** and must be confirmed against the provider or by an
+authorised operator.
+
+| # | Item | Owner | Status |
+|---|---|---|---|
+| 1 | Confirm the current plan and expiry with the provider (the API reports `plan=free`, `expiresAt 2026-11-14T18:10:20.49769Z`, `ipAllowList=[]`) | Platform / Jason | **Unverified — confirm before relying on it** |
+| 2 | Approve the continuity option (Starter tier) and its cost | Jason | Pending |
+| 3 | Pre-flight `pg_dump` of the database, and a **restore** of that dump into a scratch database to prove recoverability | Platform | Pending — a backup that has never been restored is not a backup |
+| 4 | Record the cutover downtime, the rollback steps, and the validation SQL | Ahad + Platform | Written in `cst-database-continuity-plan.md`; the restore drill in item 3 is still outstanding |
+| 5 | Access-control and allowlist requirements for the cutover window | Platform | Pending |
+| 6 | Evidence of completion: the upgrade applied, the validation query clean, the restore drill output attached | Platform | Pending |
+
+### 14.9 Verification (2026-10-21T14:47Z, all exit 0)
+
+| Command | Result |
+|---|---|
+| `npx vitest run tests/security/` | 54 passed (54) |
+| `npx vitest run tests/voice/` | 123 passed (123) |
+| `npx vitest run tests/identity/` | 90 passed (90) |
+| `npx vitest run tests/db/` | 24 passed (24) |
+| `npx vitest run tests/tenancy/` | 25 passed (25) |
+| `npx vitest run tests/admin/` | 45 passed (45) |
+| `npx vitest run tests/consent/` | 38 passed (38) |
+| `npx vitest run tests/adapters/` | 66 passed (66) |
+| **`npm test`** ×3 (order-dependence) | **770 passed \| 6 skipped (776), 0 failed**, 71 files |
+| `npm run typecheck` | 0 errors |
+| `npm run build` | clean |
+| `git diff --check` | clean |
+
+Baseline 753 → **770** (+17 tests, +2 files). No test was disabled, skipped or
+altered to force a green result.
+
+### 14.10 Production evidence re-verified (read-only)
+
+| Item | Value |
+|---|---|
+| Live SHA | `b50588c` (`dep-dbccl9uk1f9s73c2ckpg`, finished 2026-07-21T14:23:16Z) — **this session's work is not deployed** |
+| Health | 200 `{"status":"ok","service":"bha-cst-engine"}` |
+| Identity rehydration | **active** — boot log: `restored 3 admin-managed phone->identity binding(s)` |
+| `CST_API_KEY` | **still not configured** — the five programmatic voice routes return 503 `CONFIG_MISSING` (fail-closed) |
+| Migrations | `0 applied, 22 already recorded` |
+| Database | `plan=free`, `expiresAt 2026-11-14T18:10:20.49769Z`, `ipAllowList=[]` — not bypassed |

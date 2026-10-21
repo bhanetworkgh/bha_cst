@@ -35,6 +35,7 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
       apiKey: env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
       apiToken: env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
       timeoutMs: env.VFARM_API_TIMEOUT_MS || (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
+      tenantOrgId: process.env.VFARM_TENANT_ORG_ID,
     };
   } catch {
     // Env not fully configured in this context (e.g. isolated unit test) —
@@ -48,6 +49,7 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
       timeoutMs: process.env.VFARM_API_TIMEOUT_MS
         ? Number(process.env.VFARM_API_TIMEOUT_MS)
         : (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
+      tenantOrgId: process.env.VFARM_TENANT_ORG_ID,
     };
   }
 }

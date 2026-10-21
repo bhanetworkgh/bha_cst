@@ -300,7 +300,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
             }
           }
 
-          Logger.info(`Inbound SMS ignored: sender ${normalizedMsg.from_e164} is opted_out; no reply sent`, {
+          Logger.info(`Inbound SMS ignored: sender ${maskPhone(normalizedMsg.from_e164)} is opted_out; no reply sent`, {
             tenant_id: binding.tenant_id,
             phone_e164: normalizedMsg.from_e164,
             correlation_id: normalizedMsg.message_id,
@@ -366,7 +366,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
               }
             }
 
-            Logger.info(`Affirmative response ignored — no valid consent prompt for ${normalizedMsg.from_e164}`, {
+            Logger.info(`Affirmative response ignored — no valid consent prompt for ${maskPhone(normalizedMsg.from_e164)}`, {
               tenant_id: binding.tenant_id,
               phone_e164: normalizedMsg.from_e164,
               correlation_id: normalizedMsg.message_id,

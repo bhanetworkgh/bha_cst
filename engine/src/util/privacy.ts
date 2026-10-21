@@ -40,3 +40,30 @@ export function maskPhone(phone: string | null | undefined): string {
   const middle = '*'.repeat(hidden - 4);
   return `+${hint}${middle}${last4}`;
 }
+
+/**
+ * Mask a provider message identifier (a Twilio MessageSid) for logs and audit
+ * entries.
+ *
+ * A MessageSid is a provider-side handle for one customer message. It is not a
+ * secret, but it IS a per-customer identifier: it resolves to exactly one
+ * message body, one sender and one recipient in the provider console, and it
+ * is retained in CST's logs. A log line therefore carries a masked form, not
+ * the raw identifier.
+ *
+ * The first six characters are kept because that is the Twilio MessageSid
+ * prefix (`SM` plus four more), which is enough for an operator to correlate
+ * with the provider console by prefix, and enough to group the log lines for
+ * one message, without publishing a resolvable handle.
+ *
+ * Returns the input unchanged if it is too short to mask safely.
+ */
+export function maskProviderSid(sid: string | null | undefined): string {
+  if (!sid) return '';
+  const value = String(sid).trim();
+  if (value.length <= 8) return value;
+
+  const keep = 6;
+  const hidden = value.length - keep;
+  return `${value.slice(0, keep)}${'*'.repeat(hidden)}`;
+}

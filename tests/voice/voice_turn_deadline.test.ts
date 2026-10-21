@@ -34,6 +34,14 @@ describe('Voice turn response deadline', () => {
   const originalDeadline = process.env.CST_VOICE_TURN_DEADLINE_MS;
 
   beforeEach(() => {
+
+  // The programmatic voice API is guarded by a shared secret. This suite
+
+  // exercises it, so it must configure the secret itself rather than
+
+  // depending on another file leaving it set.
+
+  process.env.CST_API_KEY = 'test_programmatic_api_key_32_chars_long';
     DbClient.clearAll();
     DbClient.resetDurableStores();
     CoreRegistry.clear();

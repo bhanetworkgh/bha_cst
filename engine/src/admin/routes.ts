@@ -53,7 +53,7 @@ function unmirrorSpeakerFromAdapter(projectId: string, phoneE164: string): void 
   try {
     adapter?.removeSpeaker?.(projectId, phoneE164);
   } catch (err: any) {
-    Logger.warn(`Admin: could not evict speaker ${phoneE164} from adapter directory: ${err.message}`);
+    Logger.warn(`Admin: could not evict speaker ${maskPhone(phoneE164)} from adapter directory: ${err.message}`);
   }
 }
 
@@ -304,7 +304,14 @@ adminRouter.get('/health/verification', async (_req: Request, res: Response) => 
           speaker_policy: p.speaker_policy,
           voice_enabled: p.voice_enabled ?? false,
         }));
-        const health = adapter?.getHealth ? await adapter.getHealth(t.tenant_id) : { status: 'healthy' };
+        // A real, bounded, read-only upstream probe. It reports the MEASURED
+        // latency and never claims health from the presence of credentials.
+        // An adapter that does not implement a probe cannot assert health, so
+        // it is reported as `configured` (health not asserted) rather than
+        // the hard-coded `healthy` this used to return.
+        const health = adapter?.getHealth
+          ? await adapter.getHealth(t.tenant_id)
+          : { status: 'configured' as const, details: { reason: 'adapter_does_not_expose_a_health_probe' } };
         return {
           tenant_id: t.tenant_id,
           name: t.name,
@@ -752,7 +759,7 @@ adminRouter.patch('/speakers/:phoneE164', async (req: Request, res: Response) =>
     }
 
     CoreRegistry.invalidateSpeakerCache(tenant_id, project_id || updated.project_id || '', phoneE164);
-    Logger.info(`Admin: Updated configuration for speaker ${phoneE164}`);
+    Logger.info(`Admin: Updated configuration for speaker ${maskPhone(phoneE164)}`);
     res.status(200).json({ status: 'updated', speaker: updated });
   } catch (err: any) {
     Logger.error(`Admin PATCH speaker error: ${err.message}`);
@@ -786,7 +793,7 @@ adminRouter.delete('/speakers/:phoneE164', async (req: Request, res: Response) =
       unmirrorSpeakerFromAdapter(proj, phoneE164);
     }
     CoreRegistry.invalidateSpeakerCache(tenantId, projectId || '', phoneE164);
-    Logger.info(`Admin: Revoked/deleted speaker ${phoneE164} for tenant ${tenantId}`);
+    Logger.info(`Admin: Revoked/deleted speaker ${maskPhone(phoneE164)} for tenant ${tenantId}`);
     res.status(200).json({ status: deleted ? 'deleted' : 'not_found', phone_e164: phoneE164 });
   } catch (err: any) {
     Logger.error(`Admin DELETE speaker error: ${err.message}`);
@@ -917,8 +924,33 @@ adminRouter.post('/vfarm/tokens', async (req: Request, res: Response) => {
     }
     // JWT from env only — client passes no credentials
     await adapter.issueFarmToken(farm_id, undefined, name);
+
+    // Credential-minting event: audited with the farm, never the key.
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: null,
+      actor: 'cst_admin_session',
+      role: 'superadmin',
+      entry_point: 'api',
+      tool_or_route: 'POST /api/v1/admin/vfarm/tokens',
+      outcome: 'ok',
+      reason: `Operator issued a farm-scoped API key for farm ${farm_id}; the adapter's active farm key was switched`,
+      correlation_id: (req.headers['x-correlation-id'] as string) || undefined,
+    });
+
     res.status(201).json({ status: 'issued', farm_id });
   } catch (err: any) {
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: null,
+      actor: 'cst_admin_session',
+      role: 'superadmin',
+      entry_point: 'api',
+      tool_or_route: 'POST /api/v1/admin/vfarm/tokens',
+      outcome: 'refused',
+      reason: `Operator farm-scoped API key issuance failed for farm ${(req.body || {}).farm_id || 'unknown'}: ${err?.message}`,
+      correlation_id: (req.headers['x-correlation-id'] as string) || undefined,
+    });
     sendProxyError(res, 'token issuance', err);
   }
 });

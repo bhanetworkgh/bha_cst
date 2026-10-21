@@ -21,7 +21,19 @@ export interface OutboundMessage {
   correlation_id: string;
   turn_id?: string;   // The cst.turn.turn_id this outbound is the reply to
   provider_sid?: string;
-  status?: 'pending' | 'queued' | 'sending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered';
+  /**
+   * Delivery state of the outbound message.
+   *
+   * `outcome_unknown` is NOT a delivery outcome — it records that CST
+   * dispatched the message to the provider but never obtained a response, so
+   * it cannot be established whether Twilio created the message. A message in
+   * this state is deliberately NOT re-dispatched automatically (a blind retry
+   * could deliver a second copy to the customer) and does NOT publish a
+   * `cst.delivery` event (there is no delivery status to report). It is
+   * preserved, visible in the queue-depth heartbeat, and reconcilable by an
+   * operator. See the reconciliation procedure in the operations runbook.
+   */
+  status?: 'pending' | 'queued' | 'sending' | 'sent' | 'failed' | 'refused' | 'delivered' | 'undelivered' | 'outcome_unknown';
   retry_count?: number;
   max_retries?: number;
   next_retry_at?: string;

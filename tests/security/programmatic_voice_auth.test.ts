@@ -328,6 +328,68 @@ describe('Programmatic voice API authentication (CST programmatic_api_key guard)
     expect(res.status).toBe(200);
   });
 
+  // ── 4b. A VALID credential does not create farm scope ─────────────────────
+  //
+  // The programmatic API key authenticates the CALLER to the CST service. It
+  // is not an authorisation grant: the farm scope still comes from the
+  // authoritative vFarm grant list (or, where upstream is unreachable, from
+  // nothing at all). A valid key must not let a caller reach a farm they are
+  // not entitled to.
+
+  it('does not grant farm scope to a valid credential when the speaker has no authorised farm', async () => {
+    // Replace the speaker with one that has NO farm grant anywhere.
+    DbClient.clearAll();
+    DbClient.resetDurableStores();
+    CoreRegistry.clear();
+    CoreRegistry.resetToDefault();
+    CoreRegistry.bindServiceNumber({
+      phone_e164: '+19715885826',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
+      capability: 'voice',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
+    DbClient.seedCustomer({
+      phone_e164: KNOWN_SPEAKER,
+      customer_ref: 'cust_manager_01',
+      tenant_id: 'tenant-vfarm-01',
+      organization_id: 'tenant-vfarm-01',
+      workspace_id: 'ws-vfarm-main',
+      project_id: 'proj-vfarm-main',
+      role: 'manager',
+      unit_id: 'bay_04',
+      farm_id: '',
+      farm_ids: [],
+    });
+    (CoreRegistry.getAdapter('tenant-vfarm-01') as any)?.registerSpeaker?.('proj-vfarm-main', {
+      person_id: 'cust_manager_01',
+      phone_e164: KNOWN_SPEAKER,
+      role: 'manager',
+      farm_ids: [],
+    });
+    VoiceInterface.setSynthesizer(mockSynthesizer);
+    VoiceLaneService.setSynthesizer(mockSynthesizer);
+
+    const res = await request(app)
+      .post('/api/v1/voice/turn')
+      .set('x-cst-api-key', SECRET)
+      .send({
+        from_e164: KNOWN_SPEAKER,
+        to_e164: '+19715885826',
+        speech_text: 'What is the status of my farm?',
+        correlation_id: 'CREDENTIAL_NO_FARM_SCOPE',
+      });
+
+    // The credential was accepted (the call was authorised to reach CST)...
+    expect(res.status).toBe(200);
+    // ...but the caller got a safe answer with NO farm data, because the
+    // credential conferred no farm scope.
+    const reply = String(res.body?.text ?? res.body?.reply_text ?? '');
+    expect(reply).toMatch(/linked farm resources/i);
+    expect(reply).not.toContain('farm_austin_main');
+  });
+
   // ── 5. The Twilio-hosted variants are unaffected ──────────────────────────
 
   it('leaves the Twilio voice status webhook on signature verification', async () => {

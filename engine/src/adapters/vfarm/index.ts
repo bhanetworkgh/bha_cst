@@ -3,7 +3,7 @@ import { ITenantAdapter } from '../types.js';
 import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, CabinetConfig } from '../../core/types.js';
 import { Logger } from '../../config/logger.js';
 import { VfarmHttpClient, VfarmApiError } from './http_client.js';
-import { VfarmLiveClient } from './live_client.js';
+import { VfarmLiveClient, VFARM_DEFAULT_TIMEOUT_MS, VFARM_HEALTH_PROBE_TIMEOUT_MS } from './live_client.js';
 import { assertSpeakerFarmAccess, VfarmAuthorizationError } from './authorization.js';
 import { CONFIG_HASH_RE, type FarmResponse, type OrgResponse } from './schemas.js';
 
@@ -28,6 +28,22 @@ export interface VfarmAdapterConfig {
    * is shared state and can leak between concurrently executed test files.
    */
   seedDemoDirectory?: boolean;
+  /**
+   * The vFarm organization this tenant belongs to.
+   *
+   * Used to SCOPE the health probe to a tenant. Injected rather than read
+   * from the environment at call time so a test can control it without
+   * mutating shared process state.
+   */
+  tenantOrgId?: string;
+  /**
+   * Request budget for a single health probe, in ms.
+   *
+   * Strictly bounded: the effective value is
+   * `min(this, VFARM_HEALTH_PROBE_TIMEOUT_MS)`, so the probe can be made
+   * tighter but never looser than the health-probe ceiling.
+   */
+  healthProbeTimeoutMs?: number;
 }
 
 /** Maps a vFarm organization-member `role` string onto CST's role model.
@@ -49,6 +65,56 @@ function mapVfarmOrgRoleToCstRole(vfarmRole: string): Exclude<UserRole, 'unknown
     default:
       return null;
   }
+}
+
+/**
+ * The stable failure vocabulary the health probe reports.
+ *
+ * Deliberately coarse: it is a diagnostic category, never a raw upstream
+ * message, so nothing sensitive can travel with it.
+ */
+export type ProbeFailureCategory =
+  | 'auth'
+  | 'upstream'
+  | 'network'
+  | 'timeout'
+  | 'invalid_response';
+
+/**
+ * Classify a health-probe failure into a stable category.
+ *
+ * Two different error hierarchies reach the probe: the HTTP client's
+ * `VfarmApiError` (which carries a `category`) and the live client's
+ * `VfarmHttpError` / `VfarmNetworkError` (which carry an HTTP status or
+ * nothing). Both are mapped onto the same vocabulary so the health contract
+ * is stable regardless of which client made the request.
+ */
+function classifyProbeFailure(err: any): ProbeFailureCategory {
+  if (err instanceof VfarmApiError) {
+    switch (err.category) {
+      case 'auth':
+        return 'auth';
+      case 'timeout':
+        return 'timeout';
+      case 'network':
+        return 'network';
+      case 'invalid_response':
+        return 'invalid_response';
+      // 'not_found' | 'rate_limited' | 'upstream' — the upstream answered and
+      // did not serve the request.
+      default:
+        return 'upstream';
+    }
+  }
+  const status = err?.status ?? err?.statusCode;
+  if (typeof status === 'number') {
+    if (status === 401 || status === 403) return 'auth';
+    return 'upstream';
+  }
+  if (err?.name === 'AbortError' || /abort/i.test(String(err?.message))) return 'timeout';
+  // A response that failed schema validation surfaces as a Zod error.
+  if (err?.name === 'ZodError' || Array.isArray(err?.issues)) return 'invalid_response';
+  return 'network';
 }
 
 export class VfarmTenantAdapter implements ITenantAdapter {
@@ -302,7 +368,27 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
   }
 
-  public async issueFarmToken(farmId: string, jwt?: string, name?: string): Promise<string> {
+  /**
+   * Issue a farm-scoped API key.
+   *
+   * `switchActiveKey` controls a PROCESS-WIDE side effect: the adapter's
+   * configured farm key is replaced and its upstream clients are rebuilt, so
+   * every later vFarm call (farm discovery, organisation members, farm grants,
+   * device readings) is made with the new farm's key.
+   *
+   * That is the right behaviour for an OPERATOR re-pointing CST at a
+   * different farm. It is NOT right for a tenant-scoped caller: a caller JWT
+   * must not be able to change the key every other tenant's resolution uses.
+   * So the caller-JWT path mints the key for the caller's own farm — vFarm
+   * enforces the organisation scope, because the caller's JWT is forwarded
+   * verbatim — and returns it WITHOUT mutating shared state.
+   */
+  public async issueFarmToken(
+    farmId: string,
+    jwt?: string,
+    name?: string,
+    options: { switchActiveKey?: boolean } = {}
+  ): Promise<string> {
     if (!this.liveClient) {
       throw new Error('vFarm live client not configured');
     }
@@ -312,7 +398,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
     const res = await this.liveClient.issueFarmToken({ farmId, name }, token);
     const rawKey = res.raw_key || '';
-    if (rawKey) {
+    const switchActiveKey = options.switchActiveKey !== false;
+    if (rawKey && switchActiveKey) {
       this.config.apiKey = rawKey;
       this.liveClient = this.buildLiveClient(this.config);
       this.httpClient = this.buildHttpClient(this.config);
@@ -1137,22 +1224,219 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     };
   }
 
-  async getHealth(tenantId: string): Promise<{
-    status: 'healthy' | 'degraded' | 'down';
+  /**
+   * The vFarm organization this tenant's projects belong to.
+   *
+   * Used by the health probe so it can make a TENANT-SCOPED, read-only
+   * request instead of a tenant-agnostic one.
+   */
+  private resolveTenantOrgId(): string | null {
+    // Only the OPERATOR-CONFIGURED organization id is used to scope the
+    // health probe.
+    //
+    // The adapter's built-in project seed carries a fallback organization id
+    // so the membership cross-check has something to query; using that
+    // fallback for a health probe would target a hardcoded id and could
+    // report another organization's health as this tenant's. The probe is
+    // therefore scoped by configuration alone, and when no organization is
+    // configured it reports `configured` — reachable and honest — rather than
+    // making an unscoped claim.
+    const fromConfig = (this.config.tenantOrgId || '').trim();
+    if (fromConfig) return fromConfig;
+    const configured = (process.env.VFARM_TENANT_ORG_ID || '').trim();
+    return configured ? configured : null;
+  }
+
+  /**
+   * The request budget for a single health probe.
+   *
+   * Strictly bounded: `min(configured request timeout, VFARM_HEALTH_PROBE_TIMEOUT_MS)`.
+   * A health probe is a liveness signal, so it must never hold a caller
+   * open for the general request budget, and an operator who raised
+   * `VFARM_API_TIMEOUT_MS` must not be able to make it unbounded.
+   */
+  private healthProbeTimeoutMs(): number {
+    const configured = this.config.healthProbeTimeoutMs
+      ?? this.config.timeoutMs
+      ?? VFARM_DEFAULT_TIMEOUT_MS;
+    return Math.max(1, Math.min(configured, VFARM_HEALTH_PROBE_TIMEOUT_MS));
+  }
+
+  /**
+   * OPERATIONAL readiness, evaluated WITHOUT contacting the upstream.
+   *
+   * This is what the per-request authorization path consults. It is
+   * deliberately NOT a liveness probe:
+   *
+   *  - a probe is a network round trip on the customer's turn;
+   *  - making authorization depend on the upstream's liveness AT THAT INSTANT
+   *    couples a live conversation to an upstream outage, and would refuse
+   *    every turn the moment a health endpoint misbehaves;
+   *  - the authoritative upstream check already happens inside
+   *    `resolveSpeaker()`, which fails closed on its own (`opaque_degraded` /
+   *    `opaque_revoked`), so the fail-closed guarantee does not depend on
+   *    this check.
+   *
+   * The returned status uses the same vocabulary as the active probe:
+   *   - `unavailable` — the adapter has no usable identity source. In
+   *     production that means no vFarm client is configured, and the adapter
+   *     would refuse every identity anyway.
+   *   - `degraded`    — the adapter is explicitly in a simulated-degraded
+   *     state, so identity resolution will fail closed.
+   *   - `configured`  — the adapter can serve identity resolution, but
+   *     upstream health is NOT asserted because nothing was probed.
+   */
+  private operationalStatus(tenantId: string): {
+    status: 'configured' | 'healthy' | 'degraded' | 'unavailable';
+    details: Record<string, unknown>;
+  } {
+    const mode = this.isLiveMode() ? 'live' : 'local';
+    const baseDetails: Record<string, unknown> = {
+      projects_count: this.projectsMap.size,
+      tenant_id: tenantId,
+      mode,
+      probe: 'skipped',
+    };
+
+    if (this.config.simulateDegraded) {
+      return {
+        status: 'degraded',
+        details: { ...baseDetails, reason: 'simulated_degraded' },
+      };
+    }
+
+    if (this.isLiveMode()) {
+      // The authoritative organisation-membership and farm-grant checks run
+      // inside resolveSpeaker() and fail closed on their own.
+      return {
+        status: 'configured',
+        details: { ...baseDetails, reason: 'upstream_health_not_probed' },
+      };
+    }
+
+    // No upstream configured. In production this is a fail-closed condition:
+    // resolveSpeaker() returns `opaque_revoked` for every caller because the
+    // authoritative check cannot run, so the adapter genuinely cannot serve.
+    if (process.env.NODE_ENV === 'production') {
+      return {
+        status: 'unavailable',
+        details: { ...baseDetails, reason: 'no_vfarm_client_configured' },
+      };
+    }
+
+    // Local/dev mode: the admin-managed directory is a legitimate identity
+    // source, and upstream health is simply not applicable.
+    return {
+      status: 'configured',
+      details: { ...baseDetails, reason: 'local_identity_directory' },
+    };
+  }
+
+  /**
+   * Report vFarm upstream health.
+   *
+   * This performs a REAL, bounded, read-only upstream request and reports the
+   * MEASURED latency. It previously returned a hard-coded
+   * `{ status: 'healthy', latency_ms: 15 }` without contacting vFarm at all,
+   * so a deployment with an unreachable, unauthorised or misconfigured upstream
+   * still reported itself healthy.
+   *
+   * States:
+   *   - `unavailable`  CST cannot use the upstream at all: no client is
+   *                    configured, or the credential was rejected (401/403).
+   *   - `configured`   the upstream is configured and reachable, but upstream
+   *                    health is NOT asserted: either the probe could not be
+   *                    scoped to this tenant (no vFarm organization id), or
+   *                    the probe was skipped (`options.probe === false`).
+   *   - `healthy`      a tenant-scoped read-only request succeeded.
+   *   - `degraded`     the upstream answered but did not serve the request
+   *                    (5xx, rate limit, timeout, connection failure, or a
+   *                    response that failed validation).
+   *
+   * The probe never mutates tenant state: it reads, and it does not touch the
+   * discovered-farm cache. It never logs a credential or a response body, and
+   * it never throws.
+   *
+   * @param options.probe - Set to `false` to report OPERATIONAL readiness
+   *   without contacting the upstream. See `operationalStatus()`.
+   */
+  async getHealth(tenantId: string, options?: { probe?: boolean }): Promise<{
+    status: 'configured' | 'healthy' | 'degraded' | 'unavailable';
     latency_ms?: number;
     details?: Record<string, unknown>;
   }> {
-    if (this.config.simulateDegraded) {
-      return { status: 'degraded', latency_ms: 1200, details: { error: 'Simulated API latency / degradation', mode: this.isLiveMode() ? 'live' : 'local' } };
+    if (options?.probe === false) {
+      return this.operationalStatus(tenantId);
     }
-    return {
-      status: 'healthy',
-      latency_ms: 15,
-      details: {
-        projects_count: this.projectsMap.size,
-        tenant_id: tenantId,
-        mode: this.isLiveMode() ? 'live' : 'local',
-      },
+
+    const mode = this.isLiveMode() ? 'live' : 'local';
+    const baseDetails = {
+      projects_count: this.projectsMap.size,
+      tenant_id: tenantId,
+      mode,
     };
+
+    if (this.config.simulateDegraded) {
+      return {
+        status: 'degraded',
+        latency_ms: 1200,
+        details: { ...baseDetails, error: 'Simulated API latency / degradation' },
+      };
+    }
+
+    // No live client means there is no upstream to probe at all.
+    if (!this.liveClient) {
+      return {
+        status: 'unavailable',
+        details: { ...baseDetails, reason: 'no_vfarm_client_configured' },
+      };
+    }
+
+    const orgId = this.resolveTenantOrgId();
+    const budget = this.healthProbeTimeoutMs();
+    const startedAt = Date.now();
+    try {
+      // The vFarm organization routes reject X-Farm-Key auth and require the
+      // admin JWT, so the probe must present it explicitly.
+      if (orgId) {
+        // Tenant-scoped, read-only, documented endpoint.
+        await this.liveClient.getOrganization(orgId, this.adminJwt ?? undefined, budget);
+      } else {
+        // No organization id to scope to. The upstream is still reachable and
+        // the credential is still checked, but tenant health is NOT asserted.
+        await this.liveClient.listOrganizations(this.adminJwt ?? undefined, budget);
+      }
+      const latencyMs = Date.now() - startedAt;
+      if (!orgId) {
+        return {
+          status: 'configured',
+          latency_ms: latencyMs,
+          details: {
+            ...baseDetails,
+            reachable: true,
+            reason: 'no_tenant_org_id_for_scoped_probe',
+          },
+        };
+      }
+      return {
+        status: 'healthy',
+        latency_ms: latencyMs,
+        details: { ...baseDetails, probe: 'organization' },
+      };
+    } catch (err: any) {
+      const latencyMs = Date.now() - startedAt;
+      const category = classifyProbeFailure(err);
+      // An authentication failure means the upstream is not usable with the
+      // configured credential — that is "unavailable", not merely "degraded".
+      const status = category === 'auth' ? 'unavailable' : 'degraded';
+      // The category only — never the error message, the upstream body, or
+      // the credential. The upstream body can echo internal detail.
+      Logger.warn(`vFarm health probe failed (${category}) after ${latencyMs}ms`);
+      return {
+        status,
+        latency_ms: latencyMs,
+        details: { ...baseDetails, reason: `probe_failed:${category}` },
+      };
+    }
   }
 }

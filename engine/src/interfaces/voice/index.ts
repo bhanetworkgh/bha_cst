@@ -207,6 +207,39 @@ export class VoiceInterface {
     return VoiceLaneService.getSynthesizer();
   }
 
+  /**
+   * Decide whether the tenant adapter is in a state where a voice turn can be
+   * served at all.
+   *
+   * WHY THIS DOES NOT PROBE THE UPSTREAM
+   *   `getHealth()` is an ACTIVE liveness probe: it makes a real, bounded
+   *   read-only request to vFarm and reports the MEASURED latency. Using it
+   *   as a per-turn gate is wrong for two reasons:
+   *
+   *     1. It turns every voice turn into an extra upstream round trip on
+   *        the customer's critical path, and
+   *     2. it makes AUTHORIZATION depend on the upstream's liveness at that
+   *        instant. A vFarm health endpoint that is slow, rate-limited,
+   *        returning an unrecognised shape, or briefly down would refuse
+   *        EVERY call — turning an upstream hiccup into a total voice outage
+   *        for the tenant.
+   *
+   *   So the gate asks for the adapter's OPERATIONAL readiness
+   *   (`probe: false`), which is evaluated locally and performs no I/O.
+   *
+   * WHAT IS NOT WEAKENED
+   *   The authoritative upstream check still runs, in `resolveSpeaker()`:
+   *   organisation membership and farm grants are read from vFarm, and an
+   *   upstream failure makes the resolution `degraded`, which this same
+   *   function turns into a refusal (see the `degradedReason` branch in
+   *   `processVoiceTurn`). The fail-closed guarantee is therefore unchanged —
+   *   it simply comes from the authoritative check rather than from a
+   *   liveness probe.
+   *
+   * Only `degraded` and `unavailable` are failures. `healthy` and `configured`
+   * are not: `configured` means the adapter can serve but upstream health was
+   * not asserted, which is exactly the case that must NOT refuse a turn.
+   */
   private static async getAdapterHealthFailure(tenantId: string): Promise<string | null> {
     const adapter = CoreRegistry.getAdapter(tenantId);
     if (!adapter) {
@@ -218,8 +251,9 @@ export class VoiceInterface {
     }
 
     try {
-      const health = await adapter.getHealth(tenantId);
-      if (health.status !== 'healthy') {
+      // `probe: false` — operational readiness only, no upstream request.
+      const health = await adapter.getHealth(tenantId, { probe: false });
+      if (health.status === 'degraded' || health.status === 'unavailable') {
         return `Tenant adapter health is ${health.status}`;
       }
     } catch (err: any) {

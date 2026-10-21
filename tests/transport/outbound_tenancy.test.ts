@@ -4,9 +4,13 @@
  *
  * Chains under test:
  *   OutboundMessage.project_id -> service_number_binding -> phone_e164   (item 4)
- *   Twilio To -> service_number_binding -> tenant_id + project_id       (item 5)
+ *   messages_out row (tenant_id/project_id/from_e164) -> attribution    (item 5)
  *   cst.delivery.turn_id === cst.turn.turn_id                           (item 5)
  *   project capability re-checked immediately before send               (item 9)
+ *
+ * Twilio status-callback contract: `To` is the RECIPIENT of the message and
+ * `From` is the SENDING number. The recipient is therefore never an
+ * attribution source; the persisted outbound row and the sending number are.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
@@ -343,13 +347,14 @@ describe('Item 5 — Twilio delivery callback tenancy and turn correlation', () 
     expect(captured[0].data.turn_id).toBe('SM_TURN_0001');
   });
 
-  it('the To binding wins over a conflicting stored row', async () => {
-    // Trust model: the callback is Twilio-signature-verified, and the stored row
-    // was itself written from a project binding at send time. So the stored row
-    // is a safe fallback (covered above) — but when a binding for the actual
-    // receiving number IS present, it is the current authority and must win, so
-    // a reassigned number attributes to its new project rather than to the
-    // project the message was originally sent from.
+  it('the persisted outbound row wins over a conflicting service-number binding', async () => {
+    // Trust model: the callback is Twilio-signature-verified, and the stored
+    // row was itself written from a project binding at send time. The stored
+    // row is therefore the authority for which project the message was sent
+    // under, and it keeps that authority even if the sending number is
+    // REBOUND to another project afterwards: a reassignment of a number
+    // after the fact must not retroactively move an already-sent message's
+    // delivery outcome to a different project.
     await seedOutbound();
     CoreRegistry.unbindServiceNumber(DID_MAIN);
     CoreRegistry.bindServiceNumber({
@@ -361,12 +366,82 @@ describe('Item 5 — Twilio delivery callback tenancy and turn correlation', () 
       bound_at: new Date().toISOString(),
     });
 
-    await callback({ MessageSid: 'SM_DEL_0001', MessageStatus: 'delivered', To: DID_MAIN });
+    await callback({
+      MessageSid: 'SM_DEL_0001',
+      MessageStatus: 'delivered',
+      To: '+15551112222',
+      From: DID_MAIN,
+    });
     expect(captured).toHaveLength(1);
-    expect(captured[0].project_id).toBe('proj-vfarm-dallas');
+    expect(captured[0].project_id).toBe(PROJECT);
+    expect(captured[0].project_id).not.toBe('proj-vfarm-dallas');
     // The turn_id join key still comes from the stored row, which is the only
     // place the originating cst.turn id exists.
     expect(captured[0].data.turn_id).toBe('SM_TURN_0001');
+  });
+
+  it('never attributes a delivery to the project the RECIPIENT is bound to', async () => {
+    // In a Twilio status callback `To` is the RECIPIENT and `From` is the
+    // sending number. A recipient whose number happens to be bound as a
+    // service number must NOT capture the delivery event.
+    CoreRegistry.registerProject({
+      project_id: 'proj-vfarm-other',
+      tenant_id: TENANT,
+      name: 'Other project',
+      status: 'active',
+      capabilities: { sms: true, voice: false, web: false },
+      speaker_policy: 'allowlist',
+      onboarding_reply: 'other project',
+      voice_enabled: false,
+    } as any);
+    CoreRegistry.bindServiceNumber({
+      phone_e164: '+15551112222',
+      tenant_id: TENANT,
+      project_id: 'proj-vfarm-other',
+      capability: 'sms',
+      status: 'bound',
+      bound_at: new Date().toISOString(),
+    });
+    await seedOutbound();
+
+    await callback({
+      MessageSid: 'SM_DEL_0001',
+      MessageStatus: 'delivered',
+      To: '+15551112222',
+      From: DID_MAIN,
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].project_id).toBe(PROJECT);
+    expect(captured[0].project_id).not.toBe('proj-vfarm-other');
+  });
+
+  it('refuses a delivery whose stored row carries no tenancy, rather than inferring one', async () => {
+    // A row with no tenant/project cannot be attributed. The callback must
+    // still ack Twilio, must NOT invent a project, and must not fall back to
+    // the recipient's number.
+    await DbClient.saveOutboundMessage({
+      id: 'o_no_tenancy',
+      tenant_id: '',
+      project_id: '',
+      from_e164: DID_MAIN,
+      to_e164: '+15551112222',
+      body: 'legacy row without tenancy',
+      correlation_id: 'SM_TURN_NO_TENANCY',
+      turn_id: 'SM_TURN_NO_TENANCY',
+      provider_sid: 'SM_NO_TENANCY',
+      status: 'sent',
+    });
+
+    const res = await callback({
+      MessageSid: 'SM_NO_TENANCY',
+      MessageStatus: 'delivered',
+      To: '+15551112222',
+      From: DID_MAIN,
+    });
+
+    expect(res.status).toBe(204);
+    expect(captured).toHaveLength(0);
   });
 
   it('duplicate delivery callbacks do not emit a second event', async () => {

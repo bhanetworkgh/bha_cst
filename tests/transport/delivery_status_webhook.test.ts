@@ -18,12 +18,14 @@
  *    does not create a spurious message row.
  * 8. Missing required fields — returns 400 BAD_REQUEST.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { DbClient } from '../../engine/src/db/client.js';
 import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { SystemsRegistry } from '../../engine/src/systems/registry.js';
+import { dashboardPublisher } from '../../engine/src/publishers/dashboard.js';
+import { resetMonotonicStore } from '../../engine/src/publishers/delivery.js';
 
 const app = createApp();
 const PRIMARY_DID = '+19715885823';
@@ -312,6 +314,162 @@ describe('Delivery-Status Webhook — Acceptance (Section C)', () => {
       const res = await postCallback({ To: PRIMARY_DID });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('BAD_REQUEST');
+    });
+  });
+
+  // ── 8. Dashboard delivery publication + attribution authority ──────────────
+  //
+  // The reported production symptom was: the callback WAS recorded against
+  // the message row, but CST could not resolve the project and therefore
+  // SKIPPED the Dashboard delivery event.
+  //
+  // Two defects are covered here:
+  //
+  //  (a) ATTRIBUTION. The `To` field of a Twilio delivery-status callback is
+  //      the RECIPIENT, not the service number that sent the message. The
+  //      handler used it as the primary attribution source, and it took
+  //      PRECEDENCE over the persisted outbound row — which is the message
+  //      that was actually sent and which carries the tenant/project/turn the
+  //      send was authorised under. A recipient whose number happened to be
+  //      bound as a service number would file the event against the
+  //      recipient's project.
+  //
+  //  (b) IDEMPOTENCY. The Dashboard event was published on every callback,
+  //      including a duplicate or a regressing one. The only guard was the
+  //      publisher's IN-MEMORY monotonic map, which is lost on restart — so a
+  //      duplicate callback after a redeploy published a second event. The
+  //      durable `advanced` flag from the message row is now the gate.
+
+  describe('8. Dashboard delivery publication and attribution authority', () => {
+    let published: any[];
+
+    beforeEach(() => {
+      published = [];
+      resetMonotonicStore();
+      vi.spyOn(dashboardPublisher, 'publishFireAndForget').mockImplementation((e: any) => {
+        published.push(e);
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      resetMonotonicStore();
+    });
+
+    it('publishes one cst.delivery event attributed to the persisted outbound row', async () => {
+      const sid = await seedSentMessage('out_publish_001', 'SM_PUBLISH_001');
+
+      const res = await postCallback({
+        MessageSid: sid,
+        MessageStatus: 'delivered',
+        To: TEST_RECIPIENT,
+      });
+
+      expect(res.status).toBe(204);
+      expect(published).toHaveLength(1);
+      const event = published[0];
+      expect(event.tenant_id).toBe(TENANT_ID);
+      expect(event.project_id).toBe(PROJECT_ID);
+      // The join key back to the cst.turn is the row's turn_id.
+      expect(event.data?.turn_id).toBe('turn_out_publish_001');
+      expect(event.data?.provider_sid).toBe(sid);
+      expect(event.data?.status).toBe('delivered');
+    });
+
+    it('attributes to the persisted row even when the recipient is bound to another project', async () => {
+      // The recipient number is ALSO bound as a service number — but to a
+      // different project. The durable row must win.
+      CoreRegistry.registerProject({
+        project_id: 'proj-vfarm-other',
+        tenant_id: TENANT_ID,
+        name: 'Other project',
+        status: 'active',
+        capabilities: { sms: true, voice: false, web: false },
+        speaker_policy: 'allowlist',
+        onboarding_reply: 'other project',
+        voice_enabled: false,
+      } as any);
+      CoreRegistry.bindServiceNumber({
+        phone_e164: TEST_RECIPIENT,
+        tenant_id: TENANT_ID,
+        project_id: 'proj-vfarm-other',
+        capability: 'sms',
+        status: 'bound',
+        bound_at: new Date().toISOString(),
+      });
+      const sid = await seedSentMessage('out_publish_002', 'SM_PUBLISH_002');
+
+      const res = await postCallback({
+        MessageSid: sid,
+        MessageStatus: 'delivered',
+        To: TEST_RECIPIENT,
+      });
+
+      expect(res.status).toBe(204);
+      expect(published).toHaveLength(1);
+      // NOT the recipient's project.
+      expect(published[0].project_id).toBe(PROJECT_ID);
+      expect(published[0].project_id).not.toBe('proj-vfarm-other');
+    });
+
+    it('publishes no event when the persisted row carries no tenancy', async () => {
+      // A row with no tenant_id/project_id cannot be attributed. The callback
+      // must still ack Twilio, and must NOT invent a project.
+      const sid = await seedSentMessage('out_publish_003', 'SM_PUBLISH_003', {
+        tenant_id: '',
+        project_id: '',
+      });
+
+      const res = await postCallback({
+        MessageSid: sid,
+        MessageStatus: 'delivered',
+        To: '+15550009999',
+      });
+
+      expect(res.status).toBe(204);
+      expect(published).toHaveLength(0);
+    });
+
+    it('publishes no event for an unknown provider message id', async () => {
+      const res = await postCallback({
+        MessageSid: 'SM_NEVER_SENT_999',
+        MessageStatus: 'delivered',
+        To: PRIMARY_DID,
+      });
+
+      expect(res.status).toBe(204);
+      expect(published).toHaveLength(0);
+    });
+
+    it('publishes exactly one event for a duplicate callback', async () => {
+      const sid = await seedSentMessage('out_publish_004', 'SM_PUBLISH_004');
+
+      await postCallback({ MessageSid: sid, MessageStatus: 'delivered', To: TEST_RECIPIENT });
+      await postCallback({ MessageSid: sid, MessageStatus: 'delivered', To: TEST_RECIPIENT });
+
+      expect(published).toHaveLength(1);
+    });
+
+    it('publishes no second event for a regressing callback', async () => {
+      const sid = await seedSentMessage('out_publish_005', 'SM_PUBLISH_005');
+
+      await postCallback({ MessageSid: sid, MessageStatus: 'delivered', To: TEST_RECIPIENT });
+      await postCallback({ MessageSid: sid, MessageStatus: 'sent', To: TEST_RECIPIENT });
+
+      expect(published).toHaveLength(1);
+    });
+
+    it('does not publish a delivery event before the signature is verified', async () => {
+      const sid = await seedSentMessage('out_publish_006', 'SM_PUBLISH_006');
+
+      const res = await request(app)
+        .post('/webhooks/twilio/delivery-status')
+        .set('x-twilio-signature', 'invalid-signature-value')
+        .type('form')
+        .send({ MessageSid: sid, MessageStatus: 'delivered', To: TEST_RECIPIENT });
+
+      expect([401, 403]).toContain(res.status);
+      expect(published).toHaveLength(0);
     });
   });
 });

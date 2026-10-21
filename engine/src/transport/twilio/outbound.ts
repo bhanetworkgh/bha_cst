@@ -9,9 +9,58 @@ import { Router, Request, Response } from 'express';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
 import { publishDelivery } from '../../publishers/delivery.js';
 import { canSendSms, getConsentStatus } from '../../consent/service.js';
+import { maskPhone, maskProviderSid } from '../../util/privacy.js';
 
 
 export const outboundRouter = Router();
+
+/**
+ * CST delivery statuses that a provider status callback may move a message to.
+ *
+ * This is the RANKED subset of the outbound status vocabulary. `sending` is
+ * excluded on purpose: in CST `sending` means "claimed by a worker", and a
+ * provider callback must never be able to move a row into that state — such a
+ * row would be invisible to the queue and could never be claimed or retried.
+ */
+export type ProviderDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'failed' | 'undelivered';
+
+/**
+ * Map a Twilio message status onto CST's delivery vocabulary.
+ *
+ * Twilio's status-callback vocabulary is: `accepted`, `queued`, `sending`,
+ * `sent`, `partial`, `delivered`, `read`, `undelivered`, `failed`, `canceled`.
+ *
+ * Returns `null` when the provider status has no CST equivalent:
+ *   - `sending` is a provider-side transport state. CST's `sending` means
+ *     "claimed by a worker", so it must not be written from a callback.
+ *   - an unrecognised status must never be guessed. The old code defaulted
+ *     everything to `delivered`, which produced false delivery reports and
+ *     suppressed the genuine later callbacks (delivery state is monotonic, and
+ *     `delivered` outranks `sent`).
+ */
+export function mapProviderDeliveryStatus(providerStatus: string): ProviderDeliveryStatus | null {
+  switch (providerStatus.toLowerCase()) {
+    case 'accepted':
+    case 'queued':
+      // Accepted by the provider and sitting in the carrier queue. NOT
+      // delivered, and NOT sent to the handset yet.
+      return 'queued';
+    case 'sent':
+    case 'partial':
+      // Handed to the carrier. `partial` means only some segments landed.
+      return 'sent';
+    case 'delivered':
+    case 'read':
+      return 'delivered';
+    case 'undelivered':
+      return 'undelivered';
+    case 'failed':
+    case 'canceled':
+      return 'failed';
+    default:
+      return null;
+  }
+}
 
 // Store cross-tenant forbidden destination overrides for security test 8
 const crossTenantForbiddenMap = new Map<string, string>(); // destinationPhone -> owningTenantId
@@ -42,7 +91,7 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
       entry_point: 'api',
       tool_or_route: 'validateOutboundTenancyScope',
       outcome: 'refused',
-      reason: `Outbound send refused: destination ${msg.to_e164} is a service number bound to tenant "${boundServiceNumber.tenant_id}", project "${boundServiceNumber.project_id}"`,
+      reason: `Outbound send refused: destination ${maskPhone(msg.to_e164)} is a service number bound to tenant "${boundServiceNumber.tenant_id}", project "${boundServiceNumber.project_id}"`,
       correlation_id: msg.correlation_id,
     });
     return false;
@@ -65,7 +114,7 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
       entry_point: 'api',
       tool_or_route: 'validateOutboundTenancyScope',
       outcome: 'refused',
-      reason: `Outbound cross-tenant send refused: Tenant ${msg.tenant_id} attempted to send to phone ${msg.to_e164} registered to Tenant ${registeredSystemForDest.tenant_id}`,
+      reason: `Outbound cross-tenant send refused: Tenant ${msg.tenant_id} attempted to send to phone ${maskPhone(msg.to_e164)} registered to Tenant ${registeredSystemForDest.tenant_id}`,
       correlation_id: msg.correlation_id,
     });
     return false;
@@ -82,7 +131,7 @@ export function validateOutboundTenancyScope(msg: OutboundMessage): boolean {
       entry_point: 'api',
       tool_or_route: 'validateOutboundTenancyScope',
       outcome: 'refused',
-      reason: `Outbound cross-tenant send refused: Destination ${msg.to_e164} belongs to tenant ${explicitOwner}`,
+      reason: `Outbound cross-tenant send refused: Destination ${maskPhone(msg.to_e164)} belongs to tenant ${explicitOwner}`,
       correlation_id: msg.correlation_id,
     });
     return false;
@@ -236,6 +285,16 @@ export async function processOutboundQueue(): Promise<void> {
   isProcessingQueue = true;
 
   try {
+    // Reclaim messages whose previous worker died mid-send.
+    //
+    // A claimed row is `sending` and is invisible to the queue until it
+    // reaches a terminal state. If the process stops between the claim and
+    // the completion — a deploy, a crash, an instance being destroyed — the
+    // row stayed `sending` forever and the message was never sent. The lease
+    // reaper returns those rows to `queued` so they re-enter the normal
+    // eligibility path.
+    await DbClient.reclaimStaleOutboundMessages();
+
     const pendingMessages = await DbClient.getPendingOutboundMessages();
 
   for (const msg of pendingMessages) {
@@ -304,7 +363,7 @@ export async function processOutboundQueue(): Promise<void> {
          msg.body.includes('support@bhanetwork.org'));
 
       if (!isCarrierExempt) {
-        const reason = `Outbound SMS blocked: recipient ${msg.to_e164} has opted out of SMS`;
+        const reason = `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has opted out of SMS`;
         await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
         Logger.audit({
           timestamp: new Date().toISOString(),
@@ -322,7 +381,7 @@ export async function processOutboundQueue(): Promise<void> {
         continue;
       }
     } else if (recipientConsentStatus === 'not_consented' && !msg.consent_exempt) {
-      const reason = `Outbound SMS blocked: recipient ${msg.to_e164} has not consented to SMS`;
+      const reason = `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has not consented to SMS`;
       await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
       Logger.audit({
         timestamp: new Date().toISOString(),
@@ -412,6 +471,7 @@ export async function processOutboundQueue(): Promise<void> {
     let success = false;
     let lastError = '';
     let isPermanentFailure = false;
+    let isAmbiguousOutcome = false;
 
     while (attempt < maxRetries && !success) {
       try {
@@ -479,7 +539,7 @@ export async function processOutboundQueue(): Promise<void> {
           entry_point: 'api',
           tool_or_route: 'processOutboundQueue',
           outcome: 'ok',
-          reason: `Twilio send succeeded (SID: ${res.sid})`,
+          reason: `Twilio send succeeded (SID: ${maskProviderSid(res.sid)})`,
           correlation_id: msg.correlation_id,
         });
       } catch (err: any) {
@@ -501,11 +561,44 @@ export async function processOutboundQueue(): Promise<void> {
         // Permanent non-retriable error (e.g. invalid phone number, geo permission denied)
         if (isNonRetriable) {
           isPermanentFailure = true;
-          Logger.error(`Permanent non-retriable Twilio error encountered for destination ${msg.to_e164}: ${lastError}`);
+          Logger.error(`Permanent non-retriable Twilio error encountered for destination ${maskPhone(msg.to_e164)}: ${lastError}`);
           Logger.infra({
-            message: `Permanent Twilio delivery failure: non-retriable error for ${msg.to_e164}`,
+            message: `Permanent Twilio delivery failure: non-retriable error for ${maskPhone(msg.to_e164)}`,
             commercial_impact: 'Outbound customer message permanently undeliverable. Customer will not receive reply. Manual follow-up or channel switch required.',
-            meta: { tenant_id: msg.tenant_id, to_e164: msg.to_e164, error: lastError, correlation_id: msg.correlation_id },
+            meta: { tenant_id: msg.tenant_id, to_e164: maskPhone(msg.to_e164), error: lastError, correlation_id: msg.correlation_id },
+          });
+          break;
+        }
+
+        // AMBIGUOUS OUTCOME — the request was dispatched but no response was
+        // obtained. A timeout or a broken connection does NOT prove that
+        // Twilio failed to create the message: it may have been created and
+        // merely not acknowledged in time.
+        //
+        // Re-dispatching it would risk delivering a SECOND copy of the same
+        // message to the customer, so the retry loop stops here. The message
+        // is preserved in the durable `outcome_unknown` state, is visible in
+        // the queue-depth heartbeat, and is reconcilable by an operator
+        // (the reconciliation procedure is in the operations runbook).
+        //
+        // No `cst.delivery` event is published: there is no delivery status
+        // to report, and publishing a false one would corrupt the Dashboard.
+        if (TwilioClientWrapper.isAmbiguousSendOutcome(err)) {
+          isAmbiguousOutcome = true;
+          Logger.error(
+            `Ambiguous Twilio send outcome for destination ${maskPhone(msg.to_e164)}: ${lastError}. The provider may have accepted the message, so it is NOT being re-dispatched.`,
+          );
+          Logger.infra({
+            message: `Outbound SMS outcome unknown: the provider may have accepted the message`,
+            commercial_impact:
+              'The message was sent to the provider but no confirmation was received, so it is unknown whether the customer received it. The message is NOT being retried automatically, because a retry could deliver a duplicate. An operator must reconcile it against the provider message log.',
+            meta: {
+              tenant_id: msg.tenant_id,
+              to_e164: maskPhone(msg.to_e164),
+              attempt,
+              correlation_id: msg.correlation_id,
+              outbound_message_id: msg.id,
+            },
           });
           break;
         }
@@ -518,6 +611,31 @@ export async function processOutboundQueue(): Promise<void> {
     }
 
     if (!success) {
+      // AMBIGUOUS: the provider may or may not have created the message.
+      //
+      // The durable state is `outcome_unknown`: it is not `failed` (that
+      // would be a false claim of permanent failure) and not `queued` (that
+      // would re-dispatch a message the provider may already hold, risking a
+      // duplicate to the customer). It is not re-selected by the queue, so it
+      // is preserved and visible without being re-sent.
+      if (isAmbiguousOutcome) {
+        await DbClient.updateOutboundStatus(msg.id, 'outcome_unknown', lastError, attempt);
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: msg.tenant_id,
+          actor: 'outbound_worker',
+          role: 'transport_worker',
+          entry_point: 'api',
+          tool_or_route: 'processOutboundQueue',
+          outcome: 'error',
+          reason: `Outbound send outcome unknown after ${attempt} attempt(s) — not retried automatically because the provider may have accepted the message`,
+          correlation_id: msg.correlation_id,
+          commercial_impact:
+            'It is unknown whether the customer received this message. The message was not retried automatically to avoid a duplicate. Operator reconciliation against the provider message log is required.',
+        });
+        continue;
+      }
+
       const isRetriable = !isPermanentFailure && attempt < maxRetries;
       const nextRetryAt = isRetriable ? new Date(Date.now() + Math.pow(2, attempt) * 1000).toISOString() : undefined;
       const finalStatus = isRetriable ? 'queued' : 'failed';
@@ -555,7 +673,7 @@ export async function processOutboundQueue(): Promise<void> {
         Logger.infra({
           message: `Outbound send failed after ${attempt} attempt(s): ${lastError}`,
           commercial_impact: 'Outbound customer message failed after all retries. Customer has not received a reply. Investigate Twilio account status and destination number validity.',
-          meta: { tenant_id: msg.tenant_id, to_e164: msg.to_e164, attempt, correlation_id: msg.correlation_id },
+          meta: { tenant_id: msg.tenant_id, to_e164: maskPhone(msg.to_e164), attempt, correlation_id: msg.correlation_id },
         });
       }
     }
@@ -569,13 +687,25 @@ export async function processOutboundQueue(): Promise<void> {
 // Requires Twilio signature verification, validates payload, resolves
 // tenant_id + project_id, and updates database records.
 //
-// Tenancy chain:  Twilio To -> service_number_binding -> tenant_id + project_id
-// The legacy `SystemsRegistry.resolveSystemByPhoneNumber(To)` lookup is no
-// longer the tenancy authority; a callback for a DID that is not bound to any
-// project cannot be attributed, and an unattributable delivery event is never
-// published.
+// ATTRIBUTION CHAIN:
+//   The persisted outbound row is the SOLE attribution authority. It is the
+//   message that was actually sent and it carries the tenant, project and
+//   turn the send was authorised under.
+//
+//   The callback's `To` field is NOT an attribution source. In a Twilio
+//   status callback `To` is the RECIPIENT of the message and `From` is the
+//   sending number (see the Twilio status-callback contract and the request
+//   example in engine/src/docs/swagger.ts). The deployed handler used `To` as
+//   its PRIMARY source, so a delivery was filed against whichever project
+//   the RECIPIENT happened to be bound to, and a recipient who was not bound
+//   at all produced no attribution and no Dashboard event.
+//
+//   When the row carries no tenancy the callback is REFUSED rather than
+//   guessed. Publishing an event against an inferred project would corrupt
+//   the Dashboard's per-project reporting, so an un-attributable delivery is
+//   acknowledged to Twilio, recorded as a refusal, and left unpublished.
 outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req: Request, res: Response) => {
-  const { MessageSid, MessageStatus, To, ErrorCode } = req.body as Record<string, string>;
+  const { MessageSid, MessageStatus, To, From, ErrorCode } = req.body as Record<string, string>;
 
   if (!MessageSid || !MessageStatus) {
     Logger.audit({
@@ -592,16 +722,46 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     return;
   }
 
-  // Resolve tenant_id + project_id from the receiving DID's service-number binding.
-  const binding = To ? CoreRegistry.resolveServiceNumber(To.trim()) : null;
-
-  // Map Twilio status to allowed internal status
+  // Map the PROVIDER status to CST's delivery vocabulary.
+  //
+  // The previous mapping defaulted EVERY unrecognised status to
+  // `delivered`. Twilio's status callback vocabulary includes `accepted` and
+  // `queued` — the message has been accepted by Twilio and is sitting in the
+  // carrier queue, it has NOT been delivered. Recording those as `delivered`
+  // had two consequences, both observed in production:
+  //
+  //   1. CST published a cst.delivery event claiming `delivered` at the
+  //      moment the message was only queued — a false delivery report.
+  //   2. Because delivery state is monotonic and `delivered` outranks
+  //      `sent`, the genuine `sent` and `delivered` callbacks that followed
+  //      could no longer ADVANCE the stored state, so they were treated as
+  //      duplicates and no event was published for them. The real outcome was
+  //      never reported.
+  //
+  // So the mapping is now explicit, `null` means "no CST equivalent — do not
+  // advance the stored state and do not publish", and an unrecognised status
+  // is NEVER treated as `delivered`.
   const normalizedStatus = MessageStatus.toLowerCase();
-  let mappedStatus: 'sent' | 'delivered' | 'failed' | 'undelivered' = 'delivered';
+  const mappedStatus = mapProviderDeliveryStatus(normalizedStatus);
 
-  if (normalizedStatus === 'failed') mappedStatus = 'failed';
-  else if (normalizedStatus === 'undelivered') mappedStatus = 'undelivered';
-  else if (normalizedStatus === 'sent') mappedStatus = 'sent';
+  if (!mappedStatus) {
+    // Acknowledged, but deliberately not recorded: advancing the state on an
+    // unknown status could overwrite a correct terminal state, and claiming
+    // `delivered` for an unknown status would be a false delivery report.
+    Logger.audit({
+      timestamp: new Date().toISOString(),
+      tenant_id: null,
+      actor: 'twilio_delivery_status',
+      role: 'transport_worker',
+      entry_point: 'webhook',
+      tool_or_route: '/webhooks/twilio/delivery-status',
+      outcome: 'ok',
+      reason: `Twilio delivery status "${normalizedStatus}" has no CST delivery equivalent — stored state left unchanged and no cst.delivery event published`,
+      correlation_id: maskProviderSid(MessageSid),
+    });
+    res.status(204).send();
+    return;
+  }
 
   const errorDetails = ErrorCode ? `Twilio ErrorCode: ${ErrorCode}` : undefined;
 
@@ -614,8 +774,11 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     errorDetails
   );
 
-  const tenantId = binding?.tenant_id || updateResult.tenant_id || null;
-  const projectId = binding?.project_id || updateResult.project_id || '';
+  // The durable row is the attribution authority (see the note above).
+  const rowTenantId = updateResult.tenant_id || null;
+  const rowProjectId = updateResult.project_id || '';
+  const tenantId = rowTenantId;
+  const projectId = rowProjectId;
   const isFailure = mappedStatus === 'failed' || mappedStatus === 'undelivered';
 
   Logger.audit({
@@ -629,7 +792,10 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     reason: `Twilio delivery status update: ${mappedStatus}${ErrorCode ? ` (${errorDetails})` : ''}${
       updateResult.advanced ? '' : ' (duplicate/regressing callback — stored state unchanged)'
     }`,
-    correlation_id: MessageSid,
+    // The provider MessageSid is a per-customer handle. The audit trail
+    // carries a masked, still-correlatable form; the exact identifier stays
+    // in `messages_out.provider_sid`, which is where reconciliation belongs.
+    correlation_id: maskProviderSid(MessageSid),
   });
 
   // Publish cst.delivery for webhook-driven status transitions
@@ -646,17 +812,41 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
       entry_point: 'webhook',
       tool_or_route: '/webhooks/twilio/delivery-status',
       outcome: 'refused',
-      reason: `cst.delivery not published for ${MessageSid}: tenancy unresolved (To=${To || 'n/a'} binding=${
-        binding ? 'found' : 'none'
-      }, stored project_id=${projectId || 'none'})`,
-      correlation_id: MessageSid,
+      reason: `cst.delivery not published for ${maskProviderSid(MessageSid)}: tenancy unresolved (stored message row tenant_id=${
+        rowTenantId || 'none'
+      }, project_id=${rowProjectId || 'none'}; no outbound row for this MessageSid=${
+        updateResult.message_id ? 'no' : 'yes'
+      })`,
+      correlation_id: maskProviderSid(MessageSid),
     });
     Logger.infra({
-      message: `Delivery callback for ${MessageSid} could not be attributed to a tenant project`,
+      message: `Delivery callback for ${maskProviderSid(MessageSid)} could not be attributed to a tenant project`,
       commercial_impact:
-        'Delivery status was recorded against the message row but no dashboard delivery event was emitted, so the Dashboard will not show this delivery outcome. Check the receiving number is bound to a project.',
-      meta: { message_sid: MessageSid, to: To || null, status: mappedStatus },
+        'Delivery status was recorded against the message row but no dashboard delivery event was emitted, so the Dashboard will not show this delivery outcome. The attribution comes from the persisted outbound message row and never from the callback recipient number: check that the outbound row carries tenant_id and project_id.',
+      meta: {
+        message_sid: maskProviderSid(MessageSid),
+        status: mappedStatus,
+        stored_tenant_id: rowTenantId || null,
+        stored_project_id: rowProjectId || null,
+        outbound_row_found: Boolean(updateResult.message_id),
+      },
     });
+    res.status(204).send();
+    return;
+  }
+
+  // IDEMPOTENCY.
+  //
+  // `updateResult.advanced` is the DURABLE gate: it is false when the
+  // callback is a duplicate or a regression, computed from the persisted
+  // status. The publisher's own monotonic guard is an in-memory map, so it is
+  // lost on restart and would let a duplicate callback publish a second
+  // cst.delivery event after a redeploy. Publishing only on an advanced
+  // transition makes the callback replay-safe.
+  if (!updateResult.advanced) {
+    Logger.info(
+      `[DeliveryCallback] No new delivery outcome for ${maskProviderSid(MessageSid)} (status="${mappedStatus}") — the stored state did not advance, so no cst.delivery event was published`,
+    );
     res.status(204).send();
     return;
   }
@@ -668,7 +858,9 @@ outboundRouter.post('/twilio/delivery-status', verifyTwilioSignature, async (req
     turnId: updateResult.turn_id,
     channel: 'sms',
     to: updateResult.to_e164 || To || '',
-    from: updateResult.from_e164 || To || '',
+    // `From` is the SENDING number. Falling back to `To` here would publish
+    // the recipient's number as the sender.
+    from: updateResult.from_e164 || From || '',
     status: mappedStatus,
     tenantId,
     projectId,

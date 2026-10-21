@@ -11,7 +11,7 @@
  *  5. Logs missing configuration warning once at boot without repeated spam.
  */
 
-import { maskPhone } from '../util/privacy.js';
+import { maskPhone, maskProviderSid } from '../util/privacy.js';
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 import { CstEventV1, CST_EVENT_SPEC_VERSION, safeParseCstEventV1 } from '../contracts/events.js';
@@ -195,7 +195,11 @@ export class CstDashboardPublisher {
       Logger.info(
         `[CstDashboardPublisher] Dry-run: event ${eventId} (${(event as any).type}) validated against cst.event.v1; no remote request made.`
       );
-      Logger.info(`[CstDashboardPublisher] Dry-run payload: ${JSON.stringify(event)}`);
+      // The payload is logged in its MASKED form: a dry-run log line is a log
+      // line, and a log line must not carry customer identifiers.
+      Logger.info(
+        `[CstDashboardPublisher] Dry-run payload: ${JSON.stringify(maskEventForStorage(event, { maskProviderSids: true }))}`,
+      );
       await this.recordOutcome(event, eventId, { status: 'dry_run', attempts: 0 });
       return {
         success: true,
@@ -396,11 +400,31 @@ const PHONE_KEYS = new Set([
 ]);
 
 /**
+ * Keys whose values are provider message identifiers — a handle for exactly
+ * one customer message. They are masked for LOG output only; the stored
+ * replay payload keeps the real identifier, because the Dashboard needs it to
+ * correlate the replayed event with the original message.
+ */
+const PROVIDER_SID_KEYS = new Set([
+  'provider_sid',
+  'provider_message_id',
+  'message_sid',
+  'sid',
+]);
+
+/**
  * Produce a replay-safe copy of an event: phone-number values are masked, and
  * the copy is bounded in size. The stored payload is evidence, not a
  * customer-content store.
+ *
+ * @param options.maskProviderSids - Also mask provider message identifiers.
+ *   Used for LOG output, where a per-customer handle has no business being
+ *   published. The stored replay payload keeps the real identifier.
  */
-export function maskEventForStorage(event: unknown): Record<string, unknown> {
+export function maskEventForStorage(
+  event: unknown,
+  options?: { maskProviderSids?: boolean },
+): Record<string, unknown> {
   const MAX_DEPTH = 8;
   const MAX_STRING = 2000;
 
@@ -408,8 +432,12 @@ export function maskEventForStorage(event: unknown): Record<string, unknown> {
     if (depth > MAX_DEPTH) return '[depth-limited]';
     if (value === null || value === undefined) return value ?? null;
     if (typeof value === 'string') {
-      const masked =
-        keyHint && PHONE_KEYS.has(keyHint.toLowerCase()) ? maskPhone(value) : value;
+      let masked = value;
+      if (keyHint && PHONE_KEYS.has(keyHint.toLowerCase())) {
+        masked = maskPhone(value);
+      } else if (options?.maskProviderSids && keyHint && PROVIDER_SID_KEYS.has(keyHint.toLowerCase())) {
+        masked = maskProviderSid(value);
+      }
       return masked.length > MAX_STRING ? `${masked.slice(0, MAX_STRING)}…[truncated]` : masked;
     }
     if (typeof value === 'number' || typeof value === 'boolean') return value;
@@ -522,7 +550,7 @@ export async function replayUnpublishedDashboardEvents(
 ): Promise<
   Array<{ event_id: string; success: boolean; status?: number; error?: string }>
 > {
-  const outcomes = DbClient.getUnpublishedDashboardOutcomes(limit);
+  const outcomes = await DbClient.getUnpublishedDashboardOutcomes(limit);
   const results: Array<{
     event_id: string;
     success: boolean;
@@ -533,7 +561,7 @@ export async function replayUnpublishedDashboardEvents(
   for (const outcome of outcomes) {
     if (!outcome.payload) {
       // Nothing to replay from — record the attempt so it stops resurfacing.
-      DbClient.markDashboardOutcomeReplayed(outcome.id!);
+      await DbClient.markDashboardOutcomeReplayed(outcome.id!);
       results.push({
         event_id: outcome.event_id,
         success: false,
@@ -545,7 +573,7 @@ export async function replayUnpublishedDashboardEvents(
     try {
       const result = await publisher.publish(outcome.payload);
       if (result.success) {
-        DbClient.markDashboardOutcomeReplayed(outcome.id!);
+        await DbClient.markDashboardOutcomeReplayed(outcome.id!);
       }
       results.push({
         event_id: outcome.event_id,

@@ -3,12 +3,66 @@ import { getEnv } from '../../config/env.js';
 import { Logger } from '../../config/logger.js';
 import { maskPhone } from '../../util/privacy.js';
 
+/**
+ * Hard upper bound on a single outbound Twilio API call.
+ *
+ * WHY THIS BOUND EXISTS
+ *   The outbound worker processes a batch of messages SERIALLY. If a single
+ *   `messages.create()` call can hang for as long as the Twilio SDK's default
+ *   request timeout, one slow message holds the entire batch — and with it
+ *   every other customer's reply behind it. Three attempts of that per
+ *   message, plus the retry backoff, is several minutes of head-of-line
+ *   blocking for the whole queue.
+ *
+ *   Fifteen seconds is comfortably above the normal Messages API latency
+ *   (well under a second) and comfortably below the point where a single
+ *   message can stall the batch. A call that exceeds it fails as a
+ *   TIMEOUT, which is a RETRIABLE error, so the message is re-queued with
+ *   backoff rather than being lost.
+ */
+export const TWILIO_SEND_TIMEOUT_MS = 15_000;
+
 export interface SendSmsParams {
   to: string;
   from?: string;
   messagingServiceSid?: string;
   body: string;
   mediaUrl?: string[];
+}
+
+/**
+ * Reject with a TIMEOUT error when `work` does not settle in time.
+ *
+ * The underlying operation is NOT aborted — a late resolution is discarded
+ * rather than acted on. That is deliberate: the Twilio SDK's request object
+ * is not safely abortable, and the only thing the caller must not do is
+ * treat a timed-out send as a completed one. A timed-out send is a
+ * RETRIABLE failure, so the message is re-queued with backoff; the risk of
+ * a duplicate send is bounded by the provider's own idempotency behaviour
+ * and by the fact that a genuinely accepted message will receive its own
+ * status callback.
+ */
+async function withTimeout<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const err: any = new Error(`${label} timed out after ${timeoutMs}ms`);
+      err.code = 'ETIMEDOUT';
+      err.status = 408;
+      err.isTimeout = true;
+      reject(err);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export class TwilioClientWrapper {
@@ -117,6 +171,54 @@ export class TwilioClientWrapper {
     return requestPayload;
   }
 
+  /**
+   * Classify a failed send into the three outcomes the queue must distinguish.
+   *
+   *   'accepted'  — Twilio returned a MessageSid. The message exists.
+   *   'rejected'  — Twilio (or the network) answered definitively: the
+   *                 message was NOT created. Safe to retry.
+   *   'ambiguous' — the request was dispatched but no answer was obtained. A
+   *                 timeout or a connection reset does NOT prove that Twilio
+   *                 failed to create the message; it may have been created and
+   *                 merely not acknowledged in time. Re-dispatching such a
+   *                 message risks delivering a SECOND copy to the customer,
+   *                 so it must not be retried blindly.
+   *
+   * The distinction is deliberately conservative: only a definitive answer
+   * from the far end (or a failure to ever reach it) is treated as
+   * 'rejected'.
+   */
+  static isAmbiguousSendOutcome(err: any): boolean {
+    if (!err) return false;
+    // Our own bound (see `withTimeout`).
+    if (err.isTimeout === true) return true;
+    // A socket-level timeout: the request may have reached Twilio.
+    if (typeof err.code === 'string' && err.code === 'ETIMEDOUT') return true;
+    // HTTP 408/504 from an intermediary.
+    if (err.status === 408 || err.status === 504) return true;
+    // Twilio's own "request timed out" code (20404) — the request may still
+    // have been processed by Twilio.
+    if (err.code === 20404) return true;
+    // The connection was established and then broke: the request may have
+    // been fully transmitted.
+    if (typeof err.code === 'string' && ['ECONNRESET', 'EPIPE', 'ENOTREADY'].includes(err.code)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when the failure happened BEFORE the request could reach the
+   * provider, so the provider definitely did not create the message.
+   */
+  static isDefinitivePreDispatchFailure(err: any): boolean {
+    if (!err || TwilioClientWrapper.isAmbiguousSendOutcome(err)) return false;
+    if (typeof err.code === 'string' && ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(err.code)) {
+      return true;
+    }
+    return false;
+  }
+
   static async sendSms(params: SendSmsParams): Promise<{ sid: string; status: string }> {
     const env = getEnv();
 
@@ -151,7 +253,11 @@ export class TwilioClientWrapper {
 
     try {
       Logger.info(`Executing Twilio Messages API call to ${maskPhone(params.to)}`);
-      const result = await client.messages.create(requestPayload as any);
+      const result = await withTimeout(
+        client.messages.create(requestPayload as any),
+        TWILIO_SEND_TIMEOUT_MS,
+        'Twilio Messages API call',
+      );
       return { sid: result.sid, status: result.status };
     } catch (err: any) {
       const code = err.code || 'UNKNOWN_TWILIO_ERROR';

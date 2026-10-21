@@ -532,7 +532,7 @@ export async function handleInboundConsentMessage(
 
   Logger.info(`STOP keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId}`, {
     tenant_id: tenantId,
-    phone_e164: phoneE164,
+    phone_e164: maskPhone(phoneE164),
     correlation_id: correlationId,
   });
 
@@ -576,7 +576,7 @@ export async function handleInboundResubscribeMessage(
 
   Logger.info(`START keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId} (re-subscribe request)`, {
     tenant_id: tenantId,
-    phone_e164: phoneE164,
+    phone_e164: maskPhone(phoneE164),
     correlation_id: correlationId,
   });
 
@@ -617,7 +617,7 @@ export async function handleInboundHelpMessage(
 
   Logger.info(`HELP keyword received from ${maskPhone(phoneE164)} in tenant ${tenantId}`, {
     tenant_id: tenantId,
-    phone_e164: phoneE164,
+    phone_e164: maskPhone(phoneE164),
     correlation_id: correlationId,
   });
 

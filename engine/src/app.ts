@@ -223,11 +223,45 @@ export function createApp(): Express {
         // body is no longer honoured as a credential: it was an unauthenticated
         // way to influence which identity CST used.
         const auth = req.vfarmAuth;
-        const jwt = auth?.mode === 'caller_jwt' ? auth.jwt : undefined;
-        const rawKey = await adapter.issueFarmToken(farm_id, jwt, name);
+        const callerJwt = auth?.mode === 'caller_jwt';
+        const jwt = callerJwt ? auth.jwt : undefined;
+
+        // A CALLER JWT must not re-point the process-wide farm key: that
+        // would change the key every other tenant's identity resolution uses.
+        // An operator (CST admin session) re-pointing CST at a different farm
+        // keeps that behaviour, which is what the endpoint is for.
+        const rawKey = await adapter.issueFarmToken(farm_id, jwt, name, {
+          switchActiveKey: !callerJwt,
+        });
+
+        // Token issuance is a credential-minting event: it is audited, with the
+        // authentication mode and the farm, and NEVER the key material.
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: null,
+          actor: callerJwt ? 'vfarm_caller_jwt' : 'cst_admin_session',
+          role: 'service_account',
+          entry_point: 'api',
+          tool_or_route: 'POST /api/tokens',
+          outcome: 'ok',
+          reason: `Farm-scoped API key issued for farm ${farm_id} (auth mode: ${callerJwt ? 'caller_jwt' : 'cst_admin_session'}; active farm key ${callerJwt ? 'not switched' : 'switched'})`,
+          correlation_id: (req.headers['x-correlation-id'] as string) || undefined,
+        });
+
         res.status(201).json({ status: 'issued', farm_id, raw_key: rawKey });
       } catch (err: any) {
         const status = err?.status ?? err?.statusCode;
+        Logger.audit({
+          timestamp: new Date().toISOString(),
+          tenant_id: null,
+          actor: 'unauthenticated_or_rejected',
+          role: 'service_account',
+          entry_point: 'api',
+          tool_or_route: 'POST /api/tokens',
+          outcome: 'refused',
+          reason: `Farm-scoped API key issuance refused for farm ${(req.body || {}).farm_id || 'unknown'}: upstream status ${status ?? 'error'}`,
+          correlation_id: (req.headers['x-correlation-id'] as string) || undefined,
+        });
         if (status === 401 || status === 403) {
           res.status(401).json({ error: 'UNAUTHORIZED', message: 'vFarm rejected the supplied credentials' });
           return;

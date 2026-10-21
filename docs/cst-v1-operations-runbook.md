@@ -43,6 +43,113 @@ CST provides standard HTTP endpoints for automated health checks and platform mo
 - **Payload:** Includes vFarm upstream reachability and tenant adapter status.
 - **Alert Trigger:** Alert on `vfarm.status != "healthy"` for > 3 minutes.
 
+#### 2.2.1 vFarm upstream health status vocabulary
+
+`vfarm.status` comes from an **active, bounded, read-only probe** of the vFarm upstream. The
+reported `latency_ms` is the measured round-trip time of that request, not a constant, and the
+status is never inferred from the presence of credentials.
+
+| `status` | Meaning | Operational response |
+|----------|---------|----------------------|
+| `healthy` | A tenant-scoped, read-only upstream request succeeded. Upstream health IS asserted. | None. |
+| `configured` | The upstream is configured and reachable, but upstream health is **not asserted** — either the probe could not be scoped to this tenant (no vFarm organization id configured), or the probe was skipped. | Check `details.reason`. Not an outage. |
+| `degraded` | The upstream answered but did not serve the request: a 5xx, a rate limit, a timeout, a connection failure, or a response that failed validation. | Investigate upstream. |
+| `unavailable` | CST cannot use the upstream at all: no client configured, or the credential was rejected (401/403). | Check credentials and `VFARM_BASE_URL` / `VFARM_API_BASE_URL`. |
+
+The same vocabulary is used by `GET /api/v1/admin/health/verification` under `adapter_health`.
+
+**Important:** the per-request authorization path (the voice lane) deliberately does **not** use this
+probe. It asks the adapter for its *operational readiness*, which is evaluated locally and performs
+no network I/O, so an upstream hiccup cannot refuse live customer calls. The authoritative
+organisation-membership and farm-grant checks still run inside identity resolution and fail closed
+on their own.
+
+---
+
+## 2.3 Outbound Queue Operations
+
+### 2.3.1 Message states
+
+| `messages_out.status` | Meaning | Re-dispatched automatically? |
+|---|---|---|
+| `pending` | Queued, never dispatched. | Yes, when eligible. |
+| `queued` | A previous attempt failed and the message is waiting for its retry window (`next_retry_at`). | Yes, when the retry time has passed. |
+| `sending` | Claimed by a worker and in flight. | No. A claim holds a 5-minute lease. |
+| `sent` | The provider returned a MessageSid: the message exists. | No. |
+| `delivered` / `undelivered` / `failed` | Terminal provider outcomes. | No. |
+| `refused` | CST refused to send (consent or tenancy gate). | No. |
+| `outcome_unknown` | The message was dispatched but no confirmation was received, so it is **unknown whether the provider created it**. | **No — deliberately.** |
+
+**Why `outcome_unknown` is never retried automatically.** A timeout or a broken connection does not
+prove the provider failed to create the message: it may have been created and merely not
+acknowledged in time. Re-dispatching it risks delivering a **second copy** of the message to the
+customer. The message is therefore parked, preserved and visible, and is reconciled by an operator.
+
+### 2.3.2 Reconciling an `outcome_unknown` message
+
+1. Read the backlog (read-only SQL):
+   ```sql
+   SELECT id, tenant_id, to_e164, created_at, error_message
+   FROM messages_out
+   WHERE status = 'outcome_unknown'
+   ORDER BY created_at ASC;
+   ```
+2. For each row, check the provider's message log for the destination and the window between
+   `created_at` and the failure.
+   - **The provider created a message** → the customer most likely has it. Record the MessageSid on
+     the row and set the status to `sent`; the provider's own status callback will then advance it
+     to `delivered`/`failed` through the normal path.
+   - **The provider created nothing** → the message was never sent. Set the status back to `queued`
+     (and clear `next_retry_at`) so the worker dispatches it.
+3. Never do both. Doing nothing leaves the message unreconciled; doing both would deliver a
+   duplicate.
+
+### 2.3.3 Worker liveness
+
+The outbound worker runs inside the CST process, so it is only alive while the process is. Verify:
+
+- `Outbound background worker starting` appears in the logs once per boot.
+- `Outbound worker heartbeat` appears every 5 minutes with the queue depth by status. A heartbeat
+  with `pending: 0` proves the worker is running AND the queue is empty; the absence of a
+  heartbeat proves the worker is not running. The two are indistinguishable from outside the
+  process without it.
+
+```sql
+SELECT status, COUNT(*) FROM messages_out GROUP BY status;
+```
+
+A non-zero `sending` count whose `updated_at` is older than 5 minutes is a stranded claim: it is
+recovered automatically on the next worker pass (accepted messages become `sent`, the rest become
+`outcome_unknown`) and is **never** re-dispatched.
+
+### 2.3.4 Dashboard dead-letter replay
+
+Dashboard publication is fire-and-forget. Every attempt is recorded in `dashboard_publish_outcomes`,
+and a failed publish is re-sent automatically by the replay pass (every 5 minutes, and once shortly
+after boot). A replayed event is marked durably so it is never published twice.
+
+```sql
+SELECT status, COUNT(*) FROM dashboard_publish_outcomes
+WHERE status <> 'published' AND replayed_at IS NULL GROUP BY status;
+```
+
+### 2.3.5 What the logs may and may not contain
+
+Log and audit output is retained and read by operators, auditors and reviewers, so it must not carry
+raw customer identifiers. The policy is implemented in `engine/src/util/privacy.ts`:
+
+| Value | In logs / audit | Where the raw value lives |
+|---|---|---|
+| Recipient / caller number | **Masked** — last four digits only (`+1555****4567`) | `messages_out.to_e164`, `sms_consents` |
+| Provider MessageSid | **Masked** — a correlatable six-character prefix (`SM9f2c*******************`) | `messages_out.provider_sid` |
+| Message body | **Masked** by the alert-audit writer | `alert_audit_log` (masked) |
+| Service number CST owns (the number that received the call or SMS) | Unmasked — it is not a customer identifier and must stay legible for triage | `service_number_bindings` |
+| Tenant / project id | Unmasked | `systems`, `projects` |
+
+A masked MessageSid still correlates: an operator can group every log line for one message and
+search the provider console by the prefix. The exact identifier is always available from
+`messages_out.provider_sid`.
+
 ---
 
 ## 3. Security Incident Response & Key Rotation
