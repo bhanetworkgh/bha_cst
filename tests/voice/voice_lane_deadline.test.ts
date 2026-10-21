@@ -36,8 +36,13 @@ const PHONE = '+15550007777';
 describe('Voice-lane deadline and the SMS alert-audit contract', () => {
   const originalDeadline = process.env.CST_VOICE_TURN_DEADLINE_MS;
   const originalLiveTest = process.env.VFARM_LIVE_TEST;
+  // The synthesizer is STATIC state on VoiceLaneService. Capturing and
+  // restoring it keeps this file from changing the synthesiser every later
+  // test file in the same worker inherits.
+  let originalSynthesizer: any;
 
   beforeEach(() => {
+    originalSynthesizer = VoiceLaneService.getSynthesizer();
     DbClient.clearAll();
     DbClient.resetDurableStores();
     CoreRegistry.clear();
@@ -52,6 +57,7 @@ describe('Voice-lane deadline and the SMS alert-audit contract', () => {
     else process.env.CST_VOICE_TURN_DEADLINE_MS = originalDeadline;
     if (originalLiveTest === undefined) delete process.env.VFARM_LIVE_TEST;
     else process.env.VFARM_LIVE_TEST = originalLiveTest;
+    VoiceLaneService.setSynthesizer(originalSynthesizer);
     vi.restoreAllMocks();
   });
 

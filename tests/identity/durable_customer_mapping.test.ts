@@ -79,7 +79,12 @@ describe('Durable per-customer identity mapping', () => {
   const originalNodeEnv = process.env.NODE_ENV;
   const originalLiveTest = process.env.VFARM_LIVE_TEST;
 
+  let originalSynthesizer: any;
+
   beforeEach(async () => {
+    // The synthesizer is STATIC state on VoiceLaneService; restore it so this
+    // file does not change the synthesiser for later files in the same worker.
+    originalSynthesizer = VoiceLaneService.getSynthesizer();
     DbClient.clearAll();
     DbClient.resetDurableStores();
     CoreRegistry.clear();
@@ -141,6 +146,7 @@ describe('Durable per-customer identity mapping', () => {
     process.env.NODE_ENV = originalNodeEnv;
     if (originalLiveTest === undefined) delete process.env.VFARM_LIVE_TEST;
     else process.env.VFARM_LIVE_TEST = originalLiveTest;
+    VoiceLaneService.setSynthesizer(originalSynthesizer);
     vi.restoreAllMocks();
   });
 
