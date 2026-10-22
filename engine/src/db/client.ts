@@ -1597,6 +1597,78 @@ export class DbClient {
    * Delete or revoke a customer/speaker.
    */
   /**
+   * Create or update the phone -> customer binding.
+   *
+   * This is the single persistence path for the CST-owned identity mapping
+   * (vFarm exposes no phone field on a user, so the mapping is CST's). Both
+   * the admin "manually onboard a speaker" route and the email
+   * self-service verification flow write through here, so there is exactly one
+   * upsert to audit.
+   */
+  static async upsertCustomer(input: {
+    tenant_id: string;
+    project_id: string;
+    phone_e164: string;
+    customer_ref: string;
+    role?: string;
+    farm_ids?: string[];
+    speaker_cache_expires_at?: string;
+    organization_id?: string;
+    workspace_id?: string;
+  }): Promise<boolean> {
+    const cleanPhone = input.phone_e164.trim();
+    const cleanRef = (input.customer_ref || '').trim();
+    const role = input.role || 'owner';
+    const farms = Array.isArray(input.farm_ids) ? input.farm_ids.filter(Boolean) : [];
+    const organizationId = input.organization_id ?? input.tenant_id;
+    const workspaceId = input.workspace_id ?? '';
+    const pool = this.getPool();
+
+    if (pool) {
+      try {
+        await pool.query(
+          `INSERT INTO customers
+             (tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role, farm_ids, speaker_cache_expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+           ON CONFLICT (tenant_id, project_id, phone_e164) DO UPDATE SET
+             customer_ref             = EXCLUDED.customer_ref,
+             role                     = EXCLUDED.role,
+             farm_ids                 = EXCLUDED.farm_ids,
+             speaker_cache_expires_at = EXCLUDED.speaker_cache_expires_at`,
+          [
+            input.tenant_id,
+            input.project_id,
+            organizationId,
+            workspaceId,
+            cleanPhone,
+            cleanRef,
+            role,
+            JSON.stringify(farms),
+            input.speaker_cache_expires_at ?? null,
+          ],
+        );
+        return true;
+      } catch (err: any) {
+        Logger.error(`DbClient.upsertCustomer Postgres Error: ${err.message}`);
+        return false;
+      }
+    }
+
+    this.seedCustomer({
+      tenant_id: input.tenant_id,
+      project_id: input.project_id,
+      phone_e164: cleanPhone,
+      customer_ref: cleanRef,
+      role: role as any,
+      farm_ids: farms,
+      speaker_cache_expires_at: input.speaker_cache_expires_at,
+      organization_id: organizationId,
+      workspace_id: workspaceId,
+    } as any);
+    return true;
+  }
+
+  /**
    * Deactivate a customer binding WITHOUT deleting it.
    *
    * The phone -> customer_ref binding is CST-owned: vFarm exposes no phone
