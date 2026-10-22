@@ -2,6 +2,16 @@ import { maskPhone } from '../util/privacy.js';
 import { Tenant, Project, ServiceNumberBinding, SpeakerIdentity, CapabilityType, matchesCapability } from './types.js';
 import { ITenantAdapter } from '../adapters/types.js';
 import { VfarmTenantAdapter, VfarmAdapterConfig } from '../adapters/vfarm/index.js';
+import {
+  buildDevFixtureProjects,
+  DEV_FIXTURE_CANDIDATE_NUMBERS,
+  DEV_FIXTURE_ONBOARDING_REPLY,
+  DEV_FIXTURE_ORG_ID,
+  DEV_FIXTURE_TENANT_ID,
+  DEV_FIXTURE_TENANT_NAME,
+  DEV_FIXTURE_VOICE_ID,
+  DEV_FIXTURE_VOICE_MODEL_ID,
+} from '../adapters/vfarm/dev_seed.js';
 import { Logger } from '../config/logger.js';
 import { DbClient } from '../db/client.js';
 import { getEnv } from '../config/env.js';
@@ -70,14 +80,28 @@ export class CoreRegistry {
     }
   }
 
+  /**
+   * Seed the DEV/TEST FIXTURE tenancy state.
+   *
+   * This is a FALLBACK for the test-suite and the local demo. It is NOT the
+   * production source of truth: production tenancy comes from the database
+   * (`initFromDb()`) and, optionally, from live vFarm discovery
+   * (`syncProjectsFromAdapter()`).
+   *
+   * `initFromDb()` only calls this when the database is completely empty AND
+   * `NODE_ENV !== 'production'`, and the static initialiser calls it only in a
+   * test runner. A production boot therefore never sees these literals.
+   *
+   * @see adapters/vfarm/dev_seed.ts for the fixture and why it is a fixture.
+   */
   static resetToDefault(): void {
 
     this.clear();
 
     // Register Tenant #1 (vFarm)
     const vfarmTenant: Tenant = {
-      tenant_id: 'tenant-vfarm-01',
-      name: 'vFarm Global',
+      tenant_id: DEV_FIXTURE_TENANT_ID,
+      name: DEV_FIXTURE_TENANT_NAME,
       status: 'active',
       adapter_type: 'vfarm',
       created_at: new Date().toISOString(),
@@ -86,55 +110,48 @@ export class CoreRegistry {
     this.registerTenant(vfarmTenant, vfarmAdapter);
 
     // Register Default Projects pulled from vFarm.
-    // tenant_org_id is the real vFarm organization UUID, discovered from
+    // tenant_org_id must be the real vFarm organization UUID, discovered from
     // GET /api/v1/organizations. The previous values ('org-vfarm-austin' /
     // 'org-vfarm-dallas') were CST placeholders that matched no vFarm org and
     // made vFarm answer HTTP 422, so the live membership cross-check could
-    // never run (G19). Both projects roll up to the single vFarm organization;
-    // override with VFARM_TENANT_ORG_ID per environment.
-    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || '122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d';
+    // never run (G19).
+    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || DEV_FIXTURE_ORG_ID;
 
     // Resolve voice pointer from env — never hardcode a placeholder
-    const defaultVoiceId = process.env.VFARM_ELEVENLABS_VOICE_ID || process.env.ELEVENLABS_VOICE_ID || 'Hmy97GCI840wuICQesiM';
-    const defaultModelId = process.env.VFARM_ELEVENLABS_MODEL_ID || process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5';
+    const defaultVoiceId = process.env.VFARM_ELEVENLABS_VOICE_ID || process.env.ELEVENLABS_VOICE_ID || DEV_FIXTURE_VOICE_ID;
+    const defaultModelId = process.env.VFARM_ELEVENLABS_MODEL_ID || process.env.ELEVENLABS_MODEL_ID || DEV_FIXTURE_VOICE_MODEL_ID;
+
+    const [fixtureMain, fixtureDallas] = buildDevFixtureProjects(
+      vfarmTenant.tenant_id,
+      vfarmOrgId,
+      process.env.VFARM_ONBOARDING_REPLY || DEV_FIXTURE_ONBOARDING_REPLY,
+    );
 
     const mainProject: Project = {
-      project_id: 'proj-vfarm-main',
-      tenant_id: 'tenant-vfarm-01',
-      name: 'vFarm Austin HQ',
-      status: 'active',
-      tenant_org_id: vfarmOrgId,
+      ...fixtureMain,
       capabilities: { sms: true, voice: true, web: true },
-      speaker_policy: 'allowlist',
-      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
       elevenlabs_voice_id: defaultVoiceId,
       elevenlabs_model_id: defaultModelId,
       voice_enabled: true,
       synced_at: new Date().toISOString(),
     };
 
-    // Dallas is deliberately NOT voice-enabled.
+    // The secondary project is deliberately NOT voice-enabled.
     //
     // It has no ElevenLabs voice pointer and no voice service number, and the
-    // only number ever associated with it (+19715885824) is not owned by the
-    // Twilio account, so it can serve neither transport from Twilio's side.
-    // Advertising `voice: true` here would let the voice lane accept a Dallas
-    // call and then fail at synthesis, which is exactly the silent
-    // "configured but broken" state this reconciliation exists to remove.
+    // only number ever associated with it is not owned by the Twilio account,
+    // so it can serve neither transport from Twilio's side. Advertising
+    // `voice: true` here would let the voice lane accept a call and then
+    // fail at synthesis, which is exactly the silent "configured but broken"
+    // state this reconciliation exists to remove.
     //
-    // To enable Dallas voice, an operator must (1) point a real, owned voice
+    // To enable its voice, an operator must (1) point a real, owned voice
     // pointer at it and (2) bind an owned service number with the 'voice' (or
     // 'sms_voice') capability. Until then the capability stays false and the
     // project gate refuses the channel.
     const dallasProject: Project = {
-      project_id: 'proj-vfarm-dallas',
-      tenant_id: 'tenant-vfarm-01',
-      name: 'vFarm Dallas Operations',
-      status: 'active',
-      tenant_org_id: vfarmOrgId,
+      ...fixtureDallas,
       capabilities: { sms: true, voice: false, web: true },
-      speaker_policy: 'allowlist',
-      onboarding_reply: 'Welcome to vFarm Dallas Support! Contact your site manager for access.',
       voice_enabled: false,
       synced_at: new Date().toISOString(),
     };
@@ -143,13 +160,13 @@ export class CoreRegistry {
     this.registerProject(dallasProject);
 
     // Sync candidate numbers — only numbers actually owned by the Twilio account
-    this.addCandidateNumbers(['+19715885823']);
+    this.addCandidateNumbers([...DEV_FIXTURE_CANDIDATE_NUMBERS]);
 
-    // Bind +19715885823 as sms_voice so it handles BOTH SMS and voice
+    // Bind the fixture number as sms_voice so it handles BOTH SMS and voice
     this.bindServiceNumber({
-      phone_e164: '+19715885823',
-      tenant_id: 'tenant-vfarm-01',
-      project_id: 'proj-vfarm-main',
+      phone_e164: DEV_FIXTURE_CANDIDATE_NUMBERS[0],
+      tenant_id: vfarmTenant.tenant_id,
+      project_id: mainProject.project_id,
       capability: 'sms_voice',
       status: 'bound',
       bound_at: new Date().toISOString(),

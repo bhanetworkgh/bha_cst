@@ -4,6 +4,13 @@ import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, Cabin
 import { Logger } from '../../config/logger.js';
 import { VfarmHttpClient, VfarmApiError } from './http_client.js';
 import { VfarmLiveClient, VFARM_DEFAULT_TIMEOUT_MS, VFARM_HEALTH_PROBE_TIMEOUT_MS } from './live_client.js';
+import {
+  buildDevFixtureProjects,
+  buildDevFixtureResourceScopes,
+  buildDevFixtureSpeakers,
+  DEV_FIXTURE_ORG_ID,
+  DEV_FIXTURE_ONBOARDING_REPLY,
+} from './dev_seed.js';
 import { assertSpeakerFarmAccess, VfarmAuthorizationError } from './authorization.js';
 import { CONFIG_HASH_RE, type FarmResponse, type OrgResponse } from './schemas.js';
 
@@ -496,49 +503,56 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     this.config.simulateDegraded = degraded;
   }
 
+  /**
+   * Seed the DEV/TEST FIXTURE state.
+   *
+   * PRODUCTION SEEDS NOTHING HERE. A production adapter's projects, farms
+   * and directory come from:
+   *   - the database, via `CoreRegistry.initFromDb()` (`projects`,
+   *     `service_number_bindings`, `customers`), and
+   *   - optionally live vFarm discovery, via `pullProjects()` and
+   *     `pullResourceScopes()`.
+   *
+   * The fixture used to be seeded in production too, which meant the adapter
+   * always carried two hardcoded projects pointing at one hardcoded
+   * organization, plus three FABRICATED farm ids in the resource-scope map —
+   * the grant-comparison path. A tenant that had neither project was still
+   * carrying them.
+   *
+   * @see dev_seed.ts for the fixture itself and why it is a fixture.
+   */
   private initDefaultData(): void {
+    // The dev/test fixture is opt-out for tests and off in production.
+    const seedDevFixture =
+      this.config.seedDemoDirectory ?? process.env.NODE_ENV !== 'production';
+
+    if (!seedDevFixture) {
+      // No project, farm, organization, phone or voice id is invented here.
+      // The registry hydrates the adapter from the database (and, optionally,
+      // from live vFarm discovery) right after construction.
+      return;
+    }
+
     // tenant_org_id must be the real vFarm organization UUID, not a CST
     // placeholder. vFarm answers HTTP 422 for placeholder ids, so a placeholder
     // here silently disables the live membership cross-check in pullSpeakers()
     // and resolveSpeaker() (G19). Discovered from GET /api/v1/organizations.
-    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || '122d8fb6-f4d3-42e9-b0d6-f2f80a6c276d';
+    const vfarmOrgId = process.env.VFARM_TENANT_ORG_ID || DEV_FIXTURE_ORG_ID;
 
-    // Project 1: Main vFarm Org (Austin)
-    const proj1: Project = {
-      project_id: 'proj-vfarm-main',
-      tenant_id: this.tenantId,
-      name: 'vFarm Austin HQ',
-      status: 'active',
-      tenant_org_id: vfarmOrgId,
-      capabilities: { sms: true, voice: true },
-      speaker_policy: 'allowlist',
-      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
-    };
-
-    // Project 2: Secondary vFarm Org (Dallas)
-    const proj2: Project = {
-      project_id: 'proj-vfarm-dallas',
-      tenant_id: this.tenantId,
-      name: 'vFarm Dallas Operations',
-      status: 'active',
-      tenant_org_id: vfarmOrgId,
-      capabilities: { sms: true },
-      speaker_policy: 'allowlist',
-      onboarding_reply: 'Welcome to vFarm Dallas Support! Contact your site manager for access.',
-    };
+    const [proj1, proj2] = buildDevFixtureProjects(
+      this.tenantId,
+      vfarmOrgId,
+      process.env.VFARM_ONBOARDING_REPLY || DEV_FIXTURE_ONBOARDING_REPLY,
+    );
 
     this.projectsMap.set(proj1.project_id, proj1);
     this.projectsMap.set(proj2.project_id, proj2);
 
-    // Resources (Farms)
-    this.resourceScopesMap.set(proj1.project_id, [
-      { id: 'farm_austin_main', name: 'Austin Main Facility', type: 'farm' },
-      { id: 'farm_austin_east', name: 'Austin East Greenhouses', type: 'farm' },
-    ]);
-
-    this.resourceScopesMap.set(proj2.project_id, [
-      { id: 'farm_dallas_north', name: 'Dallas North Facility', type: 'farm' },
-    ]);
+    // Resources (Farms) — fixture ids only.
+    const scopes = buildDevFixtureResourceScopes();
+    for (const [projectId, projectScopes] of scopes) {
+      this.resourceScopesMap.set(projectId, projectScopes);
+    }
 
     // ── The admin-managed phone -> identity directory ────────────────────────
     //
@@ -556,49 +570,13 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // and the caller received the GUEST onboarding reply ("a specialist will
     // assist you shortly") instead of their own farm data.
     //
-    // So: in production the directory starts EMPTY and is filled only from
-    // the durable customer records. In a non-production environment the demo
+    // So in production the directory starts EMPTY and is filled only from the
+    // durable customer records. In a non-production environment the demo
     // directory is still seeded, because the test-suite and the local demo
     // rely on it.
-    const seedDemoDirectory =
-      this.config.seedDemoDirectory ?? process.env.NODE_ENV !== 'production';
-
-    if (seedDemoDirectory) {
-      // Speakers for Project 1 (Austin) — admin-managed phone directory (dev/demo defaults).
-      const p1Speakers = new Map<string, SpeakerRecord>();
-      p1Speakers.set('+923082113844', {
-        person_id: '142d03f7-4b7e-4246-b999-70835e004f33',
-        phone_e164: '+923082113844',
-        role: 'owner',
-        farm_ids: ['farm_austin_main'],
-        name: 'ahad',
-      });
-      p1Speakers.set('+15551234567', {
-        person_id: 'usr_vfarm_001',
-        phone_e164: '+15551234567',
-        role: 'manager',
-        farm_ids: ['farm_austin_main'],
-        name: 'John Doe',
-      });
-      p1Speakers.set('+15558887777', {
-        person_id: 'usr_vfarm_002',
-        phone_e164: '+15558887777',
-        role: 'tech',
-        farm_ids: ['farm_austin_main'],
-        name: 'Alice Smith',
-      });
-      this.speakersMap.set(proj1.project_id, p1Speakers);
-
-      // Speakers for Project 2 (Dallas)
-      const p2Speakers = new Map<string, SpeakerRecord>();
-      p2Speakers.set('+15559990000', {
-        person_id: 'usr_vfarm_dallas_001',
-        phone_e164: '+15559990000',
-        role: 'owner',
-        farm_ids: ['farm_dallas_north'],
-        name: 'Dallas Owner',
-      });
-      this.speakersMap.set(proj2.project_id, p2Speakers);
+    const speakers = buildDevFixtureSpeakers();
+    for (const [projectId, projectSpeakers] of speakers) {
+      this.speakersMap.set(projectId, projectSpeakers);
     }
   }
 
@@ -908,6 +886,38 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       });
     }
     return result;
+  }
+
+  /**
+   * Find an organization member by EMAIL address.
+   *
+   * Read-only, and built on the endpoint CST already uses for the
+   * authoritative membership check
+   * (`GET /api/v1/organizations/{org_id}/users`). No endpoint is invented:
+   * vFarm exposes NO phone field on a user (verified against the live
+   * OpenAPI contract), so email is the only correlation a member record
+   * carries.
+   *
+   * The comparison is case-insensitive, because the address a person types
+   * and the address vFarm stores can differ in case.
+   *
+   * @returns the matching member, or null. Returns null (not an error) when
+   *   the organization has no such member — the caller must not distinguish
+   *   "no such address" from "not a member", or the endpoint becomes a
+   *   member-enumeration oracle.
+   */
+  async findOrgMemberByEmail(
+    orgId: string,
+    email: string,
+  ): Promise<{ user_id: string; role: string; name?: string } | null> {
+    const needle = (email || '').trim().toLowerCase();
+    if (!needle || !orgId) return null;
+    if (!this.httpClient) return null;
+
+    const members = await this.httpClient.listOrganizationMembers(orgId);
+    const match = members.find((m) => (m.email || '').trim().toLowerCase() === needle);
+    if (!match) return null;
+    return { user_id: match.user_id, role: match.role, name: match.name };
   }
 
   /**

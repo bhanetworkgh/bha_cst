@@ -11,6 +11,7 @@ import { matchesCapability } from '../../core/types.js';
 import { processOutboundQueue } from '../../transport/twilio/outbound.js';
 import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
+import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
 
 export const smsInterfaceRouter = Router();
@@ -394,6 +395,48 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           projectId: binding.project_id,
           phoneE164: normalizedMsg.from_e164,
         });
+
+        // ── Email-based vFarm self-service verification ──────────────────────
+        //
+        // FEATURE-FLAGGED AND OFF BY DEFAULT (`CST_EMAIL_VERIFICATION_ENABLED`).
+        //
+        // vFarm exposes no phone field on a user, so CST cannot look an
+        // inbound number up against vFarm. When an UNKNOWN number messages us,
+        // this flow offers them a way to confirm themselves: they reply with
+        // the email address on their vFarm account, and CST matches it against
+        // that organization's member list.
+        //
+        // It creates a BINDING ONLY. The role comes from the upstream member
+        // record and the farm scope is re-read from the upstream grant list by
+        // the normal fail-closed resolve path — so a self-verified caller is
+        // never pre-authorised here.
+        if (!speaker.is_known && !speaker.resolution_state) {
+          const verification = await handleEmailVerificationAttempt({
+            tenantId: binding.tenant_id,
+            projectId: binding.project_id,
+            phoneE164: normalizedMsg.from_e164,
+            text: normalizedMsg.body,
+          });
+          if (verification.handled && verification.reply) {
+            const verificationReply: OutboundMessage = {
+              tenant_id: binding.tenant_id,
+              project_id: binding.project_id,
+              from_e164: normalizedMsg.to_e164,
+              to_e164: normalizedMsg.from_e164,
+              body: verification.reply,
+              correlation_id: envelope.correlation_id,
+              turn_id: envelope.correlation_id,
+              status: 'pending',
+              // The verification prompt is how the flow collects the email, so
+              // it must not be blocked by the consent gate — the same
+              // reasoning as the onboarding reply.
+              consent_exempt: true,
+            };
+            await DbClient.saveOutboundMessage(verificationReply);
+            await processOutboundQueue();
+            return;
+          }
+        }
 
         // Process through Core Engine
         const engineResponse = await CoreEngine.processEnvelope(envelope, speaker);
