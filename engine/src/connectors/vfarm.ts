@@ -81,12 +81,100 @@ export class VfarmConnector {
     const farmId = unitContext?.farm_id as string | undefined;
     const unitId = unitContext?.unit_id as string | undefined;
 
-    if (!farmId || !unitId) {
+    if (!farmId) {
+      // Nothing is known about the caller's farm. That IS a missing link.
       return {
         text: 'Your phone number is not linked to an active vFarm unit. Please contact support or provide your unit ID.',
         telemetry: {
           unit_id: unitId || 'unbound',
           farm_id: farmId || 'unbound',
+          status: 'telemetry_unavailable',
+          last_updated: new Date().toISOString(),
+        },
+      };
+    }
+
+    if (!unitId) {
+      // The caller HAS an authorized farm, but no unit binding.
+      //
+      // vFarm exposes no user -> device mapping, so a per-unit reading cannot
+      // be attributed to a person. The FARM level, however, is fully readable
+      // and fully scoped to a farm the caller is granted — so the answer is
+      // given at farm level instead of refusing outright.
+      //
+      // The previous behaviour refused here ("not linked to an active vFarm
+      // unit") even though the farm was known and authorized, which made the
+      // system look broken to a correctly-identified customer.
+      const tenantId = speaker?.tenant_id || ('organization_id' in (speaker as any) ? (speaker as any).organization_id : undefined);
+      const adapter = tenantId ? CoreRegistry.getAdapter(tenantId) : null;
+      // Narrow to the resolved SpeakerIdentity — the farm grant list lives on it.
+      const speakerIdentity: SpeakerIdentity | null =
+        speaker && 'phone_e164' in speaker
+          ? (speaker as SpeakerIdentity)
+          : speaker
+            ? ({
+                person_id: (speaker as any).customer_ref,
+                customer_ref: (speaker as any).customer_ref,
+                tenant_id: tenantId,
+                project_id: (speaker as any).project_id || 'proj-vfarm-main',
+                phone_e164: '',
+                is_known: (speaker as any).is_known_customer,
+                role: (speaker as any).role,
+                permissions: (speaker as any).permissions as any,
+                farm_ids: farmId ? [farmId] : [],
+              } as SpeakerIdentity)
+            : null;
+      if (adapter instanceof VfarmTenantAdapter && adapter.hasLiveClient() && speakerIdentity) {
+        try {
+          const farmStatus = await adapter.getFarmStatusForSpeaker({ farmId, speaker: speakerIdentity });
+          if (farmStatus) {
+            const d = farmStatus.devices;
+            const farmLabel = farmStatus.farm_name ? `Farm ${farmStatus.farm_name}` : `Farm ${farmId}`;
+            const statusLabel = farmStatus.status ? farmStatus.status.toUpperCase() : 'UNKNOWN';
+            const parts: string[] = [`${farmLabel}: status ${statusLabel}.`];
+            parts.push(
+              `${d.total} device${d.total === 1 ? '' : 's'} — ${d.online} online, ${d.offline} offline, ${d.unhealthy} unhealthy.`,
+            );
+            Logger.info(
+              `vFarm Telemetry Connector: farm-level status for farm ${farmId} (devices=${d.total}, online=${d.online}, offline=${d.offline}, unhealthy=${d.unhealthy})`,
+            );
+            return {
+              text: `${parts.join(' ')} I can share farm status, device counts and zones, but not per-unit readings for your number.`,
+              telemetry: {
+                unit_id: 'unbound',
+                farm_id: farmId,
+                status:
+                  farmStatus.status === 'critical' || farmStatus.status === 'fault'
+                    ? 'fault'
+                    : farmStatus.status === 'warning'
+                      ? 'warning'
+                      : 'normal',
+                last_updated: new Date().toISOString(),
+              },
+            };
+          }
+        } catch (err: any) {
+          if (err instanceof VfarmAuthorizationError) {
+            Logger.warn(`vFarm farm-level status refused for ${customerRef}: ${err.message}`);
+            return {
+              text: 'You do not have access to telemetry for the requested farm or device.',
+              httpStatus: 403,
+              telemetry: {
+                unit_id: 'unbound',
+                farm_id: farmId,
+                status: 'telemetry_unavailable',
+                last_updated: new Date().toISOString(),
+              },
+            };
+          }
+          Logger.warn(`vFarm farm-level status failed for farm ${farmId}: ${err?.message}`);
+        }
+      }
+      return {
+        text: 'Your phone number is not linked to an active vFarm unit. Please contact support or provide your unit ID.',
+        telemetry: {
+          unit_id: 'unbound',
+          farm_id: farmId,
           status: 'telemetry_unavailable',
           last_updated: new Date().toISOString(),
         },

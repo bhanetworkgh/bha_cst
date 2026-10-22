@@ -484,6 +484,62 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     };
   }
 
+  /**
+   * FARM-level status for a speaker who is authorized for that farm.
+   *
+   * Used when a caller holds a valid farm grant but has no UNIT binding.
+   * vFarm exposes no user -> device mapping, so a per-unit reading cannot be
+   * attributed to a person. The FARM level, however, is fully readable:
+   * `GET /api/v1/farms/{farm_id}/health` and the farm's device inventory are
+   * both scoped to a farm the speaker is granted.
+   *
+   * The farm scope is re-checked here (defense in depth) against the
+   * speaker's authoritative grant list, so this can never widen access.
+   */
+  public async getFarmStatusForSpeaker(params: { farmId: string; speaker: SpeakerIdentity }): Promise<{
+    farm_name?: string;
+    status?: string;
+    health_score?: number;
+    devices: {
+      total: number;
+      online: number;
+      offline: number;
+      unhealthy: number;
+      maintenance: number;
+      error: number;
+    };
+  } | null> {
+    if (!params.farmId) return null;
+    // Throws VfarmAuthorizationError when the speaker is not granted this farm.
+    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    if (!this.liveClient) return null;
+
+    const [health, devices] = await Promise.all([
+      this.liveClient.getFarmHealth(params.farmId).catch(() => null),
+      this.liveClient.listAllDevices(params.farmId).catch(() => null),
+    ]);
+    if (!health && !devices) return null;
+
+    // The live device-list payload types its counters loosely; read them
+    // through a loose record rather than widening the public return type.
+    const dev = (devices ?? {}) as Record<string, any>;
+    const hl = (health ?? {}) as Record<string, any>;
+
+    return {
+      farm_name: hl.farm_name,
+      status: hl.status,
+      health_score: typeof hl.health_score === 'number' ? hl.health_score : undefined,
+      devices: {
+        total: dev.total ?? dev.devices?.length ?? hl.device_count ?? 0,
+        online: dev.online_count ?? hl.online_count ?? 0,
+        offline: dev.offline_count ?? hl.offline_count ?? 0,
+        unhealthy: dev.unhealthy_count ?? hl.unhealthy_count ?? 0,
+        maintenance: dev.maintenance_count ?? 0,
+        error: dev.error_count ?? 0,
+      },
+    };
+  }
+
   public async getLatestDeviceReading(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<any> {
     if (params.speaker) {
       assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
