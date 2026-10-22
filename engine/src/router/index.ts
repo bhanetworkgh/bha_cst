@@ -12,6 +12,57 @@ import { MediaServerConnector }     from '../connectors/media.js';
 
 export type DetectedIntent = 'status' | 'knowledge' | 'images' | 'escalate' | 'default';
 
+/**
+ * Live-state vocabulary, matched on WORD BOUNDARIES.
+ *
+ * The previous keyword list was matched with `text.includes(kw)` and two of
+ * its tokens are two letters long — 'ph' is inside "phone", "because",
+ * "graph", "sulphur"; 'ec' is inside "because", "each", "secure", "spec".
+ * An ordinary sentence containing those substrings was therefore routed to
+ * the vFarm status lane instead of the BHARAG knowledge lane.
+ */
+const LIVE_STATE_WORD_RE = new RegExp(
+  '\\b(status|statuses|temps?|temperatures?|telemetry|readings?|humidity|moisture|ph|ec|water-level|bays?|racks?|zones?|sensors?|devices?)\\b',
+  'i',
+);
+
+/**
+ * A request scoped to the CALLER'S OWN farm / unit / zone / device.
+ *
+ * "my form(s)" is a narrow SPEECH-RECOGNITION correction: CST has no form
+ * domain at all (every "form" in the codebase is "shape" or
+ * "form-urlencoded"), so "my form data" here is a mis-transcription of
+ * "my farm data". It is scoped to the possessive + live-data-noun case, so a
+ * legitimate form-related request ("where is the maintenance form?") is
+ * untouched. It is NOT a global "form" -> "farm" replacement.
+ */
+const POSSESSIVE_SCOPE_RE = new RegExp(
+  '\\bmy\\s+(?:own\\s+)?(?:farms?|forms?|units?|sites?|zones?|locations?|devices?|racks?|greenhouses?)\\b',
+  'i',
+);
+
+/** Nouns that make a possessive request a request for LIVE data. */
+const LIVE_DATA_NOUN_RE = new RegExp(
+  '\\b(data|status|statuses|state|stats|readings?|alerts?|alarms?|devices?|zone|zones|location|locations|rack|racks|crop|crops|sensor|sensors|telemetry|health|condition|conditions?|performance|overview|summary|latest|now)\\b',
+  'i',
+);
+
+/**
+ * An explicit request for a live reading. Overrides a knowledge marker:
+ * "how do I check the status of my farm?" is a status request even though it
+ * starts with "how do I".
+ */
+const LIVE_READING_MARKER_RE = new RegExp(
+  '\\b(status of|status for|my status|right now|currently|at the moment|latest|live|reading|readings|temperature|humidity|alerts? on|alerts? for)\\b',
+  'i',
+);
+
+/** General procedure, how-to and recommendation markers — the BHARAG lane. */
+const KNOWLEDGE_MARKER_RE = new RegExp(
+  '\\b(how do i|how do you|how to|how can i|how should i|what should i|recommended|recommendation|best way|best practice|guide|manual|procedure|steps to|troubleshoot|calibrat\\w*|install\\w*|replac\\w*|clean the filter|clean filter|for tomatoes|for crops)\\b',
+  'i',
+);
+
 export class IntentRouter {
   /**
    * Detect intent from message text using keyword matching.
@@ -28,16 +79,34 @@ export class IntentRouter {
     const imageKeywords = ['photo', 'image', 'picture', 'snap', 'look', 'view', 'capture', 'camera', 'send'];
     if (imageKeywords.some((kw) => text.includes(kw))) return 'images';
 
-    // 3. Status & telemetry inquiries (explicit status vocabulary)
-    const statusKeywords = ['status', 'temp', 'temperature', 'ph', 'ec', 'check', 'telemetry', 'reading', 'bay', 'water'];
-    if (statusKeywords.some((kw) => text.includes(kw))) return 'status';
-
-    // 3.5. Farm-specific live-state questions (KMG9: route to vFarm, never BHARAG)
-    // These patterns indicate a request for current/live farm data with caller's farm context.
-    // They are classified as 'status' so they hit the vFarm path (which fails closed).
+    // 3. Farm-scoped live state (KMG9: the vFarm lane, never BHARAG).
+    //
+    //    A request about the CALLER'S OWN farm, unit or device that asks for
+    //    live data is farm data — not documentation. "Show me my farm data" and
+    //    "What alerts are open for my farm?" were being sent to the BHARAG
+    //    knowledge cluster, which by design (KMG9) is never given a farm id and
+    //    therefore can never answer them.
     if (this.isFarmSpecificLiveStateRequest(text)) return 'status';
 
-    // 4. Knowledge / FAQ questions
+    // 4. General procedure / recommendation questions.
+    //
+    //    Checked BEFORE the live-state vocabulary so that "what pH is
+    //    recommended for tomatoes?" is a knowledge question and not a reading
+    //    request. "recommended" and "how do I" are the markers; an explicit
+    //    live reading ("status of", "right now", "latest", …) overrides them.
+    if (this.isGeneralKnowledgeRequest(text)) return 'knowledge';
+
+    // 5. Live-state vocabulary.
+    //
+    //    Matched on WORD BOUNDARIES. The previous list was matched with
+    //    `text.includes(kw)`, and two of its tokens are two letters long:
+    //    'ph' is inside "phone", "because", "graph", "sulphur"; 'ec' is inside
+    //    "because", "each", "secure", "spec". Any ordinary sentence containing
+    //    those substrings was routed to the vFarm status lane instead of the
+    //    BHARAG knowledge lane.
+    if (LIVE_STATE_WORD_RE.test(text)) return 'status';
+
+    // 6. Knowledge / FAQ questions
     const knowledgeKeywords = ['how', 'what', 'why', 'clean', 'filter', 'light', 'cycle', 'guide', 'doc', 'manual', 'procedure'];
     if (knowledgeKeywords.some((kw) => text.includes(kw))) return 'knowledge';
 
@@ -45,10 +114,22 @@ export class IntentRouter {
   }
 
   /**
-   * Detect farm-specific live-state requests that require vFarm telemetry.
-   * KMG9: These must route through the vFarm path (fail-closed), never BHARAG.
-   * Conservative patterns: possessive + live-state vocabulary.
-   * Does NOT match general procedures (clean filter, manual, guide, etc.)
+   * Detect a request for the CALLER'S OWN live farm data.
+   *
+   * Two ways to qualify:
+   *   1. The explicit patterns below (status of my …, my farm's alerts, …).
+   *   2. A POSSESSIVE scope ("my farm", "my unit", …) together with a
+   *      live-data noun ("data", "alerts", "devices", "readings", …).
+   *
+   * The possessive requirement is what keeps general questions on BHARAG:
+   * "how do I clean the filter", "what pH is recommended for tomatoes" and
+   * "how do I calibrate the sensor" never name the caller's own farm, so they
+   * stay documentation questions.
+   *
+   * A general-knowledge marker ("recommended", "how do I", "guide", …)
+   * wins over the possessive rule UNLESS the request also names a live
+   * reading, so "what is the recommended pH for my farm?" is advice while
+   * "how do I check the status of my farm?" is a status request.
    */
   private static isFarmSpecificLiveStateRequest(text: string): boolean {
     const farmStatePatterns = [
@@ -68,7 +149,34 @@ export class IntentRouter {
       /what is my water/i, /what is my ph\b/i, /what is my ec\b/i, /what is my temperature/i,
       /what is my humidity/i, /what is my sensor/i, /what is my reading/i,
     ];
-    return farmStatePatterns.some((re) => re.test(text));
+    if (farmStatePatterns.some((re) => re.test(text))) return true;
+
+    // Possessive scope + live-data noun.
+    //
+    // "my form(s)" is included as a SPEECH-RECOGNITION correction only:
+    // CST has no form domain at all (every "form" in the codebase is
+    // "shape" or "form-urlencoded"), so "my form data" in this product is a
+    // mis-transcription of "my farm data". It is deliberately narrow —
+    // possessive + live-data noun — so a legitimate form-related request
+    // ("where is the maintenance form?") is untouched, and it is NOT a global
+    // "form" -> "farm" replacement.
+    if (!POSSESSIVE_SCOPE_RE.test(text)) return false;
+    if (!LIVE_DATA_NOUN_RE.test(text)) return false;
+    // An explicit knowledge marker wins unless a live reading is named.
+    if (KNOWLEDGE_MARKER_RE.test(text) && !LIVE_READING_MARKER_RE.test(text)) return false;
+    return true;
+  }
+
+  /**
+   * Detect a GENERAL procedure, how-to or recommendation question.
+   *
+   * These belong to the BHARAG knowledge lane even when they mention a farm:
+   * "how do I clean the filter?", "what pH is recommended for tomatoes?",
+   * "how do I calibrate the sensor?".
+   */
+  private static isGeneralKnowledgeRequest(text: string): boolean {
+    if (LIVE_READING_MARKER_RE.test(text)) return false;
+    return KNOWLEDGE_MARKER_RE.test(text);
   }
 
   /**
@@ -256,7 +364,20 @@ export class IntentRouter {
     const boundUnitId = identity.unit_context?.unit_id as string | undefined;
 
     if (intent === 'status') {
-      if (!boundFarmId || !boundUnitId) {
+      // Refuse only when NOTHING about the caller's farm is known.
+      //
+      // The previous guard refused when EITHER the farm or the unit was
+      // missing. vFarm exposes no user -> device mapping, so a caller with a
+      // valid farm grant never has a unit id — which meant the refusal fired
+      // for every correctly identified customer, even though the farm was
+      // known, authorized and readable.
+      //
+      // With a farm bound but no unit, the request continues to the vFarm
+      // connector, which answers at FARM level (farm health and device
+      // counts) and states plainly that per-unit readings are not available.
+      // The farm id still comes from the caller's verified identity — it is
+      // never taken from the message text, and no default farm is invented.
+      if (!boundFarmId) {
         Logger.audit({
           timestamp:      new Date().toISOString(),
           tenant_id:      orgId,

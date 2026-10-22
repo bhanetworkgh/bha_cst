@@ -281,11 +281,29 @@ export type DeviceRollupResponse = z.infer<typeof deviceRollupResponseSchema>;
 
 // ── GET /api/v1/readings/latest ──────────────────────────────────────────────
 export const latestReadingResponseSchema = z.object({
-  device_id: z.string().optional(),
+  id: z.number().optional(),
   sensor_id: z.string().optional(),
-  reading_at: z.string().optional(),
-  value: z.unknown().optional(),
-  unit: z.string().optional(),
+  reading_ts: z.string().optional(),
+  received_at: z.string().optional(),
+  temperature_c: z.number().nullable().optional(),
+  temperature_status: z.string().nullable().optional(),
+  humidity_rh: z.number().nullable().optional(),
+  humidity_status: z.string().nullable().optional(),
+  firmware: z.string().nullable().optional(),
+  uptime_s: z.number().nullable().optional(),
+  wifi_rssi: z.number().nullable().optional(),
+  error_code: z.string().nullable().optional(),
+  error_message: z.string().nullable().optional(),
+  // The `values` object holds the actual per-sensor readings. Each sub-object
+  // has { unit, value, status }. Confirmed keys from a live probe:
+  //   temperature, humidity, co, ph, soil_moisture, relay, voltage, wifi_rssi.
+  // Jegan's proposal named `co_ppm`, `ph`, `soil_moisture` — the actual key
+  // for CO is `co` (not `co_ppm`). `co_ppm` is NOT present.
+  values: z.record(z.object({
+    unit: z.string().nullable().optional(),
+    value: z.unknown().optional(),
+    status: z.string().nullable().optional(),
+  })).optional(),
 }).passthrough();
 export type LatestReadingResponse = z.infer<typeof latestReadingResponseSchema>;
 

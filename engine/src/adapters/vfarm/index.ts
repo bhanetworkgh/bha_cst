@@ -2,6 +2,7 @@ import { maskPhone } from '../../util/privacy.js';
 import { ITenantAdapter } from '../types.js';
 import { Project, ResourceScope, SpeakerRecord, SpeakerIdentity, UserRole, CabinetConfig } from '../../core/types.js';
 import { Logger } from '../../config/logger.js';
+import { recordFailure } from '../../recovery/self_healing_tracker.js';
 import { VfarmHttpClient, VfarmApiError } from './http_client.js';
 import { VfarmLiveClient, VFARM_DEFAULT_TIMEOUT_MS, VFARM_HEALTH_PROBE_TIMEOUT_MS } from './live_client.js';
 import {
@@ -540,6 +541,43 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     };
   }
 
+  /**
+   * Open alerts for a farm the speaker is authorized for.
+   *
+   * Read-only, farm-scoped, authorized by the caller's grant list. The
+   * upstream endpoint is `GET /api/v1/alerts/threshold/open?farm_id=...`,
+   * verified against the live vFarm OpenAPI contract (farm_id is a
+   * documented filter, the response is `{ alerts[], total }`).
+   *
+   * Returns null when the farm is not granted, the adapter has no live
+   * client, or the upstream call fails — never a fabricated list.
+   */
+  public async getFarmAlertsForSpeaker(params: { farmId: string; speaker: SpeakerIdentity; limit?: number }): Promise<{
+    total: number;
+    alerts: Array<{ id: string; device_id: string; severity: string; title: string; detail: string; opened_at: string }>;
+  } | null> {
+    if (!params.farmId) return null;
+    // Same fast refusal as getFarmStatusForSpeaker.
+    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    if (!this.liveClient) return null;
+
+    try {
+      const res = await this.liveClient.listOpenAlerts(params.farmId, params.limit ?? 10);
+      const alerts = (res.alerts ?? []).map((a: any) => ({
+        id: a.id,
+        device_id: a.device_id ?? '',
+        severity: a.severity ?? 'info',
+        title: a.title ?? '',
+        detail: a.detail ?? '',
+        opened_at: a.opened_at ?? '',
+      }));
+      return { total: res.total ?? alerts.length, alerts };
+    } catch (err: any) {
+      Logger.warn(`vFarm getFarmAlertsForSpeaker: alert lookup failed for farm ${params.farmId}: ${err?.message}`);
+      return null;
+    }
+  }
+
   public async getLatestDeviceReading(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<any> {
     if (params.speaker) {
       assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
@@ -552,7 +590,17 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         humidity_rh: 65,
       };
     }
-    return await this.liveClient.getLatestReading(params.deviceId);
+    try {
+      return await this.liveClient.getLatestReading(params.deviceId);
+    } catch (err: any) {
+      // 404 = no readings for this device. That is a real, honest result,
+      // not an upstream failure. Surface it as null so the connector can
+      // distinguish "no reading" from "upstream unavailable".
+      if (err?.status === 404 || /no readings/i.test(String(err?.message))) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   public setDegraded(degraded: boolean): void {
@@ -1152,6 +1200,16 @@ export class VfarmTenantAdapter implements ITenantAdapter {
                 : 'local_reference_matches_no_member',
             },
           );
+          // Record for the self-healing tracker: a repeated failure to
+          // resolve the caller's identity is a system-level degradation, not
+          // a one-off. After 3 in 10 minutes the capability is marked
+          // degraded and stops claiming live device data.
+          recordFailure({
+            tenantId: params.tenantId,
+            projectId: params.projectId,
+            category: 'no_farm_grant',
+            correlationRef: cleanPhone.replace(/[^0-9]/g, '') || 'unknown',
+          });
           return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_revoked');
         }
         effectivePersonId = upstream.user_id;
