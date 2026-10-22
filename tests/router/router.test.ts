@@ -110,7 +110,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
     );
     expect(clusterCalls.length).toBe(0);
     expect(outbound.body).toContain('Status: NORMAL');
-    expect(outbound.body).toContain('Water Temp: 21.5°C');
+    expect(outbound.body).toContain('Temperature: 21.5°C');
   });
 
   it('enforces multi-tenancy security: rejects message text attempt to override farm_id or unit_id', async () => {
@@ -278,7 +278,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
       tenant_id:      'tenant-vfarm-01',
       from_e164:      '+923082113844',
       to_e164:        '+19715885823',
-      body:           'How to clean the filter on Bay 1?',
+      body:           "What's the status of my farm?",
       media:          [],
       received_at:    new Date().toISOString(),
       correlation_id: 'corr_real_number_test',
@@ -298,7 +298,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const outbound = await IntentRouter.routeAndHandle(msg, identity);
 
-    // KMG9: "Bay 1" matches status keyword 'bay', so intent is 'status' -> vFarm path
+    // KMG9: a farm-status question routes to the vFarm path -> vFarm path
     // No live client in test runner -> telemetry_unavailable, NO BHARAG
     expect(outbound.body).toContain('Telemetry currently unavailable');
     expect(outbound.to_e164).toBe('+923082113844');

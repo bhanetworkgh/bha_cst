@@ -123,7 +123,7 @@ describe('vFarm connector — farm-level status without a unit binding', () => {
     expect(res.text).toContain('26 devices');
     expect(res.text).toContain('19 online');
     expect(res.text).toContain('6 offline');
-    expect(res.text).toContain('10 unhealthy');
+    expect(res.text).toContain('10 are flagged unhealthy');
     expect(res.telemetry?.status).toBe('fault');
     expect(res.telemetry?.farm_id).toBe(FARM);
   });
