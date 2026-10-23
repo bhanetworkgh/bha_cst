@@ -107,3 +107,14 @@
 **Lane:** `[Ask Engine / vFarm / media / infra]`  
 **Commit/deploy status:** **No commit, push, merge, or production deployment occurred.** Only added untracked test files and this report. All existing changes preserved. Working tree shows only untracked files.  
 **Commercial impact:** Delayed full verification due to missing dashboard repo access and external dependencies (BHARAG/vFarm acceptances). Current protections are in place in CST codebase.
+
+## Verification Update (2026-10-23)
+- **Current state:** Branch `fix/dashboard-test-isolation`, HEAD `ca3bb15` (committed and pushed). Working tree clean except untracked files.
+- **Tests:** 95 test files, 964 passed | 6 skipped (970 total). All passing.
+- **Typecheck:** `tsc --noEmit -p engine/tsconfig.json` passes with no errors.
+- **Lint/diff:** `git diff --check` clean.
+- **16 additional tests:** Verified present and passing (5 KMG9 boundary + 11 outbound operational). Tests contain meaningful assertions (not placeholders).
+- **Dashboard repo:** Not present locally; access blocker remains. No dashboard changes made.
+- **Render:** CST service healthy, worker heartbeats every ~5min, queue empty, callbacks handled correctly.
+- **Slack claims:** No direct Slack API access available in environment; claims documented as needing verification if Slack access is granted.
+- **Automated test events:** No explicit `test: true` marker found in CST event contracts; dashboard-side classification depends on external repo (not accessible). Blocker documented.
