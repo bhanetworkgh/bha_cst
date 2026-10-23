@@ -391,6 +391,28 @@ adminRouter.get('/health/verification', async (_req: Request, res: Response) => 
   }
 });
 
+// ── Dashboard publisher effective-mode status (read-only) ────────────────────
+adminRouter.get('/dashboard-publisher/status', (_req: Request, res: Response) => {
+  try {
+    const publisher = getDashboardPublisher();
+    const dryRun = publisher.isDryRun();
+    const mode = dryRun ? 'dry_run' : 'live';
+    const reason = dryRun
+      ? 'Dashboard events are validated and logged locally but are not sent to the remote Dashboard.'
+      : 'Dashboard events are eligible for real publication to the configured Dashboard endpoint.';
+    res.status(200).json({
+      publisher: 'dashboard',
+      mode,
+      reason,
+      evaluated_at: new Date().toISOString(),
+      scope: 'dashboard_publishing_only',
+    });
+  } catch (err: any) {
+    Logger.error(`Dashboard publisher status error: ${err.message}`);
+    res.status(500).json({ error: 'DASHBOARD_PUBLISHER_STATUS_FAILED', message: 'Unable to determine dashboard publishing mode' });
+  }
+});
+
 // ── 5. Speaker Sync & Invalidation (/api/v1/admin/speakers) ──────────────────
 // Syncs speakers from the tenant adapter into the durable `customers` table.
 // This is the onboarding flow step §10(6): "Sync speakers (farm owners' phones + farm grants)."

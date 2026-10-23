@@ -259,7 +259,23 @@ async function loadHealth() {
       <small>Transport status: ${health.transport.status}</small>
     </article>`;
 
-  // Render Section 2 Architecture Tree
+  // Dashboard publisher effective mode (backend-authoritative; dashboard publishing only).
+  let dpStatus = { mode: 'unknown', reason: 'Status unavailable' };
+  try {
+    dpStatus = await api('/api/v1/admin/dashboard-publisher/status');
+  } catch (e) {
+    dpStatus = { mode: 'unknown', reason: 'Unable to determine dashboard publishing mode' };
+  }
+  const dpLabel = dpStatus.mode === 'live' ? 'Live publishing'
+    : dpStatus.mode === 'dry_run' ? 'Dry-run enabled'
+    : 'Status unknown / unavailable';
+  const dpClass = dpStatus.mode === 'live' ? 'active' : dpStatus.mode === 'dry_run' ? 'warn' : 'off';
+  $('#health-summary').insertAdjacentHTML('beforeend', `
+    <article class="metric-card ${dpClass === 'active' ? 'mint-card' : dpClass === 'warn' ? 'coral-card' : 'blue-card'}">
+      <span class="metric-label">DASHBOARD PUBLISHING</span>
+      <strong>${dpLabel}</strong>
+      <small>${dpStatus.reason || ''} (dashboard publishing only; SMS/voice unaffected)</small>
+    </article>`);
   renderArchTree(health.tenants);
 
   // Render Verification Readiness Table
