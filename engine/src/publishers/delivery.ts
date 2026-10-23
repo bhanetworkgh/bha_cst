@@ -21,6 +21,7 @@
 
 import { randomUUID } from 'crypto';
 import { Logger } from '../config/logger.js';
+import { isTestRunner } from '../config/runtime.js';
 import { maskProviderSid } from '../util/privacy.js';
 import { getDashboardPublisher } from './dashboard.js';
 import {
@@ -201,6 +202,8 @@ export function publishDelivery(params: PublishDeliveryParams): void {
         retry_count: retryCount ?? undefined,
         delivered_at:
           status === 'delivered' ? new Date().toISOString() : undefined,
+        // Source-side test marker — mirrors the one in publishTurn.
+        ...(isTestRunner() ? { test: true } : {}),
       },
     });
   } catch (err: any) {

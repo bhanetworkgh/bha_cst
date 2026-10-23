@@ -118,3 +118,37 @@
 - **Render:** CST service healthy, worker heartbeats every ~5min, queue empty, callbacks handled correctly.
 - **Slack claims:** No direct Slack API access available in environment; claims documented as needing verification if Slack access is granted.
 - **Automated test events:** No explicit `test: true` marker found in CST event contracts; dashboard-side classification depends on external repo (not accessible). Blocker documented.
+
+## Final Verification Update (2026-10-24 01:05 UTC)
+- **Render CLI Deployed SHA Verification (Confirmed):**
+  - Authenticated as `admin@bhanetwork.org` (Team: `tea-dafco81t0dsc73djsv4g`, User: `usr-dafco81t0dsc73djsv90`).
+  - Discovered service ID: `srv-db8hepqvcj2c73adpus0` (`bha-cst`, slug: `bha-cst-7u9e`).
+  - Retrieved latest deployment metadata via `render deploys list srv-db8hepqvcj2c73adpus0`:
+    - Deploy ID: `dep-dbdqnjjm8hqs73cro7ng`
+    - Status: `live`
+    - Commit SHA: `f343e4a3ac191290de42bf6f8faa9126e6310cc8`
+    - Commit Message: `Merge pull request #6 from bhanetworkgh/fix/dashboard-test-isolation`
+    - Created At: `2026-10-23T18:47:42.163171Z` | Finished At: `2026-10-23T18:48:40.008351Z`
+  - Relationship to local tree: Local HEAD `f17ab02` is the direct parent of `f343e4a` merged via PR #6. `git diff f17ab02 origin/main` contains 0 file differences.
+- **Production Logs & Worker Inspection (Render CLI):**
+  - Queried logs for `srv-db8hepqvcj2c73adpus0` via `render logs --resources srv-db8hepqvcj2c73adpus0 --limit 100`:
+  - **Worker Heartbeat:** Consistently logging every ~5 minutes:
+    `Outbound worker heartbeat: pending=0, queued=0, sending=0, failed=0, outcome_unknown=0`
+    (Heartbeats verified at `19:38:29Z`, `19:43:29Z`, `19:48:29Z`, `19:53:29Z`, `19:58:29Z`).
+  - **Twilio Callback Security:** Observed incoming callbacks from `TwilioProxy/1.1` to `/webhooks/twilio/delivery-status` returning HTTP 204.
+  - Callbacks lacking an outbound message row (e.g. `SM14e4...`, `SMeacb...`) correctly fail closed:
+    `SECURITY_LEDGER: cst.delivery not published: tenancy unresolved (no outbound row for this MessageSid=yes)` with `outcome: 'refused'` and `tripwire: true`. No synthetic tenant context was created and no spurious dashboard events were emitted.
+- **Engine Dashboard Access & Inspection:**
+  - Cloned and inspected `bhanetworkgh/bha-engine-dashboard` (`main` @ `fd5fbbe`).
+  - Verified Migration 92 (`engine_cst_turns.test`) backfill logic and `WHERE NOT test` partial index.
+  - Verified `cstData()` filters `real = turns.filter((x) => x.status !== null && !x.test)`, excluding test runs from cohort metrics.
+  - Verified UI toggle in `CsTwin/index.tsx` hides test traffic by default.
+- **Matched Callback Attribution Status:**
+  - **In-Depth Log Audit:** Extended log inspection across 1,000 recent log lines on `srv-db8hepqvcj2c73adpus0`. All delivery callback requests received during this window were for unmatched provider SIDs (`SMdc9f...`, `SMeacb...`, `SM14e4...`). In every instance, the service failed closed with `outbound_row_found: false`, returned HTTP 204 to Twilio, and refused to emit a `cst.delivery` event.
+  - **Code & Test Proof:** In [delivery_status_webhook.test.ts Section 8](file:///Users/HaMi/Documents/Jason/customer%20twin/tests/transport/delivery_status_webhook.test.ts#L343-L414) and [delivery_callback_security.test.ts](file:///Users/HaMi/Documents/Jason/customer%20twin/tests/transport/delivery_callback_security.test.ts#L61-L140), tests prove that when an authoritative `messages_out` row exists, status updates monotonically, and attribution is strictly derived from the row's `tenant_id` and `project_id`.
+  - **Production Verdict:** Because no matched production callback exists in current logs, live matched-callback acceptance is marked **UNVERIFIED**. A mocked staging or controlled non-production smoke test (e.g. seeding an internal outbound row and receiving a signed status callback in a non-production testbed) is proposed once staging access is enabled.
+- **External Dependencies & Blockers:**
+  - **KMG9:** Awaiting 3 authoritative RAG test vectors and authorization from Jegan. No synthetic vectors will be substituted.
+  - **EWQI:** Awaiting authoritative vFarm user-to-device binding evidence from platform owners. No local assumptions will be substituted.
+- **Local Suite:** 96 test files, 967 passed | 6 skipped (973 total). Clean typecheck, build, and git diff check.
+- **Verdict:** **PARTIAL** (Production deployment SHA, worker heartbeat, and fail-closed callback security confirmed via Render CLI; production matched callback row audit and external KMG9/vFarm acceptance remain on hold).

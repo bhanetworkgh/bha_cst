@@ -1,4 +1,5 @@
 import { MessageEnvelope, EnvelopeResponse } from './envelope.js';
+import { isTestRunner } from '../config/runtime.js';
 import { SpeakerIdentity } from './types.js';
 import { CoreRegistry } from './registry.js';
 import { DbClient } from '../db/client.js';
@@ -131,6 +132,12 @@ export class CoreEngine {
           event_type: 'cst.turn',
           message: envelope.text,
           occurred_at: occurredAt,
+          // Source-side test marker (cst-e2e/DASHBOARD_FLOW.md §D8). When CST
+          // is running inside a test runner the event is explicitly flagged so
+          // the dashboard's cstTestReason classifier can separate automated
+          // test traffic from real customer conversations without relying
+          // solely on heuristics like fake phone numbers or hand-made turn IDs.
+          ...(isTestRunner() ? { test: true } : {}),
           metadata: {
             ...envelope.metadata,
             ...metadata,

@@ -333,6 +333,8 @@ export const CstTurnSchema = z.object({
   message: z.string().optional(),
   occurred_at: z.string().datetime({ offset: true }).optional(),
   event_type: z.literal('cst.turn').optional(),
+  /** Source-side test traffic marker (cstTestReason classifier). */
+  test: z.boolean().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 export type CstTurn = z.infer<typeof CstTurnSchema>;
@@ -356,6 +358,8 @@ export const CstDeliverySchema = z.object({
   error_message: z.string().optional(),
   delivered_at: z.string().datetime({ offset: true }).optional(),
   retry_count: z.number().int().nonnegative().optional(),
+  /** Source-side test traffic marker (cstTestReason classifier). */
+  test: z.boolean().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 export type CstDelivery = z.infer<typeof CstDeliverySchema>;
