@@ -48,6 +48,7 @@ export class CstDashboardPublisher {
   private static hasLoggedMissingConfig = false;
 
   private readonly dashboardUrl?: string;
+  private dashboardUrlExplicit: boolean = false;
   private readonly dashboardKey?: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
@@ -58,12 +59,37 @@ export class CstDashboardPublisher {
 
   constructor(options: DashboardPublisherOptions = {}) {
     this.dashboardUrl = options.dashboardUrl ?? process.env.ENGINE_DASHBOARD_URL;
+    this.dashboardUrlExplicit = options.dashboardUrl !== undefined;
     this.dashboardKey = options.dashboardKey ?? process.env.ENGINE_DASHBOARD_KEY;
     this.timeoutMs = options.timeoutMs ?? 5000;
     this.maxRetries = options.maxRetries ?? 3;
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
     this.backoffMultiplier = options.backoffMultiplier ?? 2;
-    this.dryRun = options.dryRun ?? process.env.DRY_RUN === 'true';
+    // Safe default: outside production, never publish to a remote Dashboard
+    // unless DRY_RUN is explicitly set to 'false' AND live publishing is
+    // explicitly opted in via CST_ALLOW_LIVE_DASHBOARD=1. This prevents
+    // routine test runs (NODE_ENV !== 'production') from writing to the
+    // live production Dashboard even when ENGINE_DASHBOARD_URL points at it.
+    if (options.dryRun !== undefined) {
+      this.dryRun = options.dryRun;
+    } else if (process.env.DRY_RUN !== undefined) {
+      this.dryRun = process.env.DRY_RUN === 'true';
+    } else if (process.env.NODE_ENV === 'production') {
+      this.dryRun = false;
+    } else if (process.env.CST_ALLOW_LIVE_DASHBOARD === '1') {
+      this.dryRun = false;
+    } else if (
+      !this.dashboardUrlExplicit &&
+      process.env.VITEST === 'true' &&
+      this.dashboardUrl &&
+      !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(this.dashboardUrl)
+    ) {
+      // Test runs must never write to a remote (potentially production)
+      // Dashboard unless explicitly opted in.
+      this.dryRun = true;
+    } else {
+      this.dryRun = false;
+    }
     this.fetchFn = options.fetchFn ?? globalThis.fetch;
   }
 
