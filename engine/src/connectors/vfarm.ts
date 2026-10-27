@@ -265,8 +265,74 @@ export class VfarmConnector {
             Logger.info(
               `vFarm Telemetry Connector: farm-level status for farm ${farmId} (total=${d.total}, online=${d.online}, offline=${d.offline}, notReported=${remainder}, unhealthy=${d.unhealthy}, alerts=${alertText || 'n/a'})`,
             );
+
+            // ── Per-unit readings for the authorized farm ──────────────────────
+            // When the caller is granted the farm but has no specific unit
+            // binding, vFarm's `listLatestReadings(farmId)` returns the latest
+            // reading for every sensor/device in that farm. We fetch these and
+            // report them per-unit rather than leaving the caller with only
+            // aggregate counts. No BHARAG fallback — vFarm is the only source.
+            let perUnitReadings: Array<{
+              unit_id: string;
+              farm_id: string;
+              status: 'normal' | 'warning' | 'fault' | 'telemetry_unavailable';
+              water_temp_c?: number;
+              humidity_rh?: number;
+              ph_level?: number;
+              ec_level?: number;
+              water_level?: number;
+              last_updated: string;
+              stale?: boolean;
+            }> = [];
+            try {
+              const readings = await adapter.listLatestReadings?.({ farmId, speaker: speakerIdentity });
+              if (readings && Array.isArray(readings) && readings.length > 0) {
+                perUnitReadings = readings
+                  .filter((r: any) => r && (r.sensor_id || r.device_id))
+                  .map((r: any) => {
+                    const reading = mapLatestReadingToTelemetry(farmId, String(r.sensor_id || r.device_id), r);
+                    return {
+                      unit_id: reading.unit_id,
+                      farm_id: reading.farm_id,
+                      status: reading.status,
+                      water_temp_c: reading.water_temp_c,
+                      humidity_rh: reading.humidity_rh,
+                      ph_level: reading.ph_level,
+                      ec_level: reading.ec_level,
+                      water_level: reading.water_level,
+                      last_updated: reading.last_updated,
+                      stale: reading.stale,
+                    };
+                  });
+                }
+              } catch (err: any) {
+              // Per-unit readings are additive: if they fail, we still report
+              // the farm-level aggregate above and note the limitation honestly.
+              Logger.warn(`vFarm per-unit readings failed for farm ${farmId}: ${err?.message}`);
+            }
+
+            // Build the per-unit readings text block.
+            let unitReadingsText = '';
+            if (perUnitReadings.length > 0) {
+              const lines = perUnitReadings.map((r) => {
+                const parts: string[] = [`Unit ${r.unit_id}: status ${r.status.toUpperCase()}`];
+                const vals: string[] = [];
+                if (r.water_temp_c !== undefined) vals.push(`Temperature: ${r.water_temp_c}°C`);
+                if (r.humidity_rh !== undefined) vals.push(`Humidity: ${r.humidity_rh}%`);
+                if (r.ph_level !== undefined) vals.push(`pH: ${r.ph_level}`);
+                if (r.ec_level !== undefined) vals.push(`CO: ${r.ec_level}`);
+                if (r.water_level !== undefined) vals.push(`Soil Moisture: ${r.water_level}%`);
+                if (vals.length > 0) parts.push(vals.join(', '));
+                if (r.stale) parts.push('(reading is stale)');
+                return parts.join(' — ');
+              });
+              unitReadingsText = ` Per-unit readings: ${lines.join('; ')}.`;
+            } else {
+              unitReadingsText = ' No per-unit readings are available at this time.';
+            }
+
             return {
-              text: `${parts.join(' ')} I can share farm status, device counts and zones, but not per-unit readings for your number.`,
+              text: `${parts.join(' ')}${unitReadingsText}`,
               telemetry: {
                 unit_id: 'unbound',
                 farm_id: farmId,

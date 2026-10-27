@@ -700,7 +700,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.text).toContain('<Response>');
       expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
       expect(res.text).toContain('<Say>Welcome to vFarm Support');
-      expect(res.text).toContain('I did not hear anything');
+      expect(res.text).toContain("I'm here when you're ready. What would you like help with?");
     });
 
     it('reconstructs fully qualified HTTPS action URL when behind proxy headers', async () => {

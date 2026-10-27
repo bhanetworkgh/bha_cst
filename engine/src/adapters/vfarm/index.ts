@@ -603,6 +603,30 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
   }
 
+  /**
+   * Latest readings across all sensors/devices in an authorized farm.
+   *
+   * Farm-scoped and authorized by the speaker's grant list (re-checked
+   * inside `assertSpeakerFarmAccess`). Returns empty array when there are no
+   * readings — never fabricated values.
+   */
+  public async listLatestReadings(params: { farmId: string; speaker?: SpeakerIdentity }): Promise<any[]> {
+    if (params.speaker) {
+      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    }
+    if (!this.liveClient) {
+      return [];
+    }
+    try {
+      return await this.liveClient.listLatestReadings(params.farmId);
+    } catch (err: any) {
+      // Upstream failure — surface as empty so the connector can report
+      // honestly rather than claiming readings it cannot retrieve.
+      Logger.warn(`vFarm listLatestReadings failed for farm ${params.farmId}: ${err?.message}`);
+      return [];
+    }
+  }
+
   public setDegraded(degraded: boolean): void {
     this.config.simulateDegraded = degraded;
   }

@@ -126,7 +126,7 @@ const GUEST_NOT_REGISTERED_SPEECH =
 const GUEST_GOODBYE_SPEECH =
   "I'm sorry, I still can't help without a registered phone number. Please contact our onboarding team. Goodbye.";
 const EMPTY_SPEECH_GOODBYE =
-  "I'm still not hearing anything, so I'll end the call. Thank you for calling. Goodbye.";
+  "I'm still not hearing anything, so I'll end the call now. Thank you for calling vFarm Support. Goodbye.";
 const SERVICE_UNAVAILABLE_SPEECH =
   "I'm having trouble verifying your account right now. Please try your call again in a few minutes. Goodbye.";
 
@@ -1185,9 +1185,11 @@ export class VoiceInterface {
         correlation_id: callSid,
       });
 
-      const greeting = project.onboarding_reply || 'Welcome to Customer Service Twin. How can I assist you today?';
+      const greeting =
+        project.onboarding_reply ||
+        "Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?";
       const actionUrl = getVoiceTurnActionUrl(req);
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I did not hear anything. Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I'm here when you're ready. What would you like help with?</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);

@@ -22,7 +22,7 @@ export type DetectedIntent = 'status' | 'knowledge' | 'images' | 'escalate' | 'd
  * the vFarm status lane instead of the BHARAG knowledge lane.
  */
 const LIVE_STATE_WORD_RE = new RegExp(
-  '\\b(status|statuses|temps?|temperatures?|telemetry|readings?|humidity|moisture|ph|ec|water-level|bays?|racks?|zones?|sensors?|devices?)\\b',
+  '\\b(status|statuses|temps?|temperatures?|telemetry|readings?|humidity|moisture|ph|ec|water-level|bays?|racks?|zones?|sensors?|devices?|units?)\\b',
   'i',
 );
 

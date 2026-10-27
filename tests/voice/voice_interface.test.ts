@@ -1064,4 +1064,214 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
       expect(res.status).toBe(403);
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 13. Voice Opening Greeting
+  // ═══════════════════════════════════════════════════════════════════
+  describe('13. Voice opening greeting', () => {
+    it('speaks the configured opening greeting on inbound call answer', async () => {
+      // Clear project onboarding_reply so the default greeting kicks in
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      project.onboarding_reply = undefined;
+      CoreRegistry.registerProject(project);
+
+      try {
+        const payload: Record<string, string> = {
+          CallSid: 'GREETING_001',
+          From: '+923082113844',
+          To: '+19715885826',
+          CallStatus: 'ringing',
+        };
+
+        const res = await request(app)
+          .post('/webhooks/twilio/voice/inbound')
+          .set('Host', 'localhost:3000')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send(payload);
+
+        expect(res.status).toBe(200);
+      expect(res.body.twiml).toContain(
+        "Hi, thanks for calling vFarm Support. I&apos;m here to help. What would you like to check today?"
+      );
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+
+    it('uses project onboarding_reply when configured instead of default greeting', async () => {
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      project.onboarding_reply = 'Custom project greeting.';
+      CoreRegistry.registerProject(project);
+
+      try {
+        const payload: Record<string, string> = {
+          CallSid: 'GREETING_CUSTOM_001',
+          From: '+923082113844',
+          To: '+19715885826',
+          CallStatus: 'ringing',
+        };
+
+        const res = await request(app)
+          .post('/webhooks/twilio/voice/inbound')
+          .set('Host', 'localhost:3000')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send(payload);
+
+        expect(res.status).toBe(200);
+        expect(res.body.twiml).toContain('Custom project greeting.');
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+
+    it('does not include the old robotic promise about a specialist', async () => {
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      project.onboarding_reply = undefined;
+      CoreRegistry.registerProject(project);
+
+      try {
+        const payload: Record<string, string> = {
+          CallSid: 'GREETING_NO_PROMISE',
+          From: '+923082113844',
+          To: '+19715885826',
+          CallStatus: 'ringing',
+        };
+
+        const res = await request(app)
+          .post('/webhooks/twilio/voice/inbound')
+          .set('Host', 'localhost:3000')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send(payload);
+
+        expect(res.status).toBe(200);
+        // The old unsupported promise must not appear anywhere in the response
+        expect(res.body.twiml).not.toContain('We received your message');
+        expect(res.body.twiml).not.toContain('specialist will assist you shortly');
+        expect(res.body.twiml).not.toContain('specialist');
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+
+    it('includes a working speech Gather targeting /webhooks/twilio/voice/turn', async () => {
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      project.onboarding_reply = undefined;
+      CoreRegistry.registerProject(project);
+
+      try {
+        const payload: Record<string, string> = {
+          CallSid: 'GREETING_GATHER_001',
+          From: '+923082113844',
+          To: '+19715885826',
+          CallStatus: 'ringing',
+        };
+
+        const res = await request(app)
+          .post('/webhooks/twilio/voice/inbound')
+          .set('Host', 'localhost:3000')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send(payload);
+
+        expect(res.status).toBe(200);
+        expect(res.body.twiml).toContain(
+          '<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">'
+        );
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+
+    it('speaks a natural no-input reprompt, not the full greeting again', async () => {
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      project.onboarding_reply = undefined;
+      CoreRegistry.registerProject(project);
+
+      try {
+        const payload: Record<string, string> = {
+          CallSid: 'REPROMPT_001',
+          From: '+923082113844',
+          To: '+19715885826',
+          CallStatus: 'ringing',
+        };
+
+        const res = await request(app)
+          .post('/webhooks/twilio/voice/inbound')
+          .set('Host', 'localhost:3000')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send(payload);
+
+        expect(res.status).toBe(200);
+        expect(res.body.twiml).toContain("I'm here when you're ready. What would you like help with?");
+        // The full greeting must not be repeated as a reprompt
+        const greetingCount = (res.body.twiml.match(/Hi, thanks for calling vFarm Support/g) || []).length;
+        expect(greetingCount).toBe(1);
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+
+    it('ends politely after repeated silence (two empty turns)', async () => {
+      const project = CoreRegistry.getProject('proj-vfarm-main')!;
+      const originalReply = project.onboarding_reply;
+      CoreRegistry.registerProject(project);
+
+      try {
+        // First empty turn (empty counter = 0): reprompt
+        const res1 = await request(app)
+          .post('/webhooks/twilio/voice/turn')
+          .set('Host', 'localhost:3000')
+          .set('User-Agent', 'TwilioProxy')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send({
+            CallSid: 'SILENCE_001',
+            From: '+923082113844',
+            To: '+19715885826',
+            SpeechResult: '',
+            CallStatus: 'in-progress',
+          });
+
+        expect(res1.status).toBe(200);
+        expect(res1.text).toContain("I am sorry, I did not catch that. Could you please repeat what you said?");
+
+        // Second empty turn with empty=1 (empty counter = 1): final goodbye + hangup
+        const res2 = await request(app)
+          .post('/webhooks/twilio/voice/turn')
+          .set('Host', 'localhost:3000')
+          .set('User-Agent', 'TwilioProxy')
+          .set('x-test-bypass-signature', 'true')
+          .type('form')
+          .send({
+            CallSid: 'SILENCE_001',
+            From: '+923082113844',
+            To: '+19715885826',
+            SpeechResult: '',
+            CallStatus: 'in-progress',
+            empty: '1',
+          });
+
+        expect(res2.status).toBe(200);
+        expect(res2.text).toContain("I still did not hear anything");
+        expect(res2.text).toContain('<Hangup/>');
+      } finally {
+        project.onboarding_reply = originalReply;
+        CoreRegistry.registerProject(project);
+      }
+    });
+  });
 });
