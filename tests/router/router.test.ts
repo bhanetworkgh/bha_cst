@@ -358,4 +358,53 @@ describe('IntentRouter & Intent Detection Tests', () => {
     // Must NOT trigger external telemetry fetch for arbitrary units
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Units intent routing → vFarm only, never BHARAG
+  // ═══════════════════════════════════════════════════════════════════
+  describe('Units intent routing', () => {
+    it('detectIntent classifies "Can you share the units?" as status (vFarm lane)', async () => {
+      expect(IntentRouter.detectIntent("Can you share the units?")).toBe('status');
+    });
+
+    it('detectIntent classifies "show me unit readings" as status (vFarm lane)', async () => {
+      expect(IntentRouter.detectIntent('show me unit readings')).toBe('status');
+    });
+
+    it('detectIntent classifies "what are my unit values?" as status (vFarm lane)', async () => {
+      expect(IntentRouter.detectIntent('what are my unit values?')).toBe('status');
+    });
+
+    it('routes "Can you share the units?" to vFarm connector, NOT BHARAG cluster', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+      const msg: InboundMessage = {
+        message_id:     'SM_UNITS_TEST_001',
+        tenant_id:      'tenant-vfarm-01',
+        from_e164:      '+15551234567',
+        to_e164:        '+19715885823',
+        body:           'Can you share the units?',
+        media:          [],
+        received_at:    new Date().toISOString(),
+        correlation_id: 'corr_units_test',
+      };
+
+      const outbound = await IntentRouter.routeAndHandle(msg, knownIdentity);
+
+      // Intent is status → calls VfarmConnector.getUnitStatus
+      expect(IntentRouter.detectIntent(msg.body)).toBe('status');
+      // KMG9: must NOT call BHARAG cluster
+      const clusterCalls = fetchSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('/api/v1/cluster/ask') || String(call[0]).includes('cluster')
+      );
+      expect(clusterCalls.length).toBe(0);
+      // Response mentions farm-level telemetry (since no unit_id is bound)
+      expect(outbound.body).toContain('vFarm Unit');
+    });
+
+    it('does not route general knowledge questions to vFarm when units word appears in non-live context', async () => {
+      // "how do I clean the units?" — knowledge marker overrides live-state word
+      expect(IntentRouter.detectIntent('how do I clean the units?')).toBe('knowledge');
+    });
+  });
 });

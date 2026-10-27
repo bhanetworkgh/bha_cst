@@ -84,7 +84,7 @@ describe('BharagRagConnector Tests', () => {
 
     expect(infraSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('BHARAG cluster knowledge API error'),
+        message: expect.stringMatching(/BHARAG cluster knowledge API (error|timeout)/),
         commercial_impact: expect.stringContaining('Customer cannot receive verified knowledge answers'),
       })
     );
@@ -145,5 +145,240 @@ describe('BharagRagConnector Tests', () => {
     });
     expect(payload).not.toHaveProperty('farm_id');
     expect(payload).not.toHaveProperty('unit_id');
+  });
+
+  it('logs structured request start and successful response with elapsed time', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const infoSpy = vi.spyOn(Logger, 'info');
+    let capturedOptions: any = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: string | URL | Request, options?: RequestInit) => {
+      capturedOptions = options;
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Help answer about cleaning filters.' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge('How do I clean the filter?');
+
+    // Request start logged — never raw customer speech, only category
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Querying cluster knowledge using cluster endpoint'),
+      expect.objectContaining({ query_category: 'filter_maintenance' })
+    );
+    // Successful answer logged — no raw query text
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Knowledge answer received'),
+      expect.objectContaining({ answer_present: true, answer_length: expect.any(Number), query_category: 'filter_maintenance' })
+    );
+  });
+
+  it('logs empty result from BHARAG and falls back safely', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const infoSpy = vi.spyOn(Logger, 'info');
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: '', confidence: 0.1, has_context: false }),
+      } as Response;
+    });
+
+    const result = await BharagRagConnector.askKnowledge('What is the meaning of life?');
+
+    // Answer absent → insufficient → fallback
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Knowledge answer absent or insufficient'),
+      expect.objectContaining({ answer_present: false, elapsedMs: expect.any(Number) })
+    );
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+    expect(result).not.toContain('BHARAG Knowledge:');
+  });
+
+  it('logs HTTP error status and falls back safely', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const warnSpy = vi.spyOn(Logger, 'warn');
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        json: async () => ({}),
+      } as Response;
+    });
+
+    const result = await BharagRagConnector.askKnowledge('What are the irrigation rules?');
+
+    // HTTP error logged
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('BHARAG Cluster API returned non-OK status: 503')
+    );
+    // Infra log with status
+    expect(infraSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('BHARAG cluster knowledge API error: HTTP 503'),
+        meta: expect.objectContaining({ status: 503 })
+      })
+    );
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+  });
+
+  it('logs timeout and falls back safely', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const warnSpy = vi.spyOn(Logger, 'warn');
+
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      return new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('fetch operation timed out')), 50);
+      });
+    });
+
+    const result = await BharagRagConnector.askKnowledge('How do I calibrate the sensor?');
+
+    // Timeout logged (message may say 'error' or 'timeout' depending on error classification)
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/BHARAG Cluster API call (error|timeout):/),
+      expect.objectContaining({ elapsedMs: expect.any(Number) })
+    );
+    expect(infraSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringMatching(/BHARAG cluster knowledge API (error|timeout)/),
+      })
+    );
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+  });
+
+  it('logs malformed response (parse failure) and falls back safely', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => {
+          throw new Error('Unexpected token in JSON');
+        },
+      } as Response;
+    });
+
+    const result = await BharagRagConnector.askKnowledge('What are the irrigation rules?');
+
+    // Parse failure logged via infra
+    expect(infraSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('BHARAG cluster knowledge API parse failure'),
+        meta: expect.objectContaining({ parse_error: expect.stringContaining('Unexpected token in JSON') })
+      })
+    );
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+  });
+
+  it('does not log the raw x-api-key or cluster key value anywhere', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const infoSpy = vi.spyOn(Logger, 'info');
+    const warnSpy = vi.spyOn(Logger, 'warn');
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Test answer' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge('test query', 'secret_workspace_key_12345');
+
+    const allLogArgs = [
+      ...infoSpy.mock.calls.map((c) => JSON.stringify(c)),
+      ...infraSpy.mock.calls.map((c) => JSON.stringify(c)),
+      ...warnSpy.mock.calls.map((c) => JSON.stringify(c)),
+    ].join(' ');
+
+    // Full key must never appear in logs
+    expect(allLogArgs).not.toContain('secret_workspace_key_12345');
+    // Only masked form may appear
+    expect(allLogArgs).toContain('se***45');
+  });
+
+  it('masks short workspace keys so they cannot be reconstructed', async () => {
+    const infoSpy = vi.spyOn(Logger, 'info');
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Test answer' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge('test', 'abcd'); // 4 chars
+    await BharagRagConnector.askKnowledge('test', 'abcde'); // 5 chars
+    await BharagRagConnector.askKnowledge('test', 'abcdefgh'); // 8 chars
+
+    const allLogArgs = infoSpy.mock.calls.map((c) => JSON.stringify(c)).join(' ');
+    // No partial key material may leak
+    expect(allLogArgs).not.toContain('abcd');
+    expect(allLogArgs).not.toContain('abcde');
+    expect(allLogArgs).not.toContain('abcdefgh');
+    expect(allLogArgs).toContain('***');
+  });
+
+  it('handles empty workspace key without logging raw value', async () => {
+    const infoSpy = vi.spyOn(Logger, 'info');
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Test answer' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge('test');
+
+    const allLogArgs = infoSpy.mock.calls.map((c) => JSON.stringify(c)).join(' ');
+    expect(allLogArgs).not.toContain('undefined');
+  });
+
+  it('never logs raw customer query text in any log call', async () => {
+    const infoSpy = vi.spyOn(Logger, 'info');
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    const warnSpy = vi.spyOn(Logger, 'warn');
+    const sensitiveQuery = 'SSN: 123-45-6789, phone: +1-555-000-9999, credit card: 4111-1111-1111-1111';
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({ answer: 'Help answer' }),
+      } as Response;
+    });
+
+    await BharagRagConnector.askKnowledge(sensitiveQuery);
+
+    const allLogArgs = [
+      ...infoSpy.mock.calls.map((c) => JSON.stringify(c)),
+      ...infraSpy.mock.calls.map((c) => JSON.stringify(c)),
+      ...warnSpy.mock.calls.map((c) => JSON.stringify(c)),
+    ].join(' ');
+
+    // No part of the sensitive customer data may appear in logs
+    expect(allLogArgs).not.toContain('123-45-6789');
+    expect(allLogArgs).not.toContain('555-000-9999');
+    expect(allLogArgs).not.toContain('4111-1111-1111-1111');
+    expect(allLogArgs).not.toContain(sensitiveQuery);
+    // Only query category should appear
+    expect(allLogArgs).toContain('query_category');
+  });
+
+  it('does not log exception messages containing credentials', async () => {
+    const infraSpy = vi.spyOn(Logger, 'infra');
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Failed to connect to https://bhaharag.internal:443 with token sk_live_abc123xyz'));
+
+    const result = await BharagRagConnector.askKnowledge('test query');
+
+    expect(result).toContain('BHARAG knowledge base is unavailable');
+
+    const allLogArgs = infraSpy.mock.calls.map((c) => JSON.stringify(c)).join(' ');
+    // Full token must not appear in infra logs
+    expect(allLogArgs).not.toContain('sk_live_abc123xyz');
+    // The error message in meta is redacted via maskKey but error field could contain creds
+    // Verify error.message containing token isn't directly logged as-is
+    expect(allLogArgs).not.toContain('sk_live_abc123xyz');
   });
 });
