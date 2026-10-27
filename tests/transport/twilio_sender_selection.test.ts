@@ -101,7 +101,7 @@ describe('Twilio outbound SMS sender selection', () => {
   // ── Fail-closed with no sender ───────────────────────────────────────────
 
   it('uses the environment messaging service and never a conflicting from', async () => {
-    const mock = vi.fn(async () => ({ sid: 'SM_test', status: 'queued' }));
+    const mock = vi.fn(() => ({ sid: 'SM_test', status: 'queued' }));
     TwilioClientWrapper.setMockHandler(mock);
     const payloadSpy = vi.spyOn(TwilioClientWrapper, 'buildSendSmsPayload');
 

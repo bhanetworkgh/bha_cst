@@ -34,6 +34,9 @@ describe('KMG9: Farm isolation and BHARAG fallback removal', () => {
   };
 
   beforeEach(() => {
+    // Clear call history so each test only sees its own outbound requests
+    // (vi.fn.mockImplementation does not reset mock.calls between tests).
+    fetchSpy.mockClear();
     DbClient.clearAll();
     seedTestCustomers();
     adapter = CoreRegistry.getAdapter('tenant-vfarm-01') as VfarmTenantAdapter;

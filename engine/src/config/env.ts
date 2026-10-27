@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { z, ZodError } from 'zod';
+import { z, ZodError, ZodIssue } from 'zod';
 
 dotenv.config();
 
@@ -103,8 +103,8 @@ export function getEnv(): Env {
 
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
-    const missing = (result.error as ZodError).errors
-      .map((e) => `  • ${e.path.join('.')}: ${e.message}`)
+    const missing = (result.error as ZodError).issues
+      .map((e: ZodIssue) => `  • ${e.path.join('.')}: ${e.message}`)
       .join('\n');
 
     throw new Error(
@@ -135,7 +135,7 @@ export type VfarmApiEnv = z.infer<typeof vfarmApiEnvSchema>;
 export function getVfarmApiEnv(): VfarmApiEnv {
   const result = vfarmApiEnvSchema.safeParse(process.env);
   if (!result.success) {
-    const issues = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+    const issues = result.error.issues.map((e: ZodIssue) => `${e.path.join('.')}: ${e.message}`).join('; ');
     throw new Error(`bha-cst: invalid vFarm API configuration (${issues})`);
   }
   return result.data;
