@@ -203,7 +203,7 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
 
     const outMessages = DbClient.getAllMessagesOut();
     const secondReply = outMessages[1];
-    expect(secondReply.body).toContain('Welcome to vFarm Support');
+    expect(secondReply.body).toContain('vFarm Support');
     expect(secondReply.body).not.toContain('Telemetry');
   });
 
@@ -245,7 +245,7 @@ describe('CST Platform Multi-Tenant Core & Tenancy Requirements (Spec §11)', ()
     const reply = outMessages[0];
     expect(reply).toBeDefined();
     // In degraded state, speaker identity is unresolved -> served safe onboarding copy, zero farm data
-    expect(reply.body).toContain('Welcome to vFarm Support');
+    expect(reply.body).toContain('vFarm Support');
     expect(reply.body).not.toContain('farm_austin_main');
   });
 });

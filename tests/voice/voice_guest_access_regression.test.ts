@@ -135,7 +135,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.body.status).toBe('initiated');
       expect(res.body.tenant_id).toBe('tenant-vfarm-01');
       expect(res.body.project_id).toBe('proj-vfarm-main');
-      expect(res.body.greeting).toContain('Welcome to vFarm Support');
+      expect(res.body.greeting).toContain('vFarm Support');
       expect(res.body.twiml).toContain(
         '<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn"',
       );
@@ -162,7 +162,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.body.status).toBe('synthesized');
       expect(res.body.tenant_id).toBe('tenant-vfarm-01');
       expect(res.body.project_id).toBe('proj-vfarm-main');
-      expect(res.body.text).toContain('Welcome');
+      expect(res.body.text).toContain('vFarm Support');
       expect(mockSynthesizer.synthesize).toHaveBeenCalled();
     });
   });

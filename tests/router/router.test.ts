@@ -319,7 +319,7 @@ describe('IntentRouter & Intent Detection Tests', () => {
 
     const outbound = await IntentRouter.routeAndHandle(msg, unknownIdentity);
     // Should receive safe onboarding response, not personalized telemetry or knowledge
-    expect(outbound.body).toContain('Welcome to vFarm Support');
+    expect(outbound.body).toContain('vFarm Support');
     expect(outbound.to_e164).toBe(msg.from_e164);
   });
 

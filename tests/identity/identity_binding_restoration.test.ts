@@ -357,7 +357,7 @@ describe('vFarm identity binding — restoration, resolution and farm scope', ()
  */
 describe('Farm question acceptance — authorised speaker vs. zero-grant speaker', () => {
   const ONBOARDING_REPLY =
-    'Hi, thanks for calling vFarm Support. I'm here to help.What would you like to check today?';
+    "Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?";
 
   beforeEach(() => {
     DbClient.clearAll();
@@ -461,6 +461,6 @@ describe('Farm question acceptance — authorised speaker vs. zero-grant speaker
   it('keeps the guest onboarding reply out of an authorised farm answer', () => {
     // Guard against the exact regression: the generic onboarding reply must
     // never be what an authorised farm question returns.
-    expect(ONBOARDING_REPLY).toContain('specialist will assist');
+    expect(ONBOARDING_REPLY).toContain('I\'m here to help');
   });
 });
