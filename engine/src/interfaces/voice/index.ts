@@ -74,6 +74,15 @@ export interface VoiceTurnResult {
   onboarding_gate?: boolean;
 }
 
+function simpleHash(text: string): string {
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charCodeAt(i);
+    hash = ((hash << 5) - hash + char) | 0;
+  }
+  return (hash >>> 0).toString(16);
+}
+
 function escapeXml(unsafe: string): string {
   return unsafe.replace(/[<>&'"]/g, (c) => {
     switch (c) {
@@ -1316,10 +1325,22 @@ export class VoiceInterface {
         correlation_id: callSid,
       });
 
+      // Standard voice greeting — always used for the initial inbound call.
+      // A stale `project.onboarding_reply` (e.g. the old "specialist will
+      // assist you shortly" text) must NOT silently override this. Custom
+      // onboarding messages, if required, must be configured through an
+      // explicit setting rather than an accidental truthy fallback.
       const greeting =
-        project.onboarding_reply ||
         "Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?";
       const actionUrl = getVoiceTurnActionUrl(req);
+
+      Logger.info('Voice inbound greeting selected', {
+        greeting_source: 'standard',
+        greeting_version: 'v2',
+        greeting_text_hash: simpleHash(greeting),
+        project_id: binding.project_id,
+        correlation_id: callSid,
+      });
 
       // Synthesize the greeting with ElevenLabs so Jason's cloned voice is heard.
       // If synthesis fails (provider down, missing credentials), fall back to <Say>.
@@ -1335,11 +1356,32 @@ export class VoiceInterface {
           model_id: project.elevenlabs_model_id,
         });
         greetingAudioId = synthResult.audio_id;
+        Logger.info('Voice inbound greeting synthesized', {
+          greeting_source: 'standard',
+          audio_id: greetingAudioId,
+          synthesis_success: true,
+          correlation_id: callSid,
+        });
       } catch (err: any) {
         Logger.warn(`Voice greeting synthesis failed: ${err.message}`);
+        Logger.info('Voice inbound greeting fallback', {
+          greeting_source: 'standard',
+          audio_id: null,
+          synthesis_success: false,
+          response_type: 'Say',
+          correlation_id: callSid,
+        });
       }
 
       const twiml = buildSayOrPlayTwiml(greeting, greetingAudioId, req, actionUrl);
+      const responseType = greetingAudioId ? 'Play' : 'Say';
+      Logger.info('Voice inbound greeting response', {
+        greeting_source: 'standard',
+        greeting_version: 'v2',
+        response_type: responseType,
+        audio_id: greetingAudioId || null,
+        correlation_id: callSid,
+      });
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);

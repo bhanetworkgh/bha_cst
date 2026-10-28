@@ -284,16 +284,36 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
   // data instead of per-unit readings even when routed to vFarm.
   // ═══════════════════════════════════════════════════════════════════
   describe('listLatestReadings endpoint', () => {
-    it('VfarmLiveClient.listLatestReadings calls GET /api/v1/readings/latest?farm_id=... and returns readings', async () => {
+    it('VfarmLiveClient.listLatestReadings lists devices then fetches per-device readings', async () => {
       const { VfarmLiveClient } = await import('../../engine/src/adapters/vfarm/live_client.js');
-      const fetchSpy = vi.fn().mockImplementation(async () => {
-        return {
-          ok: true,
-          json: async () => ([
-            { sensor_id: 'unit_bay_04', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } } },
-            { sensor_id: 'unit_bay_05', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } } },
-          ]),
-        } as Response;
+      const fetchSpy = vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/v1/devices?farm_id=')) {
+          return {
+            ok: true,
+            json: async () => ({
+              devices: [
+                { id: 'unit_bay_04' },
+                { id: 'unit_bay_05' },
+              ],
+              total: 2,
+              online_count: 2,
+              offline_count: 0,
+            }),
+          } as Response;
+        }
+        if (url.includes('/api/v1/readings/latest?sensor_id=unit_bay_04')) {
+          return {
+            ok: true,
+            json: async () => ({ sensor_id: 'unit_bay_04', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } } }),
+          } as Response;
+        }
+        if (url.includes('/api/v1/readings/latest?sensor_id=unit_bay_05')) {
+          return {
+            ok: true,
+            json: async () => ({ sensor_id: 'unit_bay_05', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } } }),
+          } as Response;
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
       });
 
       const client = new VfarmLiveClient({
@@ -304,12 +324,23 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
 
       const result = await client.listLatestReadings('farm_austin_main', 100);
 
+      // First call: list devices for the farm
       expect(fetchSpy).toHaveBeenCalledWith(
-        'https://vfarm.bhanetwork.org/api/v1/readings/latest?farm_id=farm_austin_main&limit=100',
+        'https://vfarm.bhanetwork.org/api/v1/devices?farm_id=farm_austin_main&limit=100',
+        expect.anything()
+      );
+      // Then: fetch readings per device
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://vfarm.bhanetwork.org/api/v1/readings/latest?sensor_id=unit_bay_04',
+        expect.anything()
+      );
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://vfarm.bhanetwork.org/api/v1/readings/latest?sensor_id=unit_bay_05',
         expect.anything()
       );
       expect(result).toHaveLength(2);
       expect(result[0].sensor_id).toBe('unit_bay_04');
+      expect(result[1].sensor_id).toBe('unit_bay_05');
     });
 
     it('getUnitStatus with farmId but no unitId returns farm-level aggregate, NOT per-unit readings', async () => {
