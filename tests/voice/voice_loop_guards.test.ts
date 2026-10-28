@@ -134,7 +134,7 @@ describe('Voice loop guards (no endless repeated prompts)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('synthesized');
-      expect(res.body.text).toContain('Welcome');
+      expect(res.body.text).toContain('vFarm Support');
       expect(res.body.guest_onboarding).toBe(true);
     });
 

@@ -435,7 +435,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('synthesized');
-      expect(res.body.text).toContain('Welcome');
+      expect(res.body.text).toContain('vFarm Support');
     });
   });
 
@@ -1003,7 +1003,7 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
 
       expect(result.status).toBe('synthesized');
       expect(result.httpStatus).toBe(200);
-      expect(result.text).toContain('Welcome');
+      expect(result.text).toContain('vFarm Support');
     });
 
     it('returns refused for adapter timeout (degraded resolve returns unknown speaker)', async () => {

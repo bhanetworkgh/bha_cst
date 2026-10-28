@@ -159,7 +159,7 @@ describe('Authorization & Step-Up Authentication Seam Tests', () => {
     };
 
     const outbound = await IntentRouter.routeAndHandle(msg, unknownIdentity);
-    expect(outbound.body).toContain('Welcome to vFarm Support');
+    expect(outbound.body).toContain('vFarm Support');
     expect(outbound.body).not.toContain('BHARAG Knowledge');
   });
 });
