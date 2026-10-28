@@ -13,7 +13,12 @@ export PGPORT="5432"
 export PGDATABASE="bha_cst_1sh0"
 export PGUSER="bha_cst_user"
 export PGSSLMODE="require"
-export PGPASSWORD="V2GGO06e2JgVejLiEJk20vafn3dPWy3U"
+
+if [[ -z "${PGPASSWORD:-}" ]]; then
+  read -rs -p "Enter PostgreSQL password (or set PGPASSWORD env var): " PGPASSWORD
+  echo ""
+  export PGPASSWORD
+fi
 
 for tool in pg_dump pg_restore; do
   if ! command -v "$tool" >/dev/null 2>&1; then

@@ -5,6 +5,7 @@ import pg from 'pg';
 import { Logger } from '../config/logger.js';
 import { shouldAutoCreatePool } from '../config/runtime.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
+import type { EscalationRecord } from '../escalation/types.js';
 import { CoreRegistry } from '../core/registry.js';
 import { deliveryStatusRank } from '../contracts/events.js';
 import type { Project, ServiceNumberBinding, Tenant } from '../core/types.js';
@@ -233,6 +234,7 @@ export class DbClient {
    * Accessed by the consent service for fast prompt lookups during YES/START handling.
    */
   static smsConsentPromptsStore: Map<string, any> = new Map();
+  private static escalationsStore: Map<string, EscalationRecord> = new Map();
   private static pool: pg.Pool | null = null;
 
   static getPool(): pg.Pool | null {
@@ -314,6 +316,7 @@ export class DbClient {
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
     this.smsConsentPromptsStore.clear();
+    this.escalationsStore.clear();
     // Publish outcomes are test-visible state: leaving them behind lets one
     // test file's publishes surface in the next file's dead-letter view.
     this.dashboardOutcomeStore.clear();
@@ -2215,6 +2218,180 @@ export class DbClient {
       }
     }
     return [...this.alertAuditStore].slice(-limit).reverse();
+  }
+
+  // ── Escalation Records (mirrors `escalations` table in Postgres) ─────────
+  /**
+   * Create a durable escalation record.
+   * In-memory mode (tests): stores in escalationsStore.
+   * Postgres mode: inserts into escalations table.
+   */
+  static async createEscalationRecord(params: {
+    caller_phone: string;
+    tenant_id: string;
+    project_id: string;
+    conversation_id?: string;
+    correlation_id: string;
+    caller_email?: string;
+    reason?: string;
+    transcript?: string[];
+    status?: 'pending' | 'notified' | 'failed';
+  }): Promise<string> {
+    const id = `esc_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const record: EscalationRecord = {
+      id,
+      caller_phone: params.caller_phone,
+      tenant_id: params.tenant_id,
+      project_id: params.project_id,
+      conversation_id: params.conversation_id || undefined,
+      correlation_id: params.correlation_id,
+      caller_email: params.caller_email || undefined,
+      reason: params.reason || undefined,
+      transcript: params.transcript || undefined,
+      slack_notified: false,
+      slack_notified_at: undefined,
+      slack_error: undefined,
+      created_at: now,
+      status: params.status || 'pending',
+    };
+
+    this.escalationsStore.set(id, record);
+
+    const pool = this.getPool();
+    if (!pool) {
+      Logger.info(`DbClient.createEscalationRecord (in-memory): id=${id} caller=${maskPhone(params.caller_phone)}`);
+      return id;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO escalations
+          (id, caller_phone, tenant_id, project_id, conversation_id, correlation_id,
+           caller_email, reason, transcript, slack_notified, slack_notified_at,
+           slack_error, created_at, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          id,
+          params.caller_phone,
+          params.tenant_id,
+          params.project_id,
+          params.conversation_id || null,
+          params.correlation_id,
+          params.caller_email || null,
+          params.reason || null,
+          params.transcript ? JSON.stringify(params.transcript) : null,
+          false,
+          null,
+          null,
+          now,
+          record.status,
+        ],
+      );
+      return id;
+    } catch (err: any) {
+      Logger.error(`DbClient.createEscalationRecord Postgres Error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Update the Slack notification status on an escalation record.
+   */
+  static async updateEscalationSlackStatus(
+    escalationId: string,
+    notified: boolean,
+    error?: string,
+  ): Promise<void> {
+    const record = this.escalationsStore.get(escalationId);
+    if (record) {
+      record.slack_notified = notified;
+      record.slack_notified_at = notified ? new Date().toISOString() : undefined;
+      record.slack_error = error || undefined;
+      // Only mark 'failed' when there's an actual error. When Slack is simply
+      // not configured (notified === false, no error), the escalation remains
+      // 'pending' — the record exists, notification hasn't been sent yet.
+      if (notified) {
+        record.status = 'notified';
+      } else if (error) {
+        record.status = 'failed';
+      }
+      this.escalationsStore.set(escalationId, record);
+    }
+
+    const pool = this.getPool();
+    if (!pool) return;
+    try {
+      await pool.query(
+        `UPDATE escalations
+          SET slack_notified = $1, slack_notified_at = $2, slack_error = $3, status = $4
+          WHERE id = $5`,
+        [notified, notified ? new Date().toISOString() : null, error || null, notified ? 'notified' : error ? 'failed' : 'pending', escalationId],
+      );
+    } catch (err: any) {
+      Logger.error(`DbClient.updateEscalationSlackStatus Postgres Error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Update the caller email on an escalation record.
+   */
+  static async updateEscalationEmail(escalationId: string, email: string): Promise<void> {
+    const record = this.escalationsStore.get(escalationId);
+    if (record) {
+      record.caller_email = email;
+      this.escalationsStore.set(escalationId, record);
+    }
+
+    const pool = this.getPool();
+    if (!pool) return;
+    try {
+      await pool.query(`UPDATE escalations SET caller_email = $1 WHERE id = $2`, [email, escalationId]);
+    } catch (err: any) {
+      Logger.error(`DbClient.updateEscalationEmail Postgres Error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Get an escalation record by ID.
+   */
+  static async getEscalationRecord(escalationId: string): Promise<EscalationRecord | null> {
+    const record = this.escalationsStore.get(escalationId);
+    if (record) return { ...record };
+
+    const pool = this.getPool();
+    if (!pool) return null;
+    try {
+      const res = await pool.query(
+        `SELECT id, caller_phone, tenant_id, project_id, conversation_id, correlation_id,
+                caller_email, reason, transcript, slack_notified, slack_notified_at,
+                slack_error, created_at, status
+         FROM escalations WHERE id = $1`,
+        [escalationId],
+      );
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0];
+      return {
+        id: row.id,
+        caller_phone: row.caller_phone,
+        tenant_id: row.tenant_id,
+        project_id: row.project_id,
+        conversation_id: row.conversation_id,
+        correlation_id: row.correlation_id,
+        caller_email: row.caller_email,
+        reason: row.reason,
+        transcript: typeof row.transcript === 'string' ? JSON.parse(row.transcript) : row.transcript,
+        slack_notified: row.slack_notified,
+        slack_notified_at: row.slack_notified_at ? new Date(row.slack_notified_at).toISOString() : undefined,
+        slack_error: row.slack_error || undefined,
+        created_at: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+        status: row.status,
+      };
+    } catch (err: any) {
+      Logger.error(`DbClient.getEscalationRecord Postgres Error: ${err.message}`);
+      throw err;
+    }
   }
 
   // ── Voice Deliveries Ledger & Health Tracking ───────────────────────────────

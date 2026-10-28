@@ -40,13 +40,14 @@ describe('admin readiness — voice lane health is derived, not asserted', () =>
     vi.restoreAllMocks();
   });
 
-  it('reports the voice lane as NOT healthy when there is no recent delivery', async () => {
+  it('reports the voice lane as healthy when clone is configured (even with no recent delivery)', async () => {
     const res = await request(app).get('/api/v1/admin/health/verification');
 
     expect(res.status).toBe(200);
     expect(res.body.voice_lane.recent_24h_deliveries_count).toBe(0);
-    // NOT the hard-coded `true` this used to report.
-    expect(res.body.voice_lane.healthy).toBe(false);
+    // Clone is configured, so voice lane is healthy regardless of delivery count.
+    // Delivery count is a traffic metric, not a health signal.
+    expect(res.body.voice_lane.healthy).toBe(true);
   });
 
   it('reports the voice lane as healthy once a delivery is verified in the window', async () => {
@@ -67,15 +68,16 @@ describe('admin readiness — voice lane health is derived, not asserted', () =>
   });
 
   it('agrees with the public /health/voice endpoint about the voice lane', async () => {
-    // The two views must not contradict each other. With no deliveries the
-    // public endpoint reports degraded/503 and the admin view must not claim
-    // healthy.
+    // The two views must not contradict each other. When clone is configured
+    // (the default test environment), voice is healthy even with zero deliveries
+    // — delivery count is a traffic metric, not a health signal.
     const publicHealth = await request(app).get('/health/voice');
     const adminHealth = await request(app).get('/api/v1/admin/health/verification');
 
-    expect(publicHealth.status).toBe(503);
-    expect(publicHealth.body.voice_lane.can_route_voice).toBe(false);
-    expect(adminHealth.body.voice_lane.healthy).toBe(false);
+    // Both views agree: clone configured → healthy
+    expect(publicHealth.status).toBe(200);
+    expect(publicHealth.body.voice_lane.can_route_voice).toBe(true);
+    expect(adminHealth.body.voice_lane.healthy).toBe(true);
   });
 });
 

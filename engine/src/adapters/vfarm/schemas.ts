@@ -113,7 +113,7 @@ export const configPartSchema = z.object({
   length_mm: z.number().int(),
   width_mm: z.number().int(),
   height_mm: z.number().int(),
-  attributes: z.record(z.unknown()),
+  attributes: z.record(z.string(), z.unknown()),
   quantity: z.number().int(),
 });
 
@@ -198,8 +198,8 @@ export const layoutZoneSchema = z.object({
   cabinet_serial: z.string().nullable().optional(),
   sort_order: z.number().int().nullable().optional(),
   is_active: z.boolean().optional(),
-  config: z.record(z.unknown()).nullable().optional(),
-  locations: z.array(z.record(z.unknown())).optional(),
+  config: z.record(z.string(), z.unknown()).nullable().optional(),
+  locations: z.array(z.record(z.string(), z.unknown())).optional(),
 }).passthrough();
 export type LayoutZone = z.infer<typeof layoutZoneSchema>;
 
@@ -239,14 +239,14 @@ export const deviceResponseSchema = z.object({
   health_score: z.number().nullable().optional(),
   last_seen_at: z.string().nullable().optional(),
   last_reading_at: z.string().nullable().optional(),
-  current_state: z.record(z.unknown()).nullable().optional(),
+  current_state: z.record(z.string(), z.unknown()).nullable().optional(),
   capabilities: z.array(z.unknown()).nullable().optional(),
   firmware_version: z.string().nullable().optional(),
   hardware_revision: z.string().nullable().optional(),
   mac_address: z.string().nullable().optional(),
   ip_address: z.string().nullable().optional(),
-  config: z.record(z.unknown()).nullable().optional(),
-  calibration_data: z.record(z.unknown()).nullable().optional(),
+  config: z.record(z.string(), z.unknown()).nullable().optional(),
+  calibration_data: z.record(z.string(), z.unknown()).nullable().optional(),
   tags: z.array(z.string()).nullable().optional(),
   notes: z.string().nullable().optional(),
   installed_at: z.string().nullable().optional(),
@@ -299,7 +299,7 @@ export const latestReadingResponseSchema = z.object({
   //   temperature, humidity, co, ph, soil_moisture, relay, voltage, wifi_rssi.
   // Jegan's proposal named `co_ppm`, `ph`, `soil_moisture` — the actual key
   // for CO is `co` (not `co_ppm`). `co_ppm` is NOT present.
-  values: z.record(z.object({
+  values: z.record(z.string(), z.object({
     unit: z.string().nullable().optional(),
     value: z.unknown().optional(),
     status: z.string().nullable().optional(),

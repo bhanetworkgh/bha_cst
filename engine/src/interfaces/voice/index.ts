@@ -57,6 +57,7 @@ export interface VoiceTurnResult {
   status: 'synthesized' | 'refused' | 'dropped' | 'failed';
   text?: string;
   audioBase64?: string;
+  audio_id?: string;
   mimeType?: string;
   voice_id?: string;
   reason?: string;
@@ -84,6 +85,79 @@ function escapeXml(unsafe: string): string {
       default: return c;
     }
   });
+}
+
+/**
+ * Build a `<Say>` or `<Play>` TwiML element for speaking text.
+ *
+ * When `audioId` is provided, the synthesized ElevenLabs audio (Jason's cloned
+ * voice) is played back via Twilio `<Play>`. When not (no voice pointer
+ * configured, synthesis unavailable, or `<Play>` URL not configured), falls
+ * back to `<Say>` (Twilio's own TTS voice).
+ *
+ * The audio URL is derived from `VOICE_AUDIO_BASE_URL` env var when set, or
+ * the request's own host otherwise. Without a base URL, `<Play>` cannot work
+ * (Twilio needs a fetchable URL) so `<Say>` is used as the safe fallback.
+ */
+function buildSayOrPlay(
+  text: string,
+  audioId: string | undefined,
+  req: Request | undefined,
+): { verb: string; content: string } {
+  const mimeType = 'audio/mpeg';
+  if (audioId) {
+    // Build a fetchable URL for the synthesized audio.
+    // Prefer VOICE_AUDIO_BASE_URL when configured (e.g. a media server /
+    // CDN). Otherwise derive from the request host so local/dev works.
+    let baseUrl = process.env.VOICE_AUDIO_BASE_URL?.trim();
+    if (!baseUrl && req) {
+      const forwardedHost = req.headers['x-forwarded-host'] as string | undefined;
+      const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+      if (forwardedHost) {
+        baseUrl = `${proto}://${forwardedHost}`;
+      } else {
+        const host = req.get('host');
+        if (host) baseUrl = `${proto}://${host}`;
+      }
+    }
+    if (baseUrl) {
+      const cleanBase = baseUrl.replace(/\/+$/, '');
+      return {
+        verb: 'Play',
+        content: `${cleanBase}/api/v1/voice/audio/${encodeURIComponent(audioId)}`,
+      };
+    }
+  }
+  return { verb: 'Say', content: escapeXml(text) };
+}
+
+function buildSayOrPlayTwiml(
+  text: string,
+  audioId: string | undefined,
+  req: Request | undefined,
+  actionUrl?: string,
+  counters?: { guest?: number; empty?: number },
+  isFinal?: boolean,
+): string {
+  const { verb, content } = buildSayOrPlay(text, audioId, req);
+  const isPlay = verb === 'Play';
+
+  if (isFinal) {
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <${verb}>${content}</${verb}>\n  <Hangup/>\n</Response>`;
+  }
+
+  const retryParams: string[] = [];
+  if (counters?.guest) retryParams.push(`g=${counters.guest}`);
+  if (counters?.empty) retryParams.push(`empty=${counters.empty}`);
+  const retryUrl = actionUrl
+    ? `${actionUrl}${retryParams.length ? '?' + retryParams.join('&amp;') : ''}`
+    : actionUrl;
+
+  if (retryUrl) {
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${retryUrl}" method="POST">\n    <${verb}>${content}</${verb}>\n  </Gather>\n  <${verb}>Are you still there? Please let me know how I can help, or stay on the line.</${verb}>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${retryUrl}" method="POST"/>\n</Response>`;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <${verb}>${content}</${verb}>\n</Response>`;
 }
 
 function getVoiceTurnActionUrl(req?: Request): string {
@@ -127,6 +201,54 @@ const GUEST_GOODBYE_SPEECH =
   "I'm sorry, I still can't help without a registered phone number. Please contact our onboarding team. Goodbye.";
 const EMPTY_SPEECH_GOODBYE =
   "I'm still not hearing anything, so I'll end the call now. Thank you for calling vFarm Support. Goodbye.";
+
+// ── Synthesized audio cache ────────────────────────────────────────────────
+// ElevenLabs synthesizes audio (base64) but Twilio's `<Say>` verb uses Twilio's
+// own TTS voice, so Jason's cloned voice is never heard. To play the
+// synthesized audio back via Twilio `<Play>`, we cache it in memory and serve
+// it through a dedicated endpoint. The cache is bounded (TTL + max entries)
+// so it cannot grow without bound.
+interface CachedAudio {
+  buffer: Buffer;
+  mimeType: string;
+  expiresAt: number;
+}
+
+const AUDIO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const AUDIO_CACHE_MAX_ENTRIES = 200;
+const audioCache = new Map<string, CachedAudio>();
+
+function cacheSynthesizedAudio(audioBase64: string, mimeType: string): string {
+  // Evict oldest entries if at capacity
+  if (audioCache.size >= AUDIO_CACHE_MAX_ENTRIES) {
+    const firstKey = audioCache.keys().next().value;
+    if (firstKey !== undefined) audioCache.delete(firstKey);
+  }
+  const id = randomUUID();
+  audioCache.set(id, {
+    buffer: Buffer.from(audioBase64, 'base64'),
+    mimeType,
+    expiresAt: Date.now() + AUDIO_CACHE_TTL_MS,
+  });
+  return id;
+}
+
+function getCachedAudio(id: string): { buffer: Buffer; mimeType: string } | null {
+  const entry = audioCache.get(id);
+  if (!entry || entry.expiresAt < Date.now()) {
+    if (entry) audioCache.delete(id);
+    return null;
+  }
+  return { buffer: entry.buffer, mimeType: entry.mimeType };
+}
+
+// Evict expired entries periodically (best effort)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of audioCache.entries()) {
+    if (entry.expiresAt < now) audioCache.delete(id);
+  }
+}, 60_000).unref();
 const SERVICE_UNAVAILABLE_SPEECH =
   "I'm having trouble verifying your account right now. Please try your call again in a few minutes. Goodbye.";
 
@@ -681,6 +803,7 @@ export class VoiceInterface {
       voice_id: string;
       character_count: number;
       audio_bytes: number;
+      audio_id: string;
     };
 
     try {
@@ -817,6 +940,7 @@ export class VoiceInterface {
       httpStatus: 200,
       guest_onboarding: engineResponse.status === 'onboarding',
       onboarding_gate: engineResponse.metadata?.onboarding_gate === true,
+      audio_id: synthResult.audio_id,
     };
   }
 
@@ -829,6 +953,7 @@ export class VoiceInterface {
     voice_id: string;
     character_count: number;
     audio_bytes: number;
+    audio_id: string;
   }> {
     const project = CoreRegistry.getProject(req.project_id);
     const voiceId = req.voice_id || project?.elevenlabs_voice_id;
@@ -899,6 +1024,7 @@ export class VoiceInterface {
         voice_id: voiceId,
         character_count: req.text.length,
         audio_bytes: audioBuffer.length,
+        audio_id: cacheSynthesizedAudio(result.audioBase64, result.mimeType || DEFAULT_MIME_TYPE),
       };
     } catch (err: any) {
       await DbClient.recordVoiceDelivery({
@@ -1132,7 +1258,12 @@ export class VoiceInterface {
 
         const actionUrl = getVoiceTurnActionUrl(req);
         if (turnResult.status === 'synthesized') {
-          const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(turnResult.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
+          const twiml = buildSayOrPlayTwiml(
+            turnResult.text || '',
+            turnResult.audio_id,
+            req,
+            actionUrl,
+          );
           res.setHeader('Content-Type', 'text/xml; charset=utf-8');
           res.status(200).send(twiml);
         } else {
@@ -1189,7 +1320,26 @@ export class VoiceInterface {
         project.onboarding_reply ||
         "Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?";
       const actionUrl = getVoiceTurnActionUrl(req);
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(greeting)}</Say>\n  </Gather>\n  <Say>I'm here when you're ready. What would you like help with?</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n  <Say>Thank you for calling. Goodbye.</Say>\n  <Hangup/>\n</Response>`;
+
+      // Synthesize the greeting with ElevenLabs so Jason's cloned voice is heard.
+      // If synthesis fails (provider down, missing credentials), fall back to <Say>.
+      let greetingAudioId: string | undefined;
+      try {
+        const synthResult = await VoiceInterface.synthesizeSpokenAudio({
+          tenant_id: binding.tenant_id,
+          project_id: binding.project_id,
+          speaker_ref: callerNumber,
+          text: greeting,
+          correlation_id: callSid,
+          voice_id: project.elevenlabs_voice_id,
+          model_id: project.elevenlabs_model_id,
+        });
+        greetingAudioId = synthResult.audio_id;
+      } catch (err: any) {
+        Logger.warn(`Voice greeting synthesis failed: ${err.message}`);
+      }
+
+      const twiml = buildSayOrPlayTwiml(greeting, greetingAudioId, req, actionUrl);
 
       res.setHeader('X-Tenant-Id', binding.tenant_id);
       res.setHeader('X-Project-Id', binding.project_id);
@@ -1307,7 +1457,13 @@ export class VoiceInterface {
             twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${guestUrl}" method="POST">\n    <Say>${escapeXml(spoken)}</Say>\n  </Gather>\n  <Say>Thank you for calling. Goodbye.</Say>\n</Response>`;
           }
         } else {
-          twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST">\n    <Say>${escapeXml(result.text || '')}</Say>\n  </Gather>\n  <Say>Are you still there? Please let me know how I can help, or stay on the line.</Say>\n  <Gather input="speech" speechTimeout="auto" timeout="5" action="${actionUrl}" method="POST"/>\n</Response>`;
+          twiml = buildSayOrPlayTwiml(
+            result.text || '',
+            result.audio_id,
+            req,
+            actionUrl,
+            { guest: counters.guest, empty: counters.empty },
+          );
         }
         res.setHeader('Content-Type', 'text/xml; charset=utf-8');
         res.status(200).send(twiml);
@@ -1554,4 +1710,19 @@ voiceInterfaceRouter.post('/api/v1/voice/synthesize', requireProgrammaticApiKey,
     Logger.error(`Voice synthesize API error: ${err.message}`);
     res.status(500).json({ error: 'VOICE_SYNTHESIS_FAILED', message: err.message });
   }
+});
+
+// 6. Serve cached synthesized audio for Twilio `<Play>` playback
+//    ElevenLabs synthesizes audio but Twilio `<Say>` uses Twilio's own TTS
+//    voice — Jason's cloned voice is never heard. This endpoint serves the
+//    cached synthesized audio so the voice turn TwiML can use `<Play>`.
+voiceInterfaceRouter.get('/api/v1/voice/audio/:id', (req: Request, res: Response) => {
+  const audio = getCachedAudio(req.params.id);
+  if (!audio) {
+    res.status(404).json({ error: 'AUDIO_NOT_FOUND', message: 'Synthesized audio not found or expired' });
+    return;
+  }
+  res.setHeader('Content-Type', audio.mimeType);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.status(200).send(audio.buffer);
 });

@@ -1,0 +1,170 @@
+;
+; Archive created at 2026-10-27 19:00:56 PKT
+;     dbname: bha_cst_1sh0
+;     TOC Entries: 160
+;     Compression: gzip
+;     Dump Version: 1.15-0
+;     Format: CUSTOM
+;     Integer: 4 bytes
+;     Offset: 8 bytes
+;     Dumped from database version: 16.15 (Debian 16.15-1.pgdg12+2)
+;     Dumped by pg_dump version: 16.14 (Homebrew)
+;
+;
+; Selected TOC Entries:
+;
+5; 2615 2200 SCHEMA - public bha_cst_user
+251; 1255 16740 FUNCTION public enforce_sms_consent_audit_append_only() bha_cst_user
+247; 1255 16556 FUNCTION public set_messages_out_updated_at() bha_cst_user
+248; 1255 16662 FUNCTION public set_projects_updated_at() bha_cst_user
+250; 1255 16732 FUNCTION public set_sms_consents_updated_at() bha_cst_user
+249; 1255 16681 FUNCTION public update_admin_users_updated_at() bha_cst_user
+231; 1259 16683 TABLE public admin_sessions bha_cst_user
+230; 1259 16665 TABLE public admin_users bha_cst_user
+229; 1259 16664 SEQUENCE public admin_users_id_seq bha_cst_user
+3650; 0 0 SEQUENCE OWNED BY public admin_users_id_seq bha_cst_user
+225; 1259 16558 TABLE public alert_audit_log bha_cst_user
+217; 1259 16427 TABLE public conversations bha_cst_user
+221; 1259 16507 TABLE public customers bha_cst_user
+235; 1259 16757 TABLE public dashboard_publish_outcomes bha_cst_user
+218; 1259 16450 TABLE public messages bha_cst_user
+219; 1259 16471 TABLE public messages_in bha_cst_user
+220; 1259 16487 TABLE public messages_out bha_cst_user
+3651; 0 0 COMMENT public COLUMN messages_out.turn_id bha_cst_user
+3652; 0 0 COMMENT public COLUMN messages_out.next_retry_at bha_cst_user
+223; 1259 16534 TABLE public organizations bha_cst_user
+227; 1259 16598 TABLE public projects bha_cst_user
+215; 1259 16407 TABLE public schema_migrations bha_cst_user
+222; 1259 16518 TABLE public security_ledger bha_cst_user
+228; 1259 16623 TABLE public service_number_bindings bha_cst_user
+233; 1259 16719 TABLE public sms_consent_audit bha_cst_user
+234; 1259 16742 TABLE public sms_consent_prompts bha_cst_user
+232; 1259 16701 TABLE public sms_consents bha_cst_user
+216; 1259 16415 TABLE public systems bha_cst_user
+226; 1259 16578 TABLE public voice_deliveries bha_cst_user
+224; 1259 16541 TABLE public workspaces bha_cst_user
+3337; 2604 16668 DEFAULT public admin_users id bha_cst_user
+3638; 0 16683 TABLE DATA public admin_sessions bha_cst_user
+3637; 0 16665 TABLE DATA public admin_users bha_cst_user
+3632; 0 16558 TABLE DATA public alert_audit_log bha_cst_user
+3624; 0 16427 TABLE DATA public conversations bha_cst_user
+3628; 0 16507 TABLE DATA public customers bha_cst_user
+3642; 0 16757 TABLE DATA public dashboard_publish_outcomes bha_cst_user
+3625; 0 16450 TABLE DATA public messages bha_cst_user
+3626; 0 16471 TABLE DATA public messages_in bha_cst_user
+3627; 0 16487 TABLE DATA public messages_out bha_cst_user
+3630; 0 16534 TABLE DATA public organizations bha_cst_user
+3634; 0 16598 TABLE DATA public projects bha_cst_user
+3622; 0 16407 TABLE DATA public schema_migrations bha_cst_user
+3629; 0 16518 TABLE DATA public security_ledger bha_cst_user
+3635; 0 16623 TABLE DATA public service_number_bindings bha_cst_user
+3640; 0 16719 TABLE DATA public sms_consent_audit bha_cst_user
+3641; 0 16742 TABLE DATA public sms_consent_prompts bha_cst_user
+3639; 0 16701 TABLE DATA public sms_consents bha_cst_user
+3623; 0 16415 TABLE DATA public systems bha_cst_user
+3633; 0 16578 TABLE DATA public voice_deliveries bha_cst_user
+3631; 0 16541 TABLE DATA public workspaces bha_cst_user
+3653; 0 0 SEQUENCE SET public admin_users_id_seq bha_cst_user
+3428; 2606 16688 CONSTRAINT public admin_sessions admin_sessions_pkey bha_cst_user
+3423; 2606 16679 CONSTRAINT public admin_users admin_users_email_key bha_cst_user
+3425; 2606 16677 CONSTRAINT public admin_users admin_users_pkey bha_cst_user
+3402; 2606 16567 CONSTRAINT public alert_audit_log alert_audit_log_pkey bha_cst_user
+3363; 2606 16438 CONSTRAINT public conversations conversations_pkey bha_cst_user
+3385; 2606 16512 CONSTRAINT public customers customers_pkey bha_cst_user
+3453; 2606 16765 CONSTRAINT public dashboard_publish_outcomes dashboard_publish_outcomes_pkey bha_cst_user
+3376; 2606 16480 CONSTRAINT public messages_in messages_in_pkey bha_cst_user
+3383; 2606 16496 CONSTRAINT public messages_out messages_out_pkey bha_cst_user
+3372; 2606 16459 CONSTRAINT public messages messages_pkey bha_cst_user
+3398; 2606 16540 CONSTRAINT public organizations organizations_pkey bha_cst_user
+3417; 2606 16610 CONSTRAINT public projects projects_pkey bha_cst_user
+3357; 2606 16414 CONSTRAINT public schema_migrations schema_migrations_pkey bha_cst_user
+3396; 2606 16527 CONSTRAINT public security_ledger security_ledger_pkey bha_cst_user
+3421; 2606 16631 CONSTRAINT public service_number_bindings service_number_bindings_pkey bha_cst_user
+3444; 2606 16727 CONSTRAINT public sms_consent_audit sms_consent_audit_pkey bha_cst_user
+3450; 2606 16750 CONSTRAINT public sms_consent_prompts sms_consent_prompts_pkey bha_cst_user
+3436; 2606 16713 CONSTRAINT public sms_consents sms_consents_pkey bha_cst_user
+3359; 2606 16424 CONSTRAINT public systems systems_pkey bha_cst_user
+3361; 2606 16426 CONSTRAINT public systems systems_tenant_id_key bha_cst_user
+3368; 2606 16650 CONSTRAINT public conversations unq_conversations_tenant_project_customer bha_cst_user
+3393; 2606 16698 CONSTRAINT public customers unq_customers_tenant_project_phone bha_cst_user
+3413; 2606 16589 CONSTRAINT public voice_deliveries voice_deliveries_pkey bha_cst_user
+3400; 2606 16546 CONSTRAINT public workspaces workspaces_pkey bha_cst_user
+3429; 1259 16694 INDEX public idx_admin_sessions_admin bha_cst_user
+3430; 1259 16695 INDEX public idx_admin_sessions_expires bha_cst_user
+3426; 1259 16680 INDEX public idx_admin_users_email bha_cst_user
+3403; 1259 16574 INDEX public idx_alert_audit_expires bha_cst_user
+3404; 1259 16576 INDEX public idx_alert_audit_org bha_cst_user
+3405; 1259 16575 INDEX public idx_alert_audit_outbound bha_cst_user
+3406; 1259 16655 INDEX public idx_alert_audit_project bha_cst_user
+3407; 1259 16573 INDEX public idx_alert_audit_tenant bha_cst_user
+3364; 1259 16553 INDEX public idx_conversations_org_ws bha_cst_user
+3365; 1259 16449 INDEX public idx_conversations_tenant_customer bha_cst_user
+3366; 1259 16651 INDEX public idx_conversations_tenant_project bha_cst_user
+3386; 1259 16552 INDEX public idx_customers_org_ws_phone bha_cst_user
+3387; 1259 16529 INDEX public idx_customers_phone bha_cst_user
+3388; 1259 16530 INDEX public idx_customers_tenant_phone bha_cst_user
+3389; 1259 16660 INDEX public idx_customers_tenant_project_phone bha_cst_user
+3390; 1259 16661 INDEX public idx_customers_ttl bha_cst_user
+3454; 1259 16767 INDEX public idx_dashboard_publish_outcomes_created bha_cst_user
+3455; 1259 16766 INDEX public idx_dashboard_publish_outcomes_status bha_cst_user
+3373; 1259 16486 INDEX public idx_messages_in_tenant bha_cst_user
+3374; 1259 16653 INDEX public idx_messages_in_tenant_project bha_cst_user
+3377; 1259 16700 INDEX public idx_messages_out_due bha_cst_user
+3378; 1259 16555 INDEX public idx_messages_out_provider_sid bha_cst_user
+3379; 1259 16502 INDEX public idx_messages_out_tenant bha_cst_user
+3380; 1259 16654 INDEX public idx_messages_out_tenant_project bha_cst_user
+3381; 1259 16699 INDEX public idx_messages_out_turn_id bha_cst_user
+3369; 1259 16470 INDEX public idx_messages_tenant bha_cst_user
+3370; 1259 16652 INDEX public idx_messages_tenant_project bha_cst_user
+3414; 1259 16622 INDEX public idx_projects_status bha_cst_user
+3415; 1259 16621 INDEX public idx_projects_tenant bha_cst_user
+3394; 1259 16528 INDEX public idx_security_ledger_tenant bha_cst_user
+3439; 1259 16728 INDEX public idx_sms_consent_audit_consent bha_cst_user
+3440; 1259 16731 INDEX public idx_sms_consent_audit_correlation bha_cst_user
+3441; 1259 16729 INDEX public idx_sms_consent_audit_phone bha_cst_user
+3442; 1259 16730 INDEX public idx_sms_consent_audit_tenant bha_cst_user
+3445; 1259 16753 INDEX public idx_sms_consent_prompts_active_lookup bha_cst_user
+3446; 1259 16752 INDEX public idx_sms_consent_prompts_consent bha_cst_user
+3447; 1259 16754 INDEX public idx_sms_consent_prompts_phone bha_cst_user
+3448; 1259 16755 INDEX public idx_sms_consent_prompts_tenant bha_cst_user
+3431; 1259 16718 INDEX public idx_sms_consents_opted_out bha_cst_user
+3432; 1259 16715 INDEX public idx_sms_consents_phone bha_cst_user
+3433; 1259 16717 INDEX public idx_sms_consents_status bha_cst_user
+3434; 1259 16716 INDEX public idx_sms_consents_tenant bha_cst_user
+3418; 1259 16648 INDEX public idx_snb_status bha_cst_user
+3419; 1259 16647 INDEX public idx_snb_tenant_project bha_cst_user
+3408; 1259 16656 INDEX public idx_voice_deliveries_project bha_cst_user
+3409; 1259 16597 INDEX public idx_voice_deliveries_status bha_cst_user
+3410; 1259 16595 INDEX public idx_voice_deliveries_system_created bha_cst_user
+3411; 1259 16596 INDEX public idx_voice_deliveries_tenant_created bha_cst_user
+3391; 1259 16696 INDEX public unq_customers_tenant_phone_null_project bha_cst_user
+3456; 1259 16768 INDEX public unq_dashboard_publish_outcomes_event bha_cst_user
+3451; 1259 16751 INDEX public unq_sms_consent_prompts_active bha_cst_user
+3437; 1259 16734 INDEX public unq_sms_consents_id_tenant bha_cst_user
+3438; 1259 16714 INDEX public unq_sms_consents_tenant_project_phone bha_cst_user
+3476; 2620 16682 TRIGGER public admin_users trg_admin_users_updated_at bha_cst_user
+3474; 2620 16557 TRIGGER public messages_out trg_messages_out_updated_at bha_cst_user
+3475; 2620 16663 TRIGGER public projects trg_projects_updated_at bha_cst_user
+3478; 2620 16741 TRIGGER public sms_consent_audit trg_sms_consent_audit_append_only bha_cst_user
+3477; 2620 16733 TRIGGER public sms_consents trg_sms_consents_updated_at bha_cst_user
+3472; 2606 16689 FK CONSTRAINT public admin_sessions admin_sessions_admin_id_fkey bha_cst_user
+3465; 2606 16568 FK CONSTRAINT public alert_audit_log alert_audit_log_outbound_message_id_fkey bha_cst_user
+3457; 2606 16444 FK CONSTRAINT public conversations conversations_system_id_fkey bha_cst_user
+3458; 2606 16439 FK CONSTRAINT public conversations conversations_tenant_id_fkey bha_cst_user
+3463; 2606 16513 FK CONSTRAINT public customers customers_tenant_id_fkey bha_cst_user
+3467; 2606 16616 FK CONSTRAINT public projects fk_projects_tenant bha_cst_user
+3473; 2606 16735 FK CONSTRAINT public sms_consent_audit fk_sms_consent_audit_consent bha_cst_user
+3469; 2606 16642 FK CONSTRAINT public service_number_bindings fk_snb_tenant bha_cst_user
+3459; 2606 16460 FK CONSTRAINT public messages messages_conversation_id_fkey bha_cst_user
+3461; 2606 16481 FK CONSTRAINT public messages_in messages_in_tenant_id_fkey bha_cst_user
+3462; 2606 16497 FK CONSTRAINT public messages_out messages_out_tenant_id_fkey bha_cst_user
+3460; 2606 16465 FK CONSTRAINT public messages messages_tenant_id_fkey bha_cst_user
+3468; 2606 16611 FK CONSTRAINT public projects projects_tenant_id_fkey bha_cst_user
+3470; 2606 16637 FK CONSTRAINT public service_number_bindings service_number_bindings_project_id_fkey bha_cst_user
+3471; 2606 16632 FK CONSTRAINT public service_number_bindings service_number_bindings_tenant_id_fkey bha_cst_user
+3466; 2606 16590 FK CONSTRAINT public voice_deliveries voice_deliveries_system_id_fkey bha_cst_user
+3464; 2606 16547 FK CONSTRAINT public workspaces workspaces_organization_id_fkey bha_cst_user
+2120; 826 16391 DEFAULT ACL - DEFAULT PRIVILEGES FOR SEQUENCES postgres
+2122; 826 16393 DEFAULT ACL - DEFAULT PRIVILEGES FOR TYPES postgres
+2121; 826 16392 DEFAULT ACL - DEFAULT PRIVILEGES FOR FUNCTIONS postgres
+2119; 826 16390 DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES postgres

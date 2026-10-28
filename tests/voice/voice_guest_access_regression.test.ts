@@ -101,7 +101,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
       expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
-      expect(res.text).toContain('Welcome to vFarm Support');
+      expect(res.text).toContain('<Play>');
+      expect(res.text).toContain('/api/v1/voice/audio/');
       expect(res.headers['x-tenant-id']).toBe('tenant-vfarm-01');
       expect(res.headers['x-project-id']).toBe('proj-vfarm-main');
 
@@ -699,8 +700,8 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
       expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
-      expect(res.text).toContain('<Say>Welcome to vFarm Support');
-      expect(res.text).toContain("I'm here when you're ready. What would you like help with?");
+      expect(res.text).toContain('<Play>');
+      expect(res.text).toContain("/api/v1/voice/audio/");
     });
 
     it('reconstructs fully qualified HTTPS action URL when behind proxy headers', async () => {
@@ -746,7 +747,7 @@ describe('CST Voice Guest Caller Access & Security Invariants Regression', () =>
       expect(res.headers['content-type']).toContain('text/xml');
       expect(res.text).toContain('<Response>');
       expect(res.text).toContain('<Gather input="speech" speechTimeout="auto" timeout="5" action="/webhooks/twilio/voice/turn" method="POST">');
-      expect(res.text).toContain('<Say>');
+      expect(res.text).toContain('<Play>');
       expect(res.text).not.toContain('<Hangup/>');
       expect(mockSynthesizer.synthesize).toHaveBeenCalled();
     });

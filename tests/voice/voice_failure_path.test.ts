@@ -215,7 +215,7 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
   // ── 3. Voice health signal (GET /health/voice) ────────────────────────────
 
   describe('3. Voice health signal', () => {
-    it('returns 503 and can_route_voice=false when no successful deliveries in 24h', async () => {
+    it('returns 200 and can_route_voice=true when clone is configured even with 0 successful deliveries', async () => {
       VoiceLaneService.setSynthesizer(failingSynthesizer);
 
       // Trigger a failed turn so there is at least one delivery (but failed)
@@ -231,9 +231,12 @@ describe('Voice Failure-Path & Diagnostic Recording', () => {
 
       const res = await request(app).get('/health/voice');
 
-      // Even with a failed delivery, health must be degraded (0 successful)
-      expect(res.body.voice_lane.can_route_voice).toBe(false);
-      expect(['degraded', 'unconfigured']).toContain(res.body.voice_lane.status);
+      // Delivery count is a traffic metric, not a health signal. Clone is
+      // configured, so voice is ready even with 0 successful deliveries.
+      expect(res.status).toBe(200);
+      expect(res.body.voice_lane.can_route_voice).toBe(true);
+      expect(res.body.voice_lane.status).toBe('healthy');
+      expect(res.body.voice_lane.successful_deliveries_24h).toBe(0);
     });
 
     it('returns 200 and can_route_voice=true after a successful synthesis', async () => {

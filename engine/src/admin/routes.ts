@@ -1,6 +1,7 @@
 import { maskPhone } from '../util/privacy.js';
 import { Router, Request, Response } from 'express';
 import { CoreRegistry } from '../core/registry.js';
+import { SystemsRegistry } from '../systems/registry.js';
 import { Tenant, Project, ServiceNumberBinding, SpeakerRecord } from '../core/types.js';
 import { VfarmTenantAdapter } from '../adapters/vfarm/index.js';
 import { DbClient, ConsentStatus } from '../db/client.js';
@@ -370,16 +371,16 @@ adminRouter.get('/health/verification', async (_req: Request, res: Response) => 
       },
       voice_lane: {
         recent_24h_deliveries_count: voiceDeliveries24h.length,
-        // DERIVED, not asserted. This used to be hard-coded `true`, which
-        // meant the admin readiness view claimed the voice lane was healthy
-        // while the public `/health/voice` endpoint was correctly reporting
-        // it as degraded and refusing with 503. The two views contradicted
-        // each other, and the admin one was the optimistic one.
-        //
-        // The gate is the same one `/health/voice` uses: at least one
-        // successful voice delivery in the last 24 hours. Zero deliveries
-        // means the lane is unverified, so it is not healthy.
-        healthy: voiceDeliveries24h.length > 0,
+        // DERIVED, not asserted. The gate is the same one `/health/voice` uses:
+        // clone must be configured (voice_id + API key) for the lane to be
+        // healthy. Delivery count is a traffic metric, not a health signal —
+        // 0 deliveries means no one called, not that voice is broken.
+        healthy: Boolean(process.env.ELEVENLABS_API_KEY?.trim()) &&
+          Boolean(
+            SystemsRegistry.getSystemById('system-vfarm-01')?.elevenlabs_voice_id?.trim() ||
+              process.env.ELEVENLABS_VOICE_ID?.trim() ||
+              process.env.VFARM_ELEVENLABS_VOICE_ID?.trim(),
+          ),
       },
     };
 

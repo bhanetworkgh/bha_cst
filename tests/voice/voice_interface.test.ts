@@ -1092,9 +1092,9 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           .send(payload);
 
         expect(res.status).toBe(200);
-      expect(res.body.twiml).toContain(
-        "Hi, thanks for calling vFarm Support. I&apos;m here to help. What would you like to check today?"
-      );
+        // ElevenLabs synthesized audio is played back via <Play>, not Twilio <Say>
+        expect(res.body.twiml).toContain('<Play>');
+        expect(res.body.twiml).toContain('/api/v1/voice/audio/');
       } finally {
         project.onboarding_reply = originalReply;
         CoreRegistry.registerProject(project);
@@ -1123,7 +1123,9 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           .send(payload);
 
         expect(res.status).toBe(200);
-        expect(res.body.twiml).toContain('Custom project greeting.');
+        // ElevenLabs synthesized audio is played back via <Play>
+        expect(res.body.twiml).toContain('<Play>');
+        expect(res.body.twiml).toContain('/api/v1/voice/audio/');
       } finally {
         project.onboarding_reply = originalReply;
         CoreRegistry.registerProject(project);
@@ -1215,10 +1217,10 @@ describe('CST Voice Interface (engine/src/interfaces/voice)', () => {
           .send(payload);
 
         expect(res.status).toBe(200);
-        expect(res.body.twiml).toContain("I'm here when you're ready. What would you like help with?");
+        expect(res.body.twiml).toContain('<Play>');
         // The full greeting must not be repeated as a reprompt
         const greetingCount = (res.body.twiml.match(/Hi, thanks for calling vFarm Support/g) || []).length;
-        expect(greetingCount).toBe(1);
+        expect(greetingCount).toBe(0);
       } finally {
         project.onboarding_reply = originalReply;
         CoreRegistry.registerProject(project);

@@ -234,7 +234,7 @@ export function isStandardIntent(value: unknown): value is StandardIntent {
 export const IntentPayloadSchema = z.object({
   name: z.string(),
   confidence: z.number().min(0).max(1).optional(),
-  extracted_entities: z.record(z.unknown()).optional(),
+  extracted_entities: z.record(z.string(), z.unknown()).optional(),
   raw_query: z.string().optional(),
 });
 export type IntentPayload = z.infer<typeof IntentPayloadSchema>;
@@ -279,7 +279,7 @@ export const CustomerPayloadSchema = z.object({
   name: z.string().optional(),
   email: z.string().email().optional(),
   farm_ids: z.array(z.string()).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CustomerPayload = z.infer<typeof CustomerPayloadSchema>;
 
@@ -335,7 +335,7 @@ export const CstTurnSchema = z.object({
   event_type: z.literal('cst.turn').optional(),
   /** Source-side test traffic marker (cstTestReason classifier). */
   test: z.boolean().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CstTurn = z.infer<typeof CstTurnSchema>;
 
@@ -360,7 +360,7 @@ export const CstDeliverySchema = z.object({
   retry_count: z.number().int().nonnegative().optional(),
   /** Source-side test traffic marker (cstTestReason classifier). */
   test: z.boolean().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CstDelivery = z.infer<typeof CstDeliverySchema>;
 
@@ -381,7 +381,7 @@ const BaseEventEnvelopeSchema = z.object({
   correlation_id: z.string().min(1),
   channel: CstChannelSchema,
   customer: CustomerPayloadSchema,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const CstTurnEventV1Schema = BaseEventEnvelopeSchema.extend({
