@@ -99,7 +99,7 @@ export class CoreRegistry {
       tenant_org_id: vfarmOrgId,
       capabilities: { sms: true, voice: true, web: true },
       speaker_policy: 'allowlist',
-      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
+      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY,
       elevenlabs_voice_id: 'eleven_voice_jason_vfarm',
       elevenlabs_model_id: 'eleven_turbo_v2_5',
       voice_enabled: true,

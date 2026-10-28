@@ -414,7 +414,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       tenant_org_id: vfarmOrgId,
       capabilities: { sms: true, voice: true },
       speaker_policy: 'allowlist',
-      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY || 'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
+      onboarding_reply: process.env.VFARM_ONBOARDING_REPLY,
     };
 
     // Project 2: Secondary vFarm Org (Dallas)

@@ -174,7 +174,7 @@ VALUES
     'org-vfarm-austin',
     '{"sms": true, "voice": true}'::jsonb,
     'allowlist',
-    'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.',
+    'Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?',
     TRUE,
     NOW()
   ),
