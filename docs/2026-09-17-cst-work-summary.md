@@ -101,8 +101,8 @@ Success response example (JSON):
   "call_sid": "CALL_123",
   "tenant_id": "tenant-vfarm-01",
   "project_id": "proj-vfarm-main",
-  "greeting": "Welcome to vFarm Support! We received your message. A specialist will assist you shortly.",
-  "twiml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Gather input=\"speech\" action=\"/webhooks/twilio/voice/turn\" method=\"POST\"><Say>Welcome to vFarm Support! We received your message. A specialist will assist you shortly.</Say></Gather></Response>"
+  "greeting": "Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?",
+  "twiml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Gather input=\"speech\" action=\"/webhooks/twilio/voice/turn\" method=\"POST\"><Say>Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?</Say></Gather></Response>"
 }
 ```
 

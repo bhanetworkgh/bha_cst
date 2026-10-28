@@ -65,7 +65,7 @@ export const DEV_FIXTURE_VOICE_ID = 'Hmy97GCI840wuICQesiM';
 export const DEV_FIXTURE_VOICE_MODEL_ID = 'eleven_turbo_v2_5';
 
 export const DEV_FIXTURE_ONBOARDING_REPLY =
-  'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.';
+  'Hi, thanks for calling vFarm Support. I'm here to help.What would you like to check today?';
 export const DEV_FIXTURE_SECONDARY_ONBOARDING_REPLY =
   'Welcome to vFarm Dallas Support! Contact your site manager for access.';
 
