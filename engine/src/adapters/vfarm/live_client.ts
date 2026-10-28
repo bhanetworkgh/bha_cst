@@ -767,21 +767,46 @@ export class VfarmLiveClient {
   // ── Readings (extended) ──────────────────────────────────────────────────
 
   /**
-   * GET /api/v1/readings/latest?farm_id={farm_id}&limit=100
+   * GET /api/v1/readings/latest?sensor_id={device_id}
    * Latest readings across all sensors in a farm.
+   *
+   * The vFarm API requires `sensor_id` (not `farm_id`) for the readings/latest
+   * endpoint. We first list devices for the farm, then fetch the latest reading
+   * for each device in parallel (bounded concurrency to avoid overwhelming
+   * the upstream).
    */
   async listLatestReadings(farmId: string, limit = 100): Promise<LatestReadingResponse[]> {
-    const schema = {
-      parse: (d: unknown) => {
-        // API may return array or wrapper object
-        const arr = Array.isArray(d) ? d : ((d as Record<string, unknown>)?.readings ?? [d]);
-        return (arr as unknown[]).map((item) => LatestReadingResponseSchema.parse(item));
-      },
-    };
-    return this.request(
-      `/api/v1/readings/latest?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
-      schema,
-    );
+    // 1. List devices for the farm
+    const deviceList = await this.listAllDevices(farmId, limit);
+    const devices = (deviceList as any)?.devices ?? [];
+    if (!Array.isArray(devices) || devices.length === 0) {
+      return [];
+    }
+
+    // 2. Fetch latest reading for each device (bounded concurrency: 5 at a time)
+    const CONCURRENCY = 5;
+    const results: LatestReadingResponse[] = [];
+    for (let i = 0; i < devices.length; i += CONCURRENCY) {
+      const batch = devices.slice(i, i + CONCURRENCY);
+      const batchResults = await Promise.allSettled(
+        batch.map(async (dev: any) => {
+          const sensorId = dev.id;
+          if (!sensorId) return null;
+          try {
+            return await this.getLatestReading(sensorId);
+          } catch {
+            // No readings for this sensor — skip silently
+            return null;
+          }
+        }),
+      );
+      for (const r of batchResults) {
+        if (r.status === 'fulfilled' && r.value) {
+          results.push(r.value);
+        }
+      }
+    }
+    return results;
   }
 
   // ── Alerts ───────────────────────────────────────────────────────────────
