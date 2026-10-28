@@ -12,17 +12,19 @@ describe('Destiny Voice-Lane Health Signal (Step 5)', () => {
     SystemsRegistry.resetToDefault();
   });
 
-  it('evaluates to "degraded" (503) when clone is configured but 0 deliveries in last 24h', async () => {
+  it('evaluates to "healthy" (200) when clone is configured and 0 deliveries in last 24h', async () => {
     // Clone is configured by default in SystemsRegistry (Hmy97GCI840wuICQesiM), but store has 0 deliveries
+    // Delivery count is a traffic metric, not a health signal — 0 deliveries means no one called,
+    // not that voice is broken.
     const res = await request(app).get('/health/voice');
 
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(200);
     expect(res.body.voice_lane).toBeDefined();
-    expect(res.body.voice_lane.can_route_voice).toBe(false);
-    expect(res.body.voice_lane.status).toBe('degraded');
+    expect(res.body.voice_lane.can_route_voice).toBe(true);
+    expect(res.body.voice_lane.status).toBe('healthy');
     expect(res.body.voice_lane.clone_configured).toBe(true);
     expect(res.body.voice_lane.successful_deliveries_24h).toBe(0);
-    expect(res.body.voice_lane.reason).toContain('0 successful deliveries in the last 24 hours');
+    expect(res.body.voice_lane.reason).toContain('No successful deliveries in the last 24 hours');
   });
 
   it('evaluates to "healthy" (200) when clone is configured and >=1 delivery in last 24h', async () => {
@@ -73,8 +75,9 @@ describe('Destiny Voice-Lane Health Signal (Step 5)', () => {
     }
   });
 
-  it('ignores deliveries older than 24 hours (evaluates to degraded)', async () => {
-    // Stale delivery from 26 hours ago
+  it('evaluates to "healthy" (200) when clone is configured but readings are older than 24h', async () => {
+    // Stale delivery from 26 hours ago — delivery count is a traffic metric,
+    // not a health signal. Clone is still configured, so voice is ready.
     const staleTime = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
     await DbClient.recordVoiceDelivery({
       system_id: 'system-vfarm-01',
@@ -90,9 +93,10 @@ describe('Destiny Voice-Lane Health Signal (Step 5)', () => {
 
     const res = await request(app).get('/health/voice');
 
-    expect(res.status).toBe(503);
-    expect(res.body.voice_lane.can_route_voice).toBe(false);
-    expect(res.body.voice_lane.status).toBe('degraded');
+    expect(res.status).toBe(200);
+    expect(res.body.voice_lane.can_route_voice).toBe(true);
+    expect(res.body.voice_lane.status).toBe('healthy');
     expect(res.body.voice_lane.successful_deliveries_24h).toBe(0);
+    expect(res.body.voice_lane.reason).toContain('No successful deliveries in the last 24 hours');
   });
 });

@@ -138,20 +138,22 @@ voiceRouter.get('/health/voice', async (_req: Request, res: Response) => {
   let reason: string;
 
   if (!cloneConfigured) {
+    // Missing mandatory provider configuration — voice cannot be ready.
     status = 'unconfigured';
     can_route_voice = false;
     reason =
       'Voice clone is not configured in registry or ELEVENLABS_API_KEY is missing. CST remains SMS-only.';
-  } else if (successfulDeliveriesCount === 0) {
-    status = 'degraded';
-    can_route_voice = false;
-    reason =
-      'Voice clone configured, but 0 successful deliveries in the last 24 hours. Voice lane is unverified; CST remains SMS-only.';
   } else {
+    // Voice is configured and ready to serve. Delivery count is a traffic
+    // metric, not a health signal: 0 deliveries means no one called, not that
+    // voice is broken. Missing optional history must not falsely imply the
+    // server is down.
     status = 'healthy';
     can_route_voice = true;
     reason =
-      'Voice clone configured and at least one successful delivery verified in last 24 hours. Front-line voice routing permitted.';
+      successfulDeliveriesCount === 0
+        ? 'Voice clone configured. No successful deliveries in the last 24 hours (no call traffic), but voice lane is ready.'
+        : 'Voice clone configured and at least one successful delivery verified in last 24 hours. Front-line voice routing permitted.';
   }
 
   const httpStatus = can_route_voice ? 200 : 503;
