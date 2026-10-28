@@ -154,8 +154,8 @@ describe('SlackNotifier — Error Alert Notifications', () => {
 
   it('ensures fail-safe handling: never throws if webhook network call rejects', async () => {
     // Force real fetch path with invalid URL that fails
-    const originalUrl = process.env.SLACK_WEBHOOK_URL;
-    process.env.SLACK_WEBHOOK_URL = 'http://localhost:59999/nonexistent';
+    const originalUrl = process.env.SLACK_ERROR_WEBHOOK_URL;
+    process.env.SLACK_ERROR_WEBHOOK_URL = 'http://localhost:59999/nonexistent';
 
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -168,9 +168,9 @@ describe('SlackNotifier — Error Alert Notifications', () => {
     expect(res).toBe(false);
 
     if (originalUrl) {
-      process.env.SLACK_WEBHOOK_URL = originalUrl;
+      process.env.SLACK_ERROR_WEBHOOK_URL = originalUrl;
     } else {
-      delete process.env.SLACK_WEBHOOK_URL;
+      delete process.env.SLACK_ERROR_WEBHOOK_URL;
     }
   });
 });

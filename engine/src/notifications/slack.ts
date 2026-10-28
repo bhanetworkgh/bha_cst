@@ -135,10 +135,32 @@ export class SlackNotifier {
         return true;
       }
 
-      const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+      // Prefer SLACK_ERROR_WEBHOOK_URL (the error-specific channel configured
+      // in this deployment); fall back to SLACK_WEBHOOK_URL for compatibility
+      // with earlier configuration names. Never print the URL.
+      const webhookUrl = process.env.SLACK_ERROR_WEBHOOK_URL || process.env.SLACK_WEBHOOK_URL;
       if (!webhookUrl) {
         // No Slack webhook configured; return false cleanly without noise
         return false;
+      }
+
+      // Dry-run mode: log the alert payload locally but do not send to Slack.
+      // Controlled by SLACK_DRY_RUN=true or DRY_RUN=true env var.
+      const dryRun = process.env.SLACK_DRY_RUN === 'true' || process.env.DRY_RUN === 'true';
+      if (dryRun) {
+        console.log(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: 'INFO',
+          type: 'SLACK_ALERT_DRY_RUN',
+          severity,
+          title: payload.title,
+          message: payload.message,
+          service,
+          tenant_id: payload.tenant_id || null,
+          correlation_id: payload.correlation_id || null,
+          note: 'Dry-run mode — alert was NOT sent to Slack',
+        }));
+        return true;
       }
 
       // Execute HTTP POST to Slack Incoming Webhook

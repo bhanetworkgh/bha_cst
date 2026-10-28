@@ -1,12 +1,28 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DbClient } from '../../engine/src/db/client.js';
 import { EscalationService } from '../../engine/src/escalation/service.js';
+import { SlackNotifier } from '../../engine/src/notifications/slack.js';
 import type { EscalationRequest } from '../../engine/src/escalation/types.js';
 
 describe('EscalationService', () => {
+  let savedSlackErrorUrl: string | undefined;
+  let savedSlackUrl: string | undefined;
+
   beforeEach(() => {
     DbClient.clearAll();
     DbClient.resetDurableStores();
+    // Ensure Slack is not configured during tests (no real webhook calls)
+    savedSlackErrorUrl = process.env.SLACK_ERROR_WEBHOOK_URL;
+    savedSlackUrl = process.env.SLACK_WEBHOOK_URL;
+    delete process.env.SLACK_ERROR_WEBHOOK_URL;
+    delete process.env.SLACK_WEBHOOK_URL;
+    SlackNotifier.reset();
+  });
+
+  afterEach(() => {
+    // Restore env vars
+    if (savedSlackErrorUrl) process.env.SLACK_ERROR_WEBHOOK_URL = savedSlackErrorUrl;
+    if (savedSlackUrl) process.env.SLACK_WEBHOOK_URL = savedSlackUrl;
   });
 
   const baseRequest: EscalationRequest = {
