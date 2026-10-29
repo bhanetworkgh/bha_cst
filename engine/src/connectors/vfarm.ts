@@ -14,6 +14,7 @@ export interface VfarmUnitStatus {
   ph_level?: number;
   ec_level?: number;
   water_level?: number;
+  relay?: number;
   last_updated: string;
   /** True when the reading timestamp is older than the freshness threshold. */
   stale?: boolean;
@@ -50,12 +51,14 @@ function mapLatestReadingToTelemetry(
   const phVal = vals.ph?.value;
   const coVal = vals.co?.value;
   const soilVal = vals.soil_moisture?.value;
+  const relayVal = vals.relay?.value;
 
   const temp = parseNumericField(tempVal);
   const humidity = parseNumericField(humVal);
   const ph = parseNumericField(phVal);
   const co = parseNumericField(coVal);
   const soil = parseNumericField(soilVal);
+  const relay = parseNumericField(relayVal);
 
   // Status comes from vFarm's own status fields, not from locally invented
   // thresholds. Fall back to a range check only when vFarm did not supply one.
@@ -77,6 +80,7 @@ function mapLatestReadingToTelemetry(
     ph_level: ph,
     ec_level: co,
     water_level: soil,
+    relay: relay,
     last_updated: reading.reading_ts || reading.received_at || new Date().toISOString(),
     stale: (() => {
       const ts = reading.reading_ts || reading.received_at;
@@ -97,6 +101,7 @@ function formatTelemetryText(telemetry: VfarmUnitStatus): string {
   if (telemetry.ph_level !== undefined) readings.push(`pH: ${telemetry.ph_level}`);
   if (telemetry.ec_level !== undefined) readings.push(`CO: ${telemetry.ec_level}`);
   if (telemetry.water_level !== undefined) readings.push(`Soil Moisture: ${telemetry.water_level}%`);
+  if (telemetry.relay !== undefined) readings.push(`Relay: ${telemetry.relay === 1 ? 'ON' : 'OFF'}`);
   const readingsText = readings.length > 0 ? `. ${readings.join(', ')}.` : '.';
   const staleNote = telemetry.stale ? ' (reading is stale)' : '';
   return `vFarm Unit ${telemetry.unit_id} (${telemetry.farm_id}) Status: ${telemetry.status.toUpperCase()}${readingsText}${staleNote}`;

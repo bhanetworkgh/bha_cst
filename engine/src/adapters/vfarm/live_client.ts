@@ -775,7 +775,8 @@ export class VfarmLiveClient {
    * for each device in parallel (bounded concurrency to avoid overwhelming
    * the upstream).
    */
-  async listLatestReadings(farmId: string, limit = 100): Promise<LatestReadingResponse[]> {
+  async listLatestReadings(farmId: string, limit = 100, timeoutMs?: number): Promise<LatestReadingResponse[]> {
+    const perDeviceTimeout = timeoutMs ?? this.timeoutMs;
     // 1. List devices for the farm
     const deviceList = await this.listAllDevices(farmId, limit);
     const devices = (deviceList as any)?.devices ?? [];
@@ -793,7 +794,15 @@ export class VfarmLiveClient {
           const sensorId = dev.id;
           if (!sensorId) return null;
           try {
-            return await this.getLatestReading(sensorId);
+            // Use a per-device client with the requested timeout
+            const client = new VfarmLiveClient({
+              baseUrl: this.baseUrl,
+              apiKey: this.apiKey,
+              apiToken: this.apiToken,
+              timeoutMs: perDeviceTimeout,
+              fetchFn: this.fetchFn,
+            });
+            return await client.getLatestReading(sensorId);
           } catch {
             // No readings for this sensor — skip silently
             return null;
