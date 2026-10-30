@@ -84,7 +84,7 @@ export const VFARM_DEFAULT_BASE_URL = 'https://vfarm.bhanetwork.org';
  * Operators with a slow upstream should set VFARM_API_TIMEOUT_MS explicitly and
  * confirm the multiplied retry budget still fits their own request timeout.
  */
-export const VFARM_DEFAULT_TIMEOUT_MS = 8000;
+export const VFARM_DEFAULT_TIMEOUT_MS = 10000;
 
 /**
  * Per-endpoint override for GET /api/v1/system/stats, which scans the whole
@@ -812,10 +812,45 @@ export class VfarmLiveClient {
     }
 
     // 2. Fetch latest reading for each device (bounded concurrency: 5 at a time)
+    // Filter to sensor devices only (using sensor label, name, tags, or device_type)
+    const sensorDevices = devices.filter((dev: any) => {
+      if (!dev) return false;
+      // If explicit non-sensor types like cabinet, actuator, or gateway without sensor indicator, exclude them
+      if (dev.device_type === 'cabinet') return false;
+      // Check for sensor label, name, tags, or sensor-related identifiers
+      const label = dev.device_type_label || dev.device_name || dev.name || dev.sensor_label || '';
+      const tags = Array.isArray(dev.tags) ? dev.tags.join(' ') : '';
+      const type = dev.device_type || '';
+      const id = dev.id || '';
+
+      // If device has an explicit sensor label or tag
+      if (dev.sensor_label || dev.device_type_label || (tags && /sensor|reading/i.test(tags))) {
+        return true;
+      }
+      // If device_type indicates a sensor
+      if (type === 'sensor' || /sensor/i.test(type) || /sensor/i.test(label)) {
+        return true;
+      }
+      // Known sensor IDs or names (e.g. rack1_mq7, rack1_soil, rack1_ph, rack2_dht, etc.)
+      if (/sensor|dht|mq|soil|ph|temp|humidity|co2/i.test(id) || /sensor|dht|mq|soil|ph|temp|humidity|co2/i.test(label)) {
+        return true;
+      }
+      // If dev has sensor_type_id or last_reading_at
+      if (dev.sensor_type_id || dev.last_reading_at) {
+        return true;
+      }
+      // Default: if no device_type is specified (e.g. mock test items { id: 'sensor_1' }), keep it
+      if (!type && !dev.device_type_label && !dev.device_name) {
+        return true;
+      }
+      return false;
+    });
+
+    const targetDevices = sensorDevices.length > 0 ? sensorDevices : devices;
     const CONCURRENCY = 5;
     const results: LatestReadingResponse[] = [];
-    for (let i = 0; i < devices.length; i += CONCURRENCY) {
-      const batch = devices.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < targetDevices.length; i += CONCURRENCY) {
+      const batch = targetDevices.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.allSettled(
         batch.map(async (dev: any) => {
           const sensorId = dev.id;
@@ -829,7 +864,18 @@ export class VfarmLiveClient {
               timeoutMs: perDeviceTimeout,
               fetchFn: this.fetchFn,
             });
-            return await client.getLatestReading(sensorId);
+            const reading = await client.getLatestReading(sensorId);
+            if (reading && typeof reading === 'object') {
+              // Attach device metadata (sensor label, name, tags) so the caller can display human-readable labels
+              const sensorLabel = dev.sensor_label || dev.device_type_label || dev.device_name || dev.name || (Array.isArray(dev.tags) && dev.tags[0]) || undefined;
+              if (sensorLabel && !(reading as any).sensor_label) {
+                (reading as any).sensor_label = sensorLabel;
+              }
+              if (Array.isArray(dev.tags) && !(reading as any).tags) {
+                (reading as any).tags = dev.tags;
+              }
+            }
+            return reading;
           } catch (err: any) {
             // Classify the per-sensor failure for observability.
             const status = err?.status;

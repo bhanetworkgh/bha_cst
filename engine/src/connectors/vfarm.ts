@@ -384,7 +384,10 @@ const statusParts: string[] = [`${d.total} devices`];
                 perUnitReadings = readings
                   .filter((r: any) => r && (r.sensor_id || r.device_id))
                   .map((r: any) => {
-                    const reading = mapLatestReadingToTelemetry(farmId, String(r.sensor_id || r.device_id), r);
+                    const rawId = String(r.sensor_id || r.device_id);
+                    // Use sensor label, tag, or name if present; otherwise fall back to device id
+                    const displayLabel = r.sensor_label || (Array.isArray(r.tags) && r.tags[0]) || rawId;
+                    const reading = mapLatestReadingToTelemetry(farmId, displayLabel, r);
                     return {
                       unit_id: reading.unit_id,
                       farm_id: reading.farm_id,
