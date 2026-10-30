@@ -57,12 +57,12 @@
 ### 4. Render Findings
 
 - **Service:** `bha-cst` on Render, Oregon region, `https://bha-cst-7u9e.onrender.com`
-- **Deployed commit:** `8c8dd6fb51468dbe450313422b8efc7d2ec035c6` (Oct 27, 2026)
+- **Deployed commit:** `78075b19757f` (Merge PR #13 from fix/cst-slack-error-notifications, Oct 28, 2026) — verified via Render API 2026-10-29
 - **Health:** `/health` returns 200 OK
 - **Voice health:** `/health/voice` returns 200 healthy (clone configured, 8 deliveries in 24h)
 - **Worker:** Heartbeats every 5 min, all queue counts at 0
 - **Database:** Free plan, expires Nov 14 2026 18:10 UTC, IP allow-list 0.0.0.0/0
-- **Escalations table:** Absent in production (migration 022 not applied — correct, not authorized)
+- **Escalations table:** Present in production (migration 022 applied via deployed commit `78075b19757f`)
 - **Twilio callbacks:** Delivery-status callbacks with `outbound_row_found: false` — code is correct (fail-closed), needs production DB investigation for specific failing SIDs
 
 ### 5. Blockers / Owner Decisions

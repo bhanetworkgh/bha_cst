@@ -1428,12 +1428,31 @@ function renderVfarmDashboard(data) {
   }
 
   const rows = devices.map((dev) => {
-    // vFarm devices use 'status' with values like 'active', 'offline', 'unknown'
-    // and may also have a 'connected' boolean
-    const isOnline = dev.status === 'active' || dev.connected === true;
-    const statusPill = isOnline
-      ? `<span class="pill active">● active</span>`
-      : `<span class="pill warn">${dev.status || 'unknown'}</span>`;
+    // vFarm fleet_status (Jegan PR #100): on | off | online | unhealthy | offline | null
+    // Legacy status: 'active', 'offline', 'unknown' + connected boolean
+    let statusPill;
+    const fleetStatus = dev.fleet_status;
+    if (fleetStatus !== undefined && fleetStatus !== null) {
+      // Authoritative five-bucket fleet status
+      const statusColors = {
+        on: 'active',
+        off: 'warn',
+        online: 'active',
+        unhealthy: 'warn',
+        offline: 'warn',
+      };
+      const color = statusColors[fleetStatus] || 'warn';
+      statusPill = `<span class="pill ${color}">${fleetStatus === 'on' ? '● on' : fleetStatus === 'off' ? '● off' : fleetStatus === 'online' ? '● online' : fleetStatus === 'unhealthy' ? '● unhealthy' : '● offline'}</span>`;
+    } else if (fleetStatus === null) {
+      // Cabinet: frame, not a reporting device
+      statusPill = `<span class="pill muted">frame</span>`;
+    } else {
+      // Legacy fallback
+      const isOnline = dev.status === 'active' || dev.connected === true;
+      statusPill = isOnline
+        ? `<span class="pill active">● active</span>`
+        : `<span class="pill warn">${dev.status || 'unknown'}</span>`;
+    }
 
     const lastSeen = dev.last_seen_at || dev.last_reading_at || dev.updated_at
       ? new Date(dev.last_seen_at || dev.last_reading_at || dev.updated_at).toLocaleString()

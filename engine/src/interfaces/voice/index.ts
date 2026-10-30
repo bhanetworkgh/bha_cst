@@ -566,10 +566,10 @@ export class VoiceInterface {
     const resolvedSpeaker = adapterHealthFailure
       ? undefined
       : await CoreRegistry.resolveSpeaker({
-          tenantId: binding.tenant_id,
-          projectId: binding.project_id,
-          phoneE164: from_e164,
-        });
+        tenantId: binding.tenant_id,
+        projectId: binding.project_id,
+        phoneE164: from_e164,
+      });
     // A failed identity lookup is reported by the registry as an unknown-looking
     // speaker (fail closed). Treat it as a degraded service, NOT as a guest, or a
     // registered caller is greeted with the generic onboarding text on every turn.
@@ -621,16 +621,16 @@ export class VoiceInterface {
     const isGuest = !speaker.is_known || speaker.role === 'unknown';
     const activeSpeaker: SpeakerIdentity = isGuest
       ? {
-          person_id: speaker.person_id || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
-          customer_ref: speaker.customer_ref || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
-          tenant_id: binding.tenant_id,
-          project_id: binding.project_id,
-          phone_e164: from_e164,
-          is_known: false,
-          role: 'unknown',
-          permissions: [],
-          farm_ids: [],
-        }
+        person_id: speaker.person_id || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
+        customer_ref: speaker.customer_ref || `guest_${from_e164.replace(/[^0-9]/g, '')}`,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        phone_e164: from_e164,
+        is_known: false,
+        role: 'unknown',
+        permissions: [],
+        farm_ids: [],
+      }
       : speaker;
 
     if (isGuest) {

@@ -774,8 +774,21 @@ export class VfarmLiveClient {
    * endpoint. We first list devices for the farm, then fetch the latest reading
    * for each device in parallel (bounded concurrency to avoid overwhelming
    * the upstream).
+   *
+   * Per-sensor failure classification:
+   * - 404 → `no_reading` (legitimate; sensor exists but has no readings)
+   * - 401/403 → `unauthorized` (needs token refresh)
+   * - 422 → `invalid_request` (caller bug)
+   * - 5xx → `upstream_error`
+   * - timeout → `timeout`
+   * - network error → `upstream_error`
+   *
+   * Successful readings are returned in the result array. Failures are logged
+   * with appropriate severity but do not block other sensors from returning
+   * their readings.
    */
-  async listLatestReadings(farmId: string, limit = 100): Promise<LatestReadingResponse[]> {
+  async listLatestReadings(farmId: string, limit = 100, timeoutMs?: number): Promise<LatestReadingResponse[]> {
+    const perDeviceTimeout = timeoutMs ?? this.timeoutMs;
     // 1. List devices for the farm
     const deviceList = await this.listAllDevices(farmId, limit);
     const devices = (deviceList as any)?.devices ?? [];
@@ -793,9 +806,51 @@ export class VfarmLiveClient {
           const sensorId = dev.id;
           if (!sensorId) return null;
           try {
-            return await this.getLatestReading(sensorId);
-          } catch {
-            // No readings for this sensor — skip silently
+            // Use a per-device client with the requested timeout
+            const client = new VfarmLiveClient({
+              baseUrl: this.baseUrl,
+              apiKey: this.apiKey,
+              apiToken: this.apiToken,
+              timeoutMs: perDeviceTimeout,
+              fetchFn: this.fetchFn,
+            });
+            return await client.getLatestReading(sensorId);
+          } catch (err: any) {
+            // Classify the per-sensor failure for observability.
+            const status = err?.status;
+            if (status === 404) {
+              Logger.info(
+                `vFarm per-sensor: sensor ${sensorId} returned no readings (404)`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'no_reading' },
+              );
+            } else if (status === 401 || status === 403) {
+              Logger.warn(
+                `vFarm per-sensor: sensor ${sensorId} unauthorized (auth/token issue)`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'unauthorized', http_status: status },
+              );
+            } else if (status === 422) {
+              Logger.error(
+                `vFarm per-sensor: sensor ${sensorId} returned 422 (invalid request)`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'invalid_request', http_status: status },
+              );
+            } else if (status !== undefined && status >= 500) {
+              Logger.warn(
+                `vFarm per-sensor: sensor ${sensorId} upstream error (${status})`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error', http_status: status },
+              );
+            } else if (err?.name === 'VfarmNetworkError' && /timed out/i.test(err?.message || '')) {
+              Logger.warn(
+                `vFarm per-sensor: sensor ${sensorId} timed out after ${perDeviceTimeout}ms`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'timeout' },
+              );
+            } else {
+              // Network error, unexpected status, or non-JSON body
+              Logger.warn(
+                `vFarm per-sensor: sensor ${sensorId} failed (${err?.name || 'error'})`,
+                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error' },
+              );
+            }
+            // No readings for this sensor — skip (return null)
             return null;
           }
         }),

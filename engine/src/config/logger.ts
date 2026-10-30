@@ -4,6 +4,7 @@ export type LogOutcome = 'ok' | 'refused' | 'error';
 export type EntryPoint = 'webhook' | 'admin_panel' | 'api';
 
 export interface SecurityLedgerEvent {
+  id?: string;
   timestamp: string;
   tenant_id: string | null;
   actor: string;
@@ -98,6 +99,17 @@ export class Logger {
     if (this.auditRingBuffer.length > 200) {
       this.auditRingBuffer.shift();
     }
+
+    // Persist to the database security_ledger table (fire-and-forget)
+    void (async () => {
+      try {
+        const { DbClient } = await import('../db/client.js');
+        await DbClient.recordSecurityLedgerEvent({ ...event, timestamp });
+      } catch {
+        // DB persistence failure is non-fatal; the in-memory ring buffer
+        // and console log already captured the event.
+      }
+    })();
 
     const payload = {
       timestamp,
