@@ -3,6 +3,7 @@ import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
 import { randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
+import type { SecurityLedgerEvent } from '../config/logger.js';
 import { shouldAutoCreatePool } from '../config/runtime.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
 import type { EscalationRecord } from '../escalation/types.js';
@@ -1006,6 +1007,56 @@ export class DbClient {
   }
 
   /**
+   * Record a security ledger event to the `security_ledger` table.
+   *
+   * The event is persisted with a UUID primary key, timestamp, tenant_id,
+   * actor, role, entry_point, tool_or_route, outcome, and optional reason
+   * and correlation_id. This mirrors the structure defined in migration
+   * 003_add_customers_and_security_ledger.sql (security_ledger table).
+   *
+   * Callers must ensure the event data is valid before calling this method.
+   * If no pool is configured (in-memory mode), the event is only logged to
+   * the in-memory audit ring buffer via Logger.audit() — see that method
+   * for the in-memory path details.
+   */
+  static async recordSecurityLedgerEvent(event: SecurityLedgerEvent): Promise<void> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const id = event.id || `ledger_${randomUUID()}`;
+        // Determine tripwire and level based on outcome, matching Logger.audit console output
+        const tripwire = event.outcome === 'refused';
+        const level = event.outcome === 'refused' ? 'WARN' : event.outcome === 'error' ? 'ERROR' : 'INFO';
+        // reason is NOT NULL in the database; provide a default if not present
+        const reason = event.reason || `security ledger ${event.outcome}`;
+        const query = `
+          INSERT INTO security_ledger (id, timestamp, tenant_id, actor, role, entry_point, tool_or_route, outcome, reason, correlation_id, tripwire, level)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        `;
+        await pool.query(query, [
+          id,
+          event.timestamp || new Date().toISOString(),
+          event.tenant_id,
+          event.actor,
+          event.role,
+          event.entry_point,
+          event.tool_or_route,
+          event.outcome,
+          reason,
+          event.correlation_id || null,
+          tripwire,
+          level,
+        ]);
+        Logger.info(`Security ledger event recorded: ${event.tool_or_route}`);
+      } catch (err: any) {
+        Logger.error(`DbClient.recordSecurityLedgerEvent Postgres Error: ${err.message}`);
+      }
+    } else {
+      Logger.info(`Security ledger event (in-memory only): ${event.tool_or_route}`);
+    }
+  }
+
+  /**
    * Resolve the authoritative `systems.system_id` for a tenant.
    *
    * `systems.tenant_id` is UNIQUE (db/migrations/001_initial_schema.sql:5), so a
@@ -1016,7 +1067,7 @@ export class DbClient {
    *
    * Falls back to the caller's value when no pool is configured (in-memory mode)
    * or when the tenant genuinely has no system row yet, so behaviour outside
-   * Postgres is unchanged.
+   * of Postgres is unchanged.
    */
   private static async resolveSystemIdForTenant(
     pool: pg.Pool,
