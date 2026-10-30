@@ -145,11 +145,11 @@ No authorized live E2E test has been performed. The operator must complete the c
 | IP allow-list | `0.0.0.0/0` (everywhere) | Render API |
 | Network isolation | Disabled | Render API |
 
-### Continuity Decision (PENDING OWNER APPROVAL)
-- **Option 1 (Upgrade):** Simplest, no migration, no downtime. Ongoing cost. Low risk.
-- **Option 2 (Migrate):** Fresh start, clean schema. Downtime, data transfer, FK validation. Medium risk.
-- **Option 3 (Backup/restore only):** No cost change. But backup not tested against full restore in production. High risk (time-bound).
-- **Recommendation:** Upgrade to paid plan before expiry. The restore drill proves the backup is structurally valid, but does not prove zero-downtime recovery.
+### Continuity Decision (COMPLETE — Database upgrade already completed by account owner)
+- **Status:** COMPLETE — Database upgrade has been completed by the account owner. No further action required.
+- **Further database changes:** OUT OF SCOPE. No upgrades, migrations, recreations, or replacements should be performed.
+- **Existing configuration:** Preserve unchanged. No plan, region, networking, IP allowlist, firewall, credential, or connection setting changes.
+- **Remaining observations (findings only):** IP allow-list is `0.0.0.0/0` (everywhere) with network isolation disabled. This is a finding for security review, not an action item under this task boundary.
 
 ## 8. Continuity and Backup Evidence
 

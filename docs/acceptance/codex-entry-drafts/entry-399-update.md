@@ -1,6 +1,6 @@
 # Entry 399 Update Draft — Render Incident Evidence, Endpoint Contract, and Database/Continuity Decision
 
-**Status:** PARTIAL — Code-level verified; production telemetry and signed E2E pending
+**Status:** PARTIAL — Database continuity, endpoint contract, and code-level requirements complete; production telemetry and authorized E2E acceptance pending
 **Date:** 2026-10-30 (updated from 2026-10-29)
 **Prepared by:** CST Engineering
 
@@ -41,21 +41,38 @@ CST owns conversation orchestration, channel handling, conversation state, and i
 - **External:** `0.0.0.0/0` IP allow-list — potentially reachable from any IP
 - **Authentication:** Username/password via `DATABASE_URL` (never printed)
 
+### Migration Discrepancy (Unresolved)
+
+Two conflicting migration counts exist in the evidence:
+
+| Source | Count | Detail |
+|--------|-------|--------|
+| Render deployment logs | 23 | "Found 23 SQL migration file(s). Migrations complete: 0 applied, 23 already recorded." |
+| Direct SQL (`schema_migrations`) | 22 | `SELECT count(*) FROM schema_migrations` → 22 rows. Latest: `022_add_escalations_table.sql`, applied `2026-10-28T17:02:14.122471Z`. |
+| Repository migration files | 23 | `db/migrations/` contains 23 `.sql` files (001–022), including **two** with the `003_` prefix: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`. |
+
+**Assessment:** The discrepancy is likely caused by the duplicate `003_` prefix — the deployment log counts 23 files on disk, while the database records 22 applied migrations because both `003_*` files share the same migration version prefix. This explanation is **not confirmed** by direct evidence; the deployment log has not been reconciled against the production `schema_migrations` names and checksums.
+
+**Status: UNRESOLVED RECONCILIATION ITEM.** An authorized read-only query is required to compare production migration names and checksums against repository files and the Render deployment logs. No migration edits or production runs have been performed. Do not treat the counts as equivalent.
+
 ## Database Continuity Decision
 
 **Status: COMPLETE — Database upgrade already completed by account owner.**
 Further database changes are OUT OF SCOPE. No upgrades, migrations, recreations, or replacements should be performed. Existing database configuration must be preserved unchanged. Any remaining database-related observations (e.g., IP allow-list `0.0.0.0/0`) are findings only, not action items under this task boundary.
 
-| Option | Pros | Cons | Risk |
-|--------|------|------|------|
-| Upgrade to paid plan | No migration, no downtime, simplest | Ongoing cost | Low |
-| Migrate to new database | Fresh start, clean schema | Downtime, data transfer, FK validation | Medium |
-| Backup/restore only | No cost change | Backup not tested against full restore in production | High (time-bound) |
+### Continuity and Backup — Completed Work
 
-**Recommendation:** Upgrade to paid plan before expiry. The restore drill proves the backup is structurally valid (80,365 bytes, 20 tables, 22 migrations, 17 FKs), but does not prove zero-downtime recovery.
+| Item | Status | Evidence |
+|------|--------|----------|
+| Database upgrade | **COMPLETED** | Account owner completed the upgrade. Render free plan expiry (2026-11-14T18:10:20Z) is no longer an outstanding deadline. |
+| Backup artifact | **COMPLETED** | `bha-cst-postgres-20261027T140056Z.dump` (80,365 bytes, CUSTOM format), SHA-256 `a4d64bc61738c4e28d9f16f81a3f1ab751f1a8102fd24e9dd0c5f24f7625f718` |
+| Backup verification | **COMPLETED** | `scripts/verify_cst_postgres_backups.sh` — `pg_restore --list` PASS (155 TOC entries) |
+| Restore drill | **COMPLETED (historical)** | Restored into isolated PostgreSQL 16.14 — 20/20 tables, 22/22 migrations, 17 FKs. Historical evidence; not repeated in the latest production inspection. |
+| Backup script fix | **COMPLETED** | Hardcoded `PGPASSWORD` removed from `backup_bha_cst_postgres.sh` |
+| Zero-downtime recovery proof | **NOT EVIDENCED** | The restore drill proves structural validity only. No production-equivalent restore test or zero-downtime drill has been performed or documented. |
 
 **Owner:** Account owner / infrastructure team
-**Deadline:** November 14, 2026
+**Deadline:** None outstanding — the upgrade is complete.
 
 ## Readings Endpoint Contract
 
@@ -149,16 +166,16 @@ The following incident details were reported from Render logs on 2026-10-28. The
 | Reviewer | Pending | Not yet assigned |
 | Decision status | PENDING | Awaiting owner confirmation |
 | Decision date | Not yet set | — |
-| Outstanding approvals | Database continuity, staging deployment, KMG9 boundary, ElevenLabs credentials | All pending |
+| Outstanding approvals | Staging deployment, KMG9 boundary, ElevenLabs credentials | Database continuity already complete; remaining items pending |
 
 ## Rationale and Alternatives
 
 ### Database Continuity
-- **Current:** Free plan expires Nov 14, 2026. Backup verified (80,365 bytes, CUSTOM format). Restore drill passed (20 tables, 22 migrations, 17 FKs).
-- **Alternative 1 (Upgrade):** Simplest, no migration, no downtime. Ongoing cost. Low risk.
-- **Alternative 2 (Migrate):** Fresh start, clean schema. Downtime, data transfer, FK validation. Medium risk.
-- **Alternative 3 (Backup/restore only):** No cost change. But backup not tested against full restore in production. High risk (time-bound).
-- **Recommendation:** Upgrade to paid plan before expiry. The restore drill proves the backup is structurally valid, but does not prove zero-downtime recovery.
+- **Current:** Database upgrade completed by account owner. Backup verified (80,365 bytes, CUSTOM format). Restore drill passed (20 tables, 22 migrations, 17 FKs) — historical, not repeated in latest inspection.
+- **Alternative 1 (Upgrade):** Already executed. No migration, no downtime. Ongoing cost. Low risk.
+- **Alternative 2 (Migrate):** Not applicable — upgrade already complete. Downtime, data transfer, FK validation. Medium risk.
+- **Alternative 3 (Backup/restore only):** No longer relevant as a continuity option. Backup structurally valid but not tested against full restore in production. High risk (time-bound).
+- **Recommendation:** No further action. The upgrade is complete. The restore drill proves structural validity but does not prove zero-downtime recovery.
 
 ### Readings Endpoint
 - **Current:** `/readings/latest` requires `sensor_id`. CST originally called with `farm_id` → 404.
@@ -176,7 +193,7 @@ The following incident details were reported from Render logs on 2026-10-28. The
 7. **Partial-result behavior when one sensor is slow:** `Promise.allSettled` with bounded concurrency (5 at a time). Slow sensors skipped, fast sensors reported. 404 → skip, timeout → skip. ✅ Code verified, tests pass.
 8. **Persisted turn/audit evidence:** Security ledger now persists to DB (P0 fix). Conversation persistence on successful turns. ⚠️ Deadline-exceeded turns abandoned without persistence (by design, fail-closed).
 9. **Reproducible tests and production verification:** 1006 tests pass, typecheck clean, build successful. Live API verified (read-only). ✅ Tests + typecheck + build verified.
-10. **Documented database continuity and migration decision:** Database upgrade already completed by account owner. ✅ Decision recorded.
+10. **Documented database continuity and migration decision:** Database upgrade already completed by account owner. ✅ Decision recorded. Backup artifact verified; restore drill passed (historical); zero-downtime recovery not evidenced.
 
 ## Outstanding Fixes Implemented
 
@@ -194,6 +211,11 @@ The following incident details were reported from Render logs on 2026-10-28. The
 
 ### P1 — vFarm Per-Sensor Failure Classification (Already Implemented)
 - `VfarmLiveClient.listLatestReadings()` uses `Promise.allSettled` with bounded concurrency (5). 404 → skip, timeout → skip.
+
+
+## Decision Record Link
+
+See the single consolidated decision record: [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md). It consolidates database/platform, network/IP lockdown, vFarm readings endpoint contract (with correlation ID status), continuity/backup/upgrade, and acceptance criteria. Entry 399 status remains **PARTIAL**.
 
 ## Evidence and Links
 
@@ -228,6 +250,9 @@ These supplied lines do NOT contain correlation IDs. This is recorded honestly. 
 - **BLOCKER:** Twilio live SMS/callback acceptance — needs production credentials
 - **BLOCKER:** Delivery callback attribution — historical SIDs from pre-fix messages still need investigation
 - **BLOCKER:** GitHub push access — SSH key passphrase unavailable
+- **RECONCILIATION ITEM:** Migration count discrepancy — 23 deployment-log files vs 22 `schema_migrations` rows (see Migration Discrepancy section above)
+- **FINDING (security decision):** PostgreSQL IP allow-list `0.0.0.0/0` — owner decision required; do not change without authorization
+- **FINDING (verification gap):** Zero-downtime recovery not evidenced — restore drill proves structural validity only
 
 ## Links
 

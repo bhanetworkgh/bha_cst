@@ -183,7 +183,7 @@ Do not narrow the allow-list until the correct source addresses/connectivity pat
 - Verified record counts: customers(3), conversations(2), messages_out(2), sms_consents(1), voice_deliveries(60)
 
 ### Continuity Decision
-**PENDING OWNER APPROVAL.** The restore drill proves the backup is structurally valid, but does not prove zero-downtime recovery or production-equivalent restore. The free plan expiry is a hard deadline.
+**COMPLETE — Database upgrade already completed by account owner.** Further database changes are OUT OF SCOPE. No upgrades, migrations, recreations, or replacements should be performed. Existing database configuration must be preserved unchanged. Any remaining database-related observations (e.g., IP allow-list `0.0.0.0/0`) are findings only, not action items under this task boundary.
 
 ## 8. Acceptance Criteria
 
@@ -196,7 +196,7 @@ Do not narrow the allow-list until the correct source addresses/connectivity pat
 7. **Partial-result behavior when one sensor is slow:** `Promise.allSettled` with bounded concurrency. Slow sensors skipped, fast sensors reported. ✅ Code verified, tests pass.
 8. **Persisted turn/audit evidence:** Security ledger records turn outcomes. Conversation persistence on successful turns. ⚠️ Deadline-exceeded turns are abandoned without persistence (by design, fail-closed).
 9. **Reproducible tests and production verification:** 1006 tests pass. Live API verified (read-only). Production E2E not performed. ⚠️ Partial.
-10. **Documented database continuity and migration decision:** This record. Migration 022 applied in production. ⚠️ Owner decision on continuity pending.
+10. **Documented database continuity and migration decision:** COMPLETE — Database upgrade completed by account owner. Migration 022 applied in production. No further database changes required.
 
 ## 9. Evidence and Links
 

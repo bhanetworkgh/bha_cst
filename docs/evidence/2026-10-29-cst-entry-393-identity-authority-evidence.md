@@ -186,7 +186,7 @@ ORDER BY timestamp DESC;
 
 ## 6. Mismatch Example (Historical, Not Current Proof)
 
-The previously reported `usr_vfarm_003` / `opaque_revoked` case is documented in `docs/kmg9-verification-record.md` and `cst-status-and-remaining-work.md`. This is **historical evidence** from a prior audit, not proof of current state. The current codebase has fail-closed identity resolution that refuses unverified callers.
+The previously reported `usr_vfarm_003` / `opaque_revoked` case is documented in `docs/kmg9-verification-record.md`. This is **historical evidence** from a prior audit, not proof of current state. The current codebase has fail-closed identity resolution that refuses unverified callers.
 
 ## 7. Fail-Closed Behavior (Cited Tests)
 

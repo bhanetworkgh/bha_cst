@@ -97,6 +97,8 @@ These figures must not be silently combined or treated as interchangeable.
 
 **Outstanding reconciliation:** Compare the exact production migration names and checksums against the repository and the Render migration logs. Determine why the deployment log reported 23 files/records while the direct database query returned 22 migration records.
 
+**Likely cause (not confirmed):** The repository contains 23 `.sql` files in `db/migrations/` (001–022), including **two** files with the `003_` prefix: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`. The deployment log counts 23 files on disk; the database records 22 applied migrations because both `003_*` files share the same migration version prefix. This explanation has **not been verified** by comparing production migration names and checksums against the deployment log. It is recorded as a hypothesis, not a conclusion.
+
 The earlier restore-drill result remains historical evidence: 20 tables, 22 migrations, and 17 foreign keys restored into isolated PostgreSQL 16.14. It is not a replacement for the latest production schema count.
 
 ### I.4 Database Record Counts — Fixed Review Window
@@ -333,7 +335,7 @@ The 5-second timeout warnings also need to be reconciled with the earlier report
 | Live PostgreSQL read access | VERIFIED | Read-only SQL inspection succeeded |
 | PostgreSQL version and size | VERIFIED | PostgreSQL 16.15; 9,719 kB |
 | Application table inventory | VERIFIED | 21 tables in latest inspection |
-| Migration inventory | VERIFIED WITH FOLLOW-UP | 22 database records; reconcile with 23-file deployment log |
+| Migration inventory | VERIFIED WITH RECONCILIATION ITEM | 22 database records; reconcile with 23-file deployment log |
 | Foreign-key inventory | VERIFIED | 17 constraints |
 | Inbound voice route activity | VERIFIED — PARTIAL | 15 voice POST requests; HTTP 200 |
 | Inbound voice end-to-end acceptance | OPEN | Controlled signed E2E evidence still required |
@@ -344,8 +346,9 @@ The 5-second timeout warnings also need to be reconciled with the earlier report
 | Durable security-ledger persistence | RESOLVED (code-level) | Security ledger table returned zero records. Fix implemented: Logger.audit() now persists to DB via DbClient.recordSecurityLedgerEvent(). Verified by tests + typecheck + build. Awaiting deployment confirmation. |
 | vFarm readings integration | OPEN | 422, 404 and timeout warnings require per-request reconciliation |
 | Database network allow-list | OPEN — HIGH | `0.0.0.0/0` present; owner/security review required |
-| Database continuity decision | COMPLETE — OWNER CONFIRMED | Existing report states account owner completed upgrade; no further continuity changes authorized |
-| Backup and restore evidence | HISTORICAL VERIFIED | Earlier isolated restore drill passed; latest inspection did not repeat it |
+| Database continuity decision | **COMPLETED** | Account owner completed the upgrade. No further continuity changes authorized. |
+| Backup and restore evidence | **COMPLETED** | Backup artifact verified (80,365 bytes, CUSTOM format, SHA-256 recorded, `pg_restore --list` PASS). Restore drill passed (20 tables, 22 migrations, 17 FKs) — historical, not repeated in latest inspection. Zero-downtime recovery proof not evidenced. |
+| Migration count reconciliation | **UNRESOLVED** | 23 deployment-log files vs 22 `schema_migrations` rows. Duplicate `003_` prefix is the likely cause but not confirmed. |
 | KMG9 boundary proof | BLOCKED | Isolated cluster evidence still required |
 | Authorized live voice acceptance | BLOCKED | Operator/provider test still required |
 
@@ -367,13 +370,11 @@ The 5-second timeout warnings also need to be reconciled with the earlier report
 **P2 — Evidence consistency**
 
 8. **[Engine / Infra] Migration reconciliation:** Compare all production migration names and checksums with repository files and Render deployment logs.
-9. **[Infra] Backup evidence:** Reconfirm the backup artifact identity, timestamp, integrity and restore comparison when the next authorized restore drill is scheduled.
+9. **[Infra] Zero-downtime recovery proof:** The restore drill proves structural validity only. No production-equivalent restore or zero-downtime drill has been performed. This is a verification gap, not an implementation gap, and does not block the completed continuity decision.
 
 ### I.14 Overall Assessment After Latest Inspection
 
 **Verdict: PARTIAL — production activity is evidenced, but important acceptance and reliability gaps remain.**
-
-The latest inspection directly verified the live PostgreSQL schema, migration-record count, table inventory, record counts, voice request activity, dashboard publication outcomes, and several production error patterns.
 
 The most important new findings are:
 
@@ -384,6 +385,8 @@ The most important new findings are:
 5. The latest direct SQL inventory reports 21 application tables and 22 migration records, requiring reconciliation with earlier 20-table restore evidence and deployment logs reporting 23 migration files/records.
 
 The existing database continuity decision remains **COMPLETE — owner confirmed**. This report does not reopen or authorize a database upgrade, replacement, migration, or recreation.
+
+**Continuity and backup work is complete and requires no further action.** The backup artifact is verified (80,365 bytes, CUSTOM format, SHA-256 recorded, `pg_restore --list` PASS) and the restore drill passed (20 tables, 22 migrations, 17 FKs) into isolated PostgreSQL 16.14. The only remaining gap is zero-downtime recovery proof, which is a verification gap — not an implementation gap — and is not a blocker for the continuity decision.
 
 **Decision Watch `DW-1792187689082-B0M2` remains OPEN.** Documentation, code-level testing, read-only production inspection, and historical restore evidence do not substitute for the remaining authorized live acceptance tests.
 
@@ -399,8 +402,9 @@ The following distinctions should be retained when reviewing this consolidated p
 |---|---|---|
 | 20 tables in restore drill | 21 application tables in latest live SQL | Preserve both; restore drill is historical, live SQL is latest |
 | 22 migrations applied | 22 actual `schema_migrations` records | Retain 22 as the direct SQL result |
-| Render logs reported 23 files/records | Direct SQL returned 22 migration rows | Mark for filename/checksum reconciliation |
+| Render logs reported 23 files/records | Direct SQL returned 22 migration rows | Mark for filename/checksum reconciliation; likely duplicate `003_` prefix, not confirmed |
 | Database continuity blocked before Nov 14 | Account owner later confirmed upgrade complete | Mark continuity decision complete; do not repeat the old blocker |
+| Backup/restore drill passed | Backup verified and restore drill completed; zero-downtime recovery not evidenced | Mark backup and continuity complete; separate the zero-downtime verification gap |
 | Callback code is fail-closed | Production logs show unmatched SIDs and null tenant/project | Code safety is supported; end-to-end callback attribution remains open |
 | Voice turn abandoned without persistence | Later published outcomes exist for matching correlation IDs | Record as a consistency discrepancy, not confirmed duplication |
 | Sensor 404s are no readings | Logs also show 422 and timeout categories | Assess each HTTP status and request separately |
@@ -594,7 +598,7 @@ This section documents the code-level fixes implemented on 2026-10-30 to address
 
 **Owner Decisions Pending:**
 - Database allow-list (`0.0.0.0/0`) — security owner review required
-- Database continuity — already confirmed complete by account owner
+- Database continuity — **COMPLETED** by account owner. No further action required.
 - KMG9 BHARAG boundary — isolated cluster evidence needed from Jegan
 - ElevenLabs live voice acceptance — staging + authorized test call needed
 - Twilio live SMS/callback acceptance — production credentials needed

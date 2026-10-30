@@ -90,6 +90,8 @@ Twilio inbound call
 
 ---
 
+## Decision Record — Entry 399
+
 ## C. Database and Endpoint Decision — Entry 399
 
 ### Render Service and Postgres Resource Identifiers
@@ -120,15 +122,9 @@ Twilio inbound call
 
 ### Database Continuity Decision
 
-**Decision needed from account owner before November 14, 2026:**
+**Database upgrade: COMPLETE — already upgraded by account owner. Further database changes are OUT OF SCOPE.**
 
-| Option | Pros | Cons | Risk |
-|--------|------|------|------|
-| Upgrade to paid plan | No migration, no downtime, simplest | Ongoing cost | Low |
-| Migrate to new database | Fresh start, clean schema | Downtime, data transfer, FK validation | Medium |
-| Verified backup/restore only | No cost change | Backup not tested against full restore; free plan still expires | High (time-bound) |
-
-**Recommendation:** Upgrade to paid plan before expiry. The restore drill proves the backup is valid, but does not prove zero-downtime recovery. The free plan expiry is a hard deadline.
+No upgrades, migrations, recreations, or replacements should be performed. Existing database configuration must be preserved unchanged. Any remaining database-related observations (e.g., IP allow-list `0.0.0.0/0`) are findings only, not action items under this task boundary.
 
 ### Readings Endpoint Contract
 
@@ -153,6 +149,8 @@ Twilio inbound call
 ---
 
 ## D. Incident Evidence and Root-Cause Investigation
+
+> See the [Entry 399 decision record](#decision-record--entry-399) for the database and endpoint contract details.
 
 ### Historical Render Log Evidence (Previously Reported, Not Re-Verified)
 
@@ -286,23 +284,119 @@ The following incident details were reported from Render logs on 2026-10-28 but 
 - No secrets in the committed code
 
 ---
+## Render Findings — 2026-10-30 Review
 
-## H. Final Review Checklist
+### Web Service Configuration (Verified 2026-10-29)
+- **Service:** `bha-cst` (srv-db8hepqvcj2c73adpus0), Oregon region
+- **Plan:** 0.5c-512mb (starter), 1 instance
+- **Health check path:** `/health`
+- **Auto-deploy:** yes (triggered by commit to `main`)
+- **Build command:** `npm ci --include=dev && npm run build`
+- **Start command:** `node scripts/migrate.js && npm start`
+- **Ingress allow-list:** `0.0.0.0/0` (everywhere) — applies to web service HTTP ingress only
+- **Network isolation:** disabled
 
-| Action | Owner | Status | Next Step |
-|--------|-------|--------|-----------|
-| Local code fixes | Engineering | DONE | All 1006 tests pass |
-| Live vFarm API verification | Engineering | DONE | Confirmed per-unit readings return |
-| Backup verification | Infra | DONE | 1 valid archive, restore drill passed |
-| Render read-only inspection | Engineering | DONE | Health, logs, env vars, deploy status verified |
-| KMG9 boundary evidence | Jegan/BHARAG | BLOCKED | Need isolated cluster + green tests |
-| Postgres continuity decision | Account owner | BLOCKED | Decide before Nov 14 2026 |
-| ElevenLabs live acceptance | Account owner | BLOCKED | Provide credentials for staging |
-| Twilio live acceptance | Account owner | BLOCKED | Provide production credentials |
-| Render staging service | Infra | BLOCKED | Provision staging service + DB |
-| GitHub push access | Key owner | BLOCKED | Unlock SSH key |
+### PostgreSQL Configuration (Verified 2026-10-29)
+- **Resource:** `bha-cst-postgres` (dpg-db8he2qvcj2c73ado3s0-a)
+- **Version:** PostgreSQL 16.15
+- **Plan:** Free
+- **Expiry:** 2026-11-14T18:10:20Z
+- **Database name:** `bha_cst_1sh0`
+- **Migrations applied:** 22 (001-022, including 022_add_escalations_table.sql)
+- **Tables:** 20 public base tables
+- **Foreign keys:** 17
+- **Inbound allow-list:** `103.120.71.129/32` (label: "Bays Horizon (admin@bhanetwork.org)") — applies to PostgreSQL inbound connections only
+- **Network isolation:** disabled
 
----
+### IP Allow-List Distinction (Verified)
+- **Web service ingress (`0.0.0.0/0`):** Controls which IPs can reach the CST web service over HTTP. This is public service ingress.
+- **Database inbound (`103.120.71.129/32`):** Controls which IPs can connect to PostgreSQL. This is a single IP restriction.
+- These are separate settings on separate resources. Public web service ingress does NOT mean the database is publicly accessible. The database requires both the allow-list entry AND valid credentials.
+
+### Deployment Metadata (Verified 2026-10-29)
+- **Deployed commit:** `78075b19757f539b88098a97a46cfcbf7b7937c6` (Merge PR #13)
+- **Deploy status:** live
+- **Deploy created:** 2026-10-28T20:58:17Z
+- **Deploy finished:** 2026-10-28T20:59:14Z
+
+### Worker Heartbeat (Verified 2026-10-29T22:34:04Z)
+```json
+{"message": "Outbound worker heartbeat", "pending": 0, "queued": 0, "sending": 0, "failed": 0, "outcome_unknown": 0}
+```
+- Worker was alive and emitting heartbeats in the retrieved log window
+- Queue counts were zero at this observation
+- This does NOT prove all callbacks were attributed or all messages delivered successfully
+
+### Resource Metrics (Limited Window: 2026-10-29T20:00-22:40Z)
+- **Web service:** 1 instance, memory ~87-109 MiB (peak ~114 MB), HTTP 200 latency ~2-5ms
+- **PostgreSQL:** 1 primary instance, active connections 2-3, memory ~35-44 MiB
+- **Qualification:** These are observations from a limited metrics window. They do not prove sustained capacity, long-term performance, or successful live voice acceptance.
+
+### Callback-Attribution Evidence (Current Production)
+Recent Render logs (2026-10-29T12:38-13:18Z) show repeated delivery callback failures:
+
+```
+2026-10-29T12:38:50.859Z | WARN | Delivery callback for SM291a**************************** could not be attributed to a tenant project
+2026-10-29T12:56:52.345Z | WARN | Delivery callback for SM9c80**************************** could not be attributed to a tenant project
+2026-10-29T12:56:59.251Z | WARN | Delivery callback for SMcced**************************** could not be attributed to a tenant project
+2026-10-29T13:18:14.617Z | WARN | Delivery callback for SM7682**************************** could not be attributed to a tenant project
+```
+
+Security ledger: `{"outcome":"refused","reason":"cst.delivery_attribution_unresolved","tenant_id":null}`
+
+**Interpretation:** CST correctly fails closed — no fabricated attribution. Root cause is either: (a) outbound messages created without persisted tenant/project, (b) SID lookup mismatch, or (c) messages created before relevant migrations. Requires read-only DB investigation.
+
+### Twilio Undelivered Callback
+- `2026-10-29T22:30:58.179Z`: Delivery callback for `SM24c3...` — Twilio ErrorCode 30453, status `undelivered`, `outbound_row_found: false`
+- **Interpretation:** Twilio reported undelivered message. CST could not match callback to outbound row. Open investigation.
+
+### Database Inspection Limitation
+A read-only SQL inspection was attempted through the available Render connection, but it failed because the MCP host was not permitted by the database's current IP allow-list/TLS access restrictions. No database settings were changed to work around this.
+
+**NOT INDEPENDENTLY VERIFIED DURING THIS CHECK:**
+- Current production user-table count (earlier evidence reports 20 tables; Jason's Slack update reportedly referred to 21 production tables and ~9.5 MB)
+- Exact production row counts
+- Key-table row-count comparison between production and restored database
+- Backup artifact ID and actual storage location
+- Restore target identity and exact restore timestamp
+- Whether the restore copy matches production data
+
+**Do not choose one number without fresh evidence. Record the discrepancy and request an authorized read-only verification.**
+
+### Database Continuity Status (Updated)
+- Database upgrade: **COMPLETE — performed by account owner.** Not an outstanding action.
+- Current Render database configuration: **observed and documented.**
+- Backup artifact verification: **partially evidenced; artifact identity/location must be confirmed.**
+- Restore drill: **previously reported as passed; underlying artifact and row-count comparison still require evidence review.**
+- Production-versus-restore data comparison: **NOT INDEPENDENTLY VERIFIED in this Render check.**
+- Further database changes: **OUT OF SCOPE.**
+
+## 9. Still Open
+
+- **BLOCKER:** Rack sensor timeout (29-43s) exceeds 7s voice deadline — upstream vFarm performance
+- **BLOCKER:** KMG9 BHARAG boundary — needs isolated cluster evidence
+- **BLOCKER:** ElevenLabs live voice acceptance — needs staging + authorized test call
+- **BLOCKER:** Twilio live SMS/callback acceptance — needs production credentials
+- **BLOCKER:** Delivery callback attribution — production DB investigation needed
+- **BLOCKER:** GitHub push access — SSH key passphrase unavailable
+- **BLOCKER:** Stale customer refs — owner confirmation needed
+- **BLOCKER:** Legacy systems table — owner decision needed
+- **BLOCKER:** EWQI vFarm contract — vFarm owner confirmation needed
+- **BLOCKER:** Rack sensor timeouts — upstream vFarm performance issue
+- **FINDING (not blocker):** IP allow-list `103.120.71.129/32` on database (single entry) — needs owner review
+- **FINDING (not blocker):** `VOICE_AUDIO_BASE_URL` not set in production — audio URL derived from request host (may work but not explicitly configured)
+- **FINDING (not blocker):** `VFARM_WORKSPACE_ID` missing/empty in production env vars
+
+## Links
+
+- [Decision record](../decisions/2026-10-29-cst-entry-399-db-endpoint-decision.md)
+- [Identity evidence](2026-10-29-cst-entry-393-identity-authority-evidence.md)
+- [Render live evidence](2026-10-29-render-live-evidence-entry-399.md)
+- [Acceptance SOP](../acceptance/cst-v1-acceptance-sop.md)
+- [E2E capture template](e2e-capture-template.md)
+- [Entry 393 draft](../acceptance/codex-entry-drafts/entry-393-update.md)
+- [Entry 399 draft](../acceptance/codex-entry-drafts/entry-399-update.md)
+- [KMG9 verification record](../kmg9-verification-record.md)
 
 ## Final Report
 

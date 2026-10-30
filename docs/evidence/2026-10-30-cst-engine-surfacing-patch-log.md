@@ -122,6 +122,94 @@ Where supported by code inspection, unit tests, typecheck, and build:
 
 ---
 
+## D. vFarm Device-Status Contract (Jegan PR #100)
+
+Jegan's five mutually-exclusive device-status contract is now consumed by CST.
+vFarm remains the authority for device identity, device status, relay state,
+presence, readings, and farm/device relationships.
+
+### Five Fleet Status Buckets
+
+| Status | Applies To | Meaning |
+|---|---|---|
+| `on` | Loads: pumps, valves, lights | Parent relay channel reports `1`, `"1"`, or `"on"` |
+| `off` | Loads: pumps, valves, lights | Relay reports `0`, missing, or load is unwired |
+| `online` | Other reporting devices | Reporting and health score >= 80, or no health score yet |
+| `unhealthy` | Other reporting devices | Reporting and health score < 80 |
+| `offline` | Other reporting devices | Explicitly offline, not heard for 5 min, or never heard |
+
+Additional rules:
+- Cabinets are frames, not reporting devices; their `fleet_status` is `null`.
+- Relay channels are excluded from fleet totals (state represented by load).
+- Relay modules are distinct from relay channels — NOT excluded.
+- Five fleet buckets are mutually exclusive and add up to fleet total.
+- Existing API fields remain unchanged.
+
+### vFarm API Contract (PR #100 merged to develop)
+
+- `GET /api/v1/devices` → `devices[].fleet_status`, `fleet_counts`, optional `fleet_status` filter
+- `GET /api/v1/devices/{device_id}` → `fleet_status`
+- `GET /api/v1/dashboard/farm-summary` → `fleet` block per farm and in totals
+
+Filter values: `online`, `unhealthy`, `offline`, `on`, `off`
+
+### Offline Alerts / BHA-271 (PRs #90, #91)
+
+- Status writers emit real transitions to a presence stream.
+- Outage opens after per-farm grace period, 180s backstop.
+- Dead board rolls up into one alert for everything under it.
+- Recovery records outage duration.
+- Delivery uses farm's existing alert channel and per-farm switch.
+- Every real outage recorded in History and ledger as `vfarm.alert`, regardless of Slack delivery.
+- **Rule for Research Twin card creation is in §10 of Monitoring Twin contract — still awaiting review.** Do not invent automatic card creation.
+
+### Known Upstream Defect: `NEVER_HEARD_DEVICE_FALSE_ONLINE`
+
+A device created/set to `online` but never sent presence/reading can remain falsely online.
+Fix (targeted 2026-11-02): never-heard device is offline until first presence/reading.
+Backstop test must cover `null` case.
+Corrective PR not yet supplied — **open upstream vFarm dependency**.
+CST does NOT override with local workaround.
+
+### CST Integration Behavior
+
+| Surface | Implementation |
+|---|---|
+| **vFarm Adapter** | `getFleetStatusForSpeaker()`, `getDeviceFleetStatus()` — consume authoritative `fleet_status`/`fleet_counts` verbatim; never recompute from `last_seen_at`/health/relay; legacy fallback honest |
+| **Monitoring Twin** | Consumes five statuses; distinguishes load `off` from device `offline`/`unhealthy`; `off` ≠ outage |
+| **Research Twin** | §10 rule pending review — no auto card creation for `vfarm.alert`; no duplicate cards for status snapshots |
+| **Customer Service Twin** | Explains load `on`/`off`; reporting device `online`/`unhealthy`/`offline`; cabinet `null` = frame; never claims reading from fleet status alone |
+| **Admin Dashboard** | `renderVfarmDashboard` displays five statuses distinctly; excludes cabinet/relay-channel from totals; uses `fleet_counts` |
+| **Offline Alerts** | No `vfarm.alert` ingestion yet — vFarm owns alert lifecycle; `e8b0d2f4a6c1` migration is vFarm deployment dependency |
+
+### Tests Added
+
+`tests/adapters/vfarm_fleet_status.test.ts` — 17 focused tests covering:
+1–6. All five `fleet_status` values + cabinet `null`
+7–8. Missing `fleet_status`/`fleet_counts` (legacy contract)
+9. Five mutually-exclusive `fleet_counts` buckets sum to total
+10. `off` ≠ outage
+11–12. Offline/recovery preserves source metadata; no duplicate active outage in CST
+13–14. Research Twin §10 pending — no auto card creation
+15. No reading claim from fleet status alone
+16. Authorization enforced on all fleet-status methods
+
+### Acceptance Matrix Updates
+
+| Tracking Ref | Category | Status |
+|---|---|---|
+| 4KD5 | A | Code + local tests complete |
+| UN9D (Test 1) | A | Code + local tests complete |
+| GWTH | A | Code + local tests complete |
+| 9FTX | A | Code + local tests complete |
+| B0M2 | C | Remains OPEN — signed E2E acceptance pending |
+
+**Category A (Code + Local Tests):** Complete — adapter methods, connector wording, admin dashboard rendering, 17 focused tests, typecheck, build, full suite (1055 passed).
+**Category B (Deployed Production Telemetry):** Pending — requires vFarm deployment with PR #100, migration `e8b0d2f4a6c1`, and live API responses showing `fleet_status`/`fleet_counts`.
+**Category C (Authorized E2E Acceptance):** Pending — requires authorized live test across vFarm, CST, and Twin surfaces with signed evidence.
+
+---
+
 ## Patch Log Path
 
 `docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`

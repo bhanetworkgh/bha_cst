@@ -92,7 +92,6 @@
 - Live vFarm identity resolution proof for a real caller (requires vFarm credentials + authorized test)
 - Live authorization grant verification for a real farm (requires vFarm membership data)
 - Live vFarm readings retrieval for an authorized caller (requires vFarm credentials)
-- Live voice E2E test with authorized test number (requires Twilio + ElevenLabs credentials)
 
 ## Fail-Closed Behavior (Cited Tests)
 
@@ -136,7 +135,6 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 - **BLOCKER:** Live vFarm identity resolution proof for a real caller (requires vFarm credentials + authorized test)
 - **BLOCKER:** Live authorization grant verification for a real farm (requires vFarm membership data)
 - **BLOCKER:** Live vFarm readings retrieval for an authorized caller (requires vFarm credentials)
-- **BLOCKER:** Live voice E2E test with authorized test number (requires Twilio + ElevenLabs credentials)
 - **BLOCKER:** KMG9 BHARAG boundary verification (requires isolated cluster evidence from Jegan)
 
 > KMG9 boundary proof and upstream identity binding are NOT complete. No supporting evidence exists for either. They remain BLOCKED pending external evidence.

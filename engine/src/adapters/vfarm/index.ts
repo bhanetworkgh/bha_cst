@@ -542,6 +542,76 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   }
 
   /**
+   * Fleet status for a speaker authorized for that farm.
+   *
+   * vFarm's five mutually-exclusive device-status contract (calculated at query
+   * time in SQL; Kavin's PR #100 merged into develop). Every reporting device
+   * or load belongs to exactly one of: on | off | online | unhealthy | offline.
+   * Cabinets are frames, not reporting devices — their fleet_status is null.
+   * Relay channels are excluded from fleet totals; relay modules are NOT.
+   *
+   * CST does NOT recompute authoritative device status here. It reads
+   * `fleet_counts` from the upstream and reports it verbatim. When the
+   * upstream deployment has not yet returned `fleet_counts` (older contract),
+   * the bucket is reported as unavailable rather than fabricated — a missing
+   * field is never reinterpreted as offline, and a null cabinet status is
+   * never promoted to a reporting-device bucket.
+   *
+   * Returns null when the farm is not granted, the adapter has no live
+   * client, or the upstream call fails — never a fabricated fleet status.
+   */
+  public async getFleetStatusForSpeaker(params: { farmId: string; speaker: SpeakerIdentity }): Promise<{
+    farm_id?: string;
+    fleet_status?: string | null;
+    fleet_counts?: {
+      total?: number;
+      on?: number;
+      off?: number;
+      online?: number;
+      unhealthy?: number;
+      offline?: number;
+    };
+    upstream_contract: 'fleet_counts' | 'legacy_counters' | 'unavailable';
+  } | null> {
+    if (!params.farmId) return null;
+    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    if (!this.liveClient) return null;
+
+    try {
+      const devices = await this.liveClient.listAllDevices(params.farmId);
+      const dev = (devices ?? {}) as Record<string, any>;
+      const counts = dev.fleet_counts;
+      if (counts && typeof counts === 'object') {
+        return {
+          farm_id: params.farmId,
+          fleet_status: dev.fleet_status ?? null,
+          fleet_counts: {
+            total: typeof counts.total === 'number' ? counts.total : undefined,
+            on: typeof counts.on === 'number' ? counts.on : undefined,
+            off: typeof counts.off === 'number' ? counts.off : undefined,
+            online: typeof counts.online === 'number' ? counts.online : undefined,
+            unhealthy: typeof counts.unhealthy === 'number' ? counts.unhealthy : undefined,
+            offline: typeof counts.offline === 'number' ? counts.offline : undefined,
+          },
+          upstream_contract: 'fleet_counts',
+        };
+      }
+      // Older upstream contract: only the legacy counters are present. Report
+      // them honestly and flag the contract version rather than inventing the
+      // five-bucket split.
+      return {
+        farm_id: params.farmId,
+        fleet_status: dev.fleet_status ?? null,
+        fleet_counts: undefined,
+        upstream_contract: 'legacy_counters',
+      };
+    } catch (err: any) {
+      Logger.warn(`vFarm getFleetStatusForSpeaker: fleet status lookup failed for farm ${params.farmId}: ${err?.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Open alerts for a farm the speaker is authorized for.
    *
    * Read-only, farm-scoped, authorized by the caller's grant list. The
@@ -600,6 +670,74 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         return null;
       }
       throw err;
+    }
+  }
+
+  /**
+   * Authoritative per-device fleet status for a single device.
+   *
+   * Reads `GET /api/v1/devices/{device_id}` and returns the upstream
+   * `fleet_status` field verbatim. vFarm remains the authority: CST does not
+   * recompute this from `last_seen_at`, `last_reading_at`, health score, relay
+   * state, or any timeout calculation.
+   *
+   * The five buckets are:
+   *   on / off        — loads (pumps, valves, lights) driven by a relay channel
+   *   online          — reporting device, health >= 80 or no score yet
+   *   unhealthy       — reporting device, health < 80
+   *   offline         — explicitly offline, not heard for 5 min, never heard
+   *   null            — cabinets (frames, not reporting devices)
+   *
+   * A missing field from an older upstream contract is reported as
+   * `unavailable` rather than reinterpreted as offline. A null cabinet
+   * status is never promoted into a reporting-device bucket.
+   *
+   * Returns null when the farm is not granted, the adapter has no live
+   * client, or the upstream call fails — never a fabricated status.
+   */
+  public async getDeviceFleetStatus(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<{
+    device_id: string;
+    farm_id: string;
+    fleet_status: string | null;
+    device_type?: string;
+    device_type_label?: string;
+    upstream_contract: 'fleet_status' | 'legacy_status' | 'unavailable';
+  } | null> {
+    if (!params.deviceId) return null;
+    if (params.speaker) {
+      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    }
+    if (!this.liveClient) return null;
+
+    try {
+      const dev = await this.liveClient.getDevice(params.deviceId);
+      const d = (dev ?? {}) as Record<string, any>;
+      const fleetStatus = d.fleet_status;
+      if (fleetStatus !== undefined) {
+        // Field present in response (could be string or explicit null for cabinet)
+        return {
+          device_id: params.deviceId,
+          farm_id: params.farmId,
+          fleet_status: fleetStatus,
+          device_type: typeof d.device_type === 'string' ? d.device_type : undefined,
+          device_type_label: typeof d.device_type_label === 'string' ? d.device_type_label : undefined,
+          upstream_contract: 'fleet_status',
+        };
+      }
+      // Older upstream contract: no fleet_status field at all. Report the legacy
+      // `status` field honestly and flag the contract version rather than
+      // mapping it onto the new buckets.
+      return {
+        device_id: params.deviceId,
+        farm_id: params.farmId,
+        fleet_status: null,
+        device_type: typeof d.device_type === 'string' ? d.device_type : undefined,
+        device_type_label: typeof d.device_type_label === 'string' ? d.device_type_label : undefined,
+        upstream_contract: 'legacy_status',
+      };
+    } catch (err: any) {
+      Logger.warn(`vFarm getDeviceFleetStatus: fleet status lookup failed for device ${params.deviceId}: ${err?.message}`);
+      return null;
     }
   }
 

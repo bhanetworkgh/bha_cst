@@ -18,6 +18,53 @@ export interface VfarmUnitStatus {
   last_updated: string;
   /** True when the reading timestamp is older than the freshness threshold. */
   stale?: boolean;
+  /**
+   * Authoritative vFarm fleet status for this device, when the upstream
+   * deployment supplies it. Values: on | off | online | unhealthy | offline |
+   * null. null means the device is a cabinet (a frame, not a reporting device)
+   * or the upstream contract has not been deployed yet.
+   */
+  fleet_status?: string | null;
+  /** Which vFarm device-status contract the fleet_status value comes from. */
+  upstream_contract?: 'fleet_status' | 'legacy_status' | 'unavailable';
+}
+
+/**
+ * Customer-facing wording for an authoritative vFarm fleet status.
+ *
+ * vFarm is the authority for device status. CST never recomputes it from
+ * last_seen_at, health score, relay state or a timeout. The wording below
+ * preserves the distinction between the five buckets and never claims a
+ * device is operational merely because its relay module is online, nor
+ * claims a sensor has a current reading merely because its fleet status is
+ * online. A null status (cabinet) is described as a frame, not a device.
+ */
+function describeFleetStatus(fleetStatus: string | null | undefined, contract?: string): string | null {
+  if (fleetStatus === undefined || fleetStatus === null) {
+    if (contract === 'legacy_status') {
+      return 'Authoritative device status is not yet available from the vFarm deployment.';
+    }
+    if (contract === 'unavailable') {
+      return null;
+    }
+    // null is a cabinet: a frame, not a reporting device. Say so rather than
+    // inventing an online/offline bucket for it.
+    return 'This device is a cabinet frame and is not itself a reporting device.';
+  }
+  switch (fleetStatus) {
+    case 'on':
+      return 'This load (pump, valve or light) is switched on.';
+    case 'off':
+      return 'This load (pump, valve or light) is switched off.';
+    case 'online':
+      return 'This reporting device is online.';
+    case 'unhealthy':
+      return 'This reporting device is online but flagged unhealthy.';
+    case 'offline':
+      return 'This reporting device is offline.';
+    default:
+      return `vFarm reports device status "${fleetStatus}".`;
+  }
 }
 
 function parseNumericField(value: unknown): number | undefined {
@@ -234,6 +281,17 @@ export class VfarmConnector {
             // folded into online or offline, and "unhealthy" is phrased as a
             // flag on devices already counted ("of them"), never as extra
             // devices.
+            //
+            // Jegan's five mutually-exclusive device-status contract (calculated
+            // at query time in SQL; Kavin's PR #100 merged into develop) adds
+            // `fleet_counts` with the disjoint buckets on | off | online |
+            // unhealthy | offline. When the upstream deployment returns it, CST
+            // reports those buckets verbatim and does NOT recompute them from
+            // last_seen_at / health_score / relay state. When the older
+            // contract is still deployed, the legacy counters are reported and
+            // the five-bucket split is flagged as unavailable rather than
+            // invented. A cabinet's null fleet_status is never promoted into a
+            // reporting-device bucket.
             const statusParts: string[] = [`${d.total} devices`];
             if (d.online) statusParts.push(`${d.online} online`);
             if (d.offline) statusParts.push(`${d.offline} offline`);
@@ -244,6 +302,32 @@ export class VfarmConnector {
             parts.push(`${statusParts.join(', ')}.`);
             if (d.unhealthy > 0) {
               parts.push(`Of those, ${d.unhealthy} ${d.unhealthy === 1 ? 'is' : 'are'} flagged unhealthy.`);
+            }
+
+            // Authoritative five-bucket fleet status, when the upstream
+            // deployment supplies it. This is additive: it does not replace
+            // the legacy-counter paragraph above, which remains the honest
+            // rendering for the older contract.
+            try {
+              const fleet = await adapter.getFleetStatusForSpeaker({ farmId, speaker: speakerIdentity });
+              if (fleet) {
+                if (fleet.fleet_counts && typeof fleet.fleet_counts === 'object') {
+                  const fc = fleet.fleet_counts;
+                  const fleetParts: string[] = [];
+                  if (typeof fc.on === 'number' && fc.on > 0) fleetParts.push(`${fc.on} switched on`);
+                  if (typeof fc.off === 'number' && fc.off > 0) fleetParts.push(`${fc.off} switched off`);
+                  if (typeof fc.online === 'number' && fc.online > 0) fleetParts.push(`${fc.online} online`);
+                  if (typeof fc.unhealthy === 'number' && fc.unhealthy > 0) fleetParts.push(`${fc.unhealthy} unhealthy`);
+                  if (typeof fc.offline === 'number' && fc.offline > 0) fleetParts.push(`${fc.offline} offline`);
+                  if (fleetParts.length > 0) {
+                    parts.push(`Authoritative fleet status: ${fleetParts.join(', ')}.`);
+                  }
+                } else if (fleet.upstream_contract === 'legacy_counters') {
+                  parts.push('Authoritative five-bucket fleet status is not yet available from the vFarm deployment.');
+                }
+              }
+            } catch (err: any) {
+              Logger.warn(`vFarm fleet status failed for farm ${farmId}: ${err?.message}`);
             }
 
             // Open alerts for this farm (farm-scoped, authorized by the
@@ -428,17 +512,48 @@ export class VfarmConnector {
               // No readings for this device. That is a real, honest result —
               // not an upstream failure and not a fabricated value.
               Logger.info(`vFarm Telemetry Connector: no readings for unit ${unitId} (${farmId})`);
+              let fleetStatus: string | null | undefined;
+              let fleetContract: string | undefined;
+              try {
+                const fleet = await adapter.getDeviceFleetStatus({ farmId, deviceId: unitId, speaker: speakerIdentity });
+                if (fleet) {
+                  fleetStatus = fleet.fleet_status;
+                  fleetContract = fleet.upstream_contract;
+                }
+              } catch (err: any) {
+                Logger.warn(`vFarm fleet status failed for unit ${unitId}: ${err?.message}`);
+              }
+              const fleetText = describeFleetStatus(fleetStatus, fleetContract);
               return {
-                text: `vFarm Unit ${unitId} (${farmId}): No sensor readings are available for this unit at this time.`,
+                text: `vFarm Unit ${unitId} (${farmId}): No sensor readings are available for this unit at this time.${fleetText ? ` ${fleetText}` : ''}`,
                 telemetry: {
                   unit_id: unitId,
                   farm_id: farmId,
                   status: 'telemetry_unavailable',
                   last_updated: new Date().toISOString(),
+                  fleet_status: fleetStatus,
+                  upstream_contract: fleetContract as any,
                 },
               };
             }
             const telemetry = mapLatestReadingToTelemetry(farmId, unitId, reading);
+            // Authoritative fleet status is additive: a device can have a
+            // current reading AND be flagged unhealthy or offline. The status
+            // wording never replaces the reading and never claims the sensor
+            // has a current reading merely because its fleet status is online.
+            try {
+              const fleet = await adapter.getDeviceFleetStatus({ farmId, deviceId: unitId, speaker: speakerIdentity });
+              if (fleet) {
+                telemetry.fleet_status = fleet.fleet_status;
+                telemetry.upstream_contract = fleet.upstream_contract as any;
+                const fleetText = describeFleetStatus(fleet.fleet_status, fleet.upstream_contract);
+                if (fleetText) {
+                  return { text: `${formatTelemetryText(telemetry)} ${fleetText}`, telemetry };
+                }
+              }
+            } catch (err: any) {
+              Logger.warn(`vFarm fleet status failed for unit ${unitId}: ${err?.message}`);
+            }
             Logger.info(
               `vFarm Telemetry Connector: live reading for unit ${unitId} (${farmId}) actor ${customerRef}`,
             );

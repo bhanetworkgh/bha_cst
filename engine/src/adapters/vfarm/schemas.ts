@@ -253,6 +253,11 @@ export const deviceResponseSchema = z.object({
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   children: z.array(z.unknown()).nullable().optional(),
+  // vFarm fleet status (Jegan's five mutually-exclusive device-status contract,
+  // calculated at query time in SQL; Kavin's PR #100 merged into develop).
+  // Cabinets are frames, not reporting devices — their fleet_status is null.
+  // Values: on | off | online | unhealthy | offline | null
+  fleet_status: z.string().nullable().optional(),
 }).passthrough();
 export type DeviceResponse = z.infer<typeof deviceResponseSchema>;
 
@@ -263,6 +268,19 @@ export const deviceListResponseSchema = z.object({
   offline_count: z.number().int().optional(),
   registered_count: z.number().int().optional(),
   maintenance_count: z.number().int().optional(),
+  // Per-farm fleet totals for the five mutually-exclusive buckets.
+  // Relay channels are excluded from fleet totals (their state is represented
+  // by the load they drive); relay modules are NOT excluded.
+  fleet_counts: z.object({
+    total: z.number().int().optional(),
+    on: z.number().int().optional(),
+    off: z.number().int().optional(),
+    online: z.number().int().optional(),
+    unhealthy: z.number().int().optional(),
+    offline: z.number().int().optional(),
+  }).optional(),
+  // Optional fleet_status filter echoed back by the upstream.
+  fleet_status: z.string().nullable().optional(),
 }).passthrough();
 export type DeviceListResponse = z.infer<typeof deviceListResponseSchema>;
 

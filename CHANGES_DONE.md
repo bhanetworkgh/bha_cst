@@ -7,7 +7,7 @@
    - Added `tests/contracts/test_traffic_marking.test.ts` to verify marker propagation through serialization
 
 2. **f17ab02** - fix(cst): complete test traffic and operational verification  
-   - Added `CST_COMPLETE_PENDING_WORK_REPORT.md`, `CST_COMPLETE_REMAINING_WORK_REPORT.md` (documentation)
+   - Added temporary `CST_COMPLETE_PENDING_WORK_REPORT.md`, `CST_COMPLETE_REMAINING_WORK_REPORT.md` (superseded by `docs/release/CST_REMAINING_GAPS_CLOSURE_REPORT.md` and `docs/release/task.md`; removed in a later cleanup pass)
 
 3. **ca3bb15** - test(kmg9,outbound): add boundary and operational readiness tests
    - Added `tests/regression/kmg9_phase3_additional.test.ts` (KMG9 boundary verification)
