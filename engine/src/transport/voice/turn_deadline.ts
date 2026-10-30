@@ -25,21 +25,26 @@
 import { Logger } from '../../config/logger.js';
 
 /** Default bound on how long a voice turn may take before the caller is answered. */
-export const DEFAULT_VOICE_TURN_DEADLINE_MS = 7000;
+export const DEFAULT_VOICE_TURN_DEADLINE_MS = 12000;
+
+/** Hard upper bound for synchronous voice processing — never exceeded regardless of config. */
+export const MAX_SYNC_VOICE_DEADLINE_MS = 14000;
 
 const MIN_DEADLINE_MS = 1000;
 const MAX_DEADLINE_MS = 20000;
 
 /**
- * The configured deadline.
+ * The configured deadline, clamped to the hard synchronous ceiling.
  *
  * Overridable with `CST_VOICE_TURN_DEADLINE_MS` for a deployment with a
- * different provider budget. Clamped to a sane range.
+ * different provider budget. Clamped to a sane range and the hard
+ * synchronous ceiling of 14 seconds.
  */
 export function voiceTurnDeadlineMs(): number {
   const raw = Number(process.env.CST_VOICE_TURN_DEADLINE_MS);
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_VOICE_TURN_DEADLINE_MS;
-  return Math.min(Math.max(raw, MIN_DEADLINE_MS), MAX_DEADLINE_MS);
+  const clamped = Math.min(Math.max(raw, MIN_DEADLINE_MS), MAX_DEADLINE_MS);
+  return Math.min(clamped, MAX_SYNC_VOICE_DEADLINE_MS);
 }
 
 export interface VoiceTurnDeadlineOptions {

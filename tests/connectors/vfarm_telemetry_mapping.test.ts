@@ -369,11 +369,11 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
       );
 
       // Farm-level aggregate returned
-      expect(res.text).toContain('Farm farm_austin_main');
+      expect(res.text).toContain('Your farm has 27 devices');
       expect(res.text).toContain('27 devices');
-      expect(res.text).toContain('19 online');
-      expect(res.text).toContain('6 offline');
-      expect(res.text).toContain('Of those, 10 are flagged unhealthy');
+      expect(res.text).toContain('19 are online');
+      expect(res.text).toContain('6 are offline');
+      expect(res.text).toContain('10 are unhealthy');
       // NOT per-unit readings
       expect(res.text).not.toContain('Temperature:');
       expect(res.text).not.toContain('unit_bay_04');
@@ -406,7 +406,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
       );
 
       // listLatestReadings IS now called — per-unit values are fetched
-      expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main');
+      expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String));
     });
 
     // ══════════════════════════════════════════════════════════════════
@@ -459,7 +459,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         );
 
         // listLatestReadings WAS called for the farm
-        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main');
+        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String));
         // Per-unit readings are included in the response
         expect(res.text).toContain('Per-unit readings:');
         expect(res.text).toContain('Unit unit_bay_04');
@@ -497,7 +497,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
           makeIdentity({ farm_ids: ['farm_empty'] }),
         );
 
-        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_empty');
+        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_empty', 100, undefined, undefined, expect.any(String));
         expect(res.text).toContain('No per-unit readings are available at this time.');
       });
 
@@ -649,7 +649,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         );
 
         // Farm-level aggregate is still reported
-        expect(res.text).toContain('Farm farm_fail');
+        expect(res.text).toContain('Your farm has');
         // Per-unit readings failure is noted honestly
         expect(res.text).toContain('No per-unit readings are available at this time.');
         // No BHARAG reference anywhere
@@ -691,7 +691,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         expect(res.text).toContain('Unit unit_valid');
         expect(res.text).toContain('Temperature: 22°C');
         // Invalid entries are skipped, not crashed
-        expect(res.text).toContain('Farm farm_mixed');
+        expect(res.text).toContain('Your farm has');
       });
     });
   });

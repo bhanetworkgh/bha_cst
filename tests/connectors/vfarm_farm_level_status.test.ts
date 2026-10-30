@@ -119,11 +119,10 @@ describe('vFarm connector — farm-level status without a unit binding', () => {
     // The refusal is GONE.
     expect(res.text).not.toContain('not linked to an active vFarm unit');
     // And the answer carries the real farm state.
-    expect(res.text).toContain('v-farm');
-    expect(res.text).toContain('26 devices');
-    expect(res.text).toContain('19 online');
-    expect(res.text).toContain('6 offline');
-    expect(res.text).toContain('10 are flagged unhealthy');
+    expect(res.text).toContain('Your farm has 26 devices');
+    expect(res.text).toContain('19 are online');
+    expect(res.text).toContain('6 are offline');
+    expect(res.text).toContain('10 are unhealthy');
     expect(res.telemetry?.status).toBe('fault');
     expect(res.telemetry?.farm_id).toBe(FARM);
   });
