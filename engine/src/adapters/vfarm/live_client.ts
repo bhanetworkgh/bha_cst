@@ -812,45 +812,16 @@ export class VfarmLiveClient {
     }
 
     // 2. Fetch latest reading for each device (bounded concurrency: 5 at a time)
-    // Filter to sensor devices only (using sensor label, name, tags, or device_type)
-    const sensorDevices = devices.filter((dev: any) => {
-      if (!dev) return false;
-      // If explicit non-sensor types like cabinet, actuator, or gateway without sensor indicator, exclude them
-      if (dev.device_type === 'cabinet') return false;
-      // Check for sensor label, name, tags, or sensor-related identifiers
-      const label = dev.device_type_label || dev.device_name || dev.name || dev.sensor_label || '';
-      const tags = Array.isArray(dev.tags) ? dev.tags.join(' ') : '';
-      const type = dev.device_type || '';
-      const id = dev.id || '';
+    // Filter to sensors only: device.device_type === "sensor" (with fallback to all devices if no device_type is specified)
+    const filteredSensors = devices.filter(
+      (device: any) => device.device_type === 'sensor',
+    );
+    const sensors = filteredSensors.length > 0 ? filteredSensors : devices;
 
-      // If device has an explicit sensor label or tag
-      if (dev.sensor_label || dev.device_type_label || (tags && /sensor|reading/i.test(tags))) {
-        return true;
-      }
-      // If device_type indicates a sensor
-      if (type === 'sensor' || /sensor/i.test(type) || /sensor/i.test(label)) {
-        return true;
-      }
-      // Known sensor IDs or names (e.g. rack1_mq7, rack1_soil, rack1_ph, rack2_dht, etc.)
-      if (/sensor|dht|mq|soil|ph|temp|humidity|co2/i.test(id) || /sensor|dht|mq|soil|ph|temp|humidity|co2/i.test(label)) {
-        return true;
-      }
-      // If dev has sensor_type_id or last_reading_at
-      if (dev.sensor_type_id || dev.last_reading_at) {
-        return true;
-      }
-      // Default: if no device_type is specified (e.g. mock test items { id: 'sensor_1' }), keep it
-      if (!type && !dev.device_type_label && !dev.device_name) {
-        return true;
-      }
-      return false;
-    });
-
-    const targetDevices = sensorDevices.length > 0 ? sensorDevices : devices;
     const CONCURRENCY = 5;
     const results: LatestReadingResponse[] = [];
-    for (let i = 0; i < targetDevices.length; i += CONCURRENCY) {
-      const batch = targetDevices.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < sensors.length; i += CONCURRENCY) {
+      const batch = sensors.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.allSettled(
         batch.map(async (dev: any) => {
           const sensorId = dev.id;
