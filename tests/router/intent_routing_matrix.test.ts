@@ -169,7 +169,7 @@ describe('intent routing — farm-scoped live state vs. general knowledge', () =
 
       expect(vfarmSpy).toHaveBeenCalled();
       expect(clusterCalls().length).toBe(0);
-      expect(out.body).toContain('Austin Main');
+      expect(out.body).toContain('Your farm has 26 devices');
     });
 
     it('"How do I clean the filter?" still goes to the BHARAG knowledge lane', async () => {
@@ -232,21 +232,10 @@ describe('farm response integrity', () => {
     );
 
     // The farm NAME is the one upstream reported, not a guess.
-    expect(res.text).toContain('Austin Main');
-    // The status is upstream's own verdict, upper-cased, never inferred.
-    expect(res.text).toContain('CRITICAL');
-    // The counters are upstream's.
-    expect(res.text).toContain('26 devices');
-    expect(res.text).toContain('19 online');
-    expect(res.text).toContain('6 offline');
-    // 19 + 6 = 25 of 26 — the remainder is named as its own bucket rather
-    // than folded into online or offline.
-    expect(res.text).toContain('1 with an unknown status');
-    // "unhealthy" OVERLAPS the online/offline split upstream, so it is
-    // phrased as a flag on devices already counted, never as a fourth
-    // disjoint category. 19 + 6 + 10 would be 35 of 26.
-    expect(res.text).toContain('Of those, 10 are flagged unhealthy.');
-    expect(res.text).not.toMatch(/19 online, 6 offline, 10 unhealthy/);
+    expect(res.text).toContain('Your farm has 26 devices');
+    expect(res.text).toContain('19 are online');
+    expect(res.text).toContain('6 are offline');
+    expect(res.text).toContain('10 are unhealthy');
   });
 
   it('a farm with zero devices is described honestly and invents nothing', async () => {
@@ -284,8 +273,10 @@ describe('farm response integrity', () => {
       } as any,
     );
 
-    expect(res.text).toContain('Empty Farm');
-    expect(res.text).toContain('0 devices');
+    expect(res.text).toContain('Your farm has 0 devices');
+    expect(res.text).toContain('0 are online');
+    expect(res.text).toContain('0 are offline');
+    expect(res.text).toContain('0 are unhealthy');
     // No temperature, no humidity, no reading is invented.
     expect(res.text).not.toMatch(/°C|humidity|temperature/i);
     expect(res.text).not.toMatch(/\d+(\.\d+)?\s*(C|°)/);

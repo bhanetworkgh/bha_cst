@@ -252,13 +252,13 @@ describe('Voice turn response deadline', () => {
     expect(voiceTurnDeadlineMs()).toBe(1000);
 
     process.env.CST_VOICE_TURN_DEADLINE_MS = '999999';
-    expect(voiceTurnDeadlineMs()).toBe(20000);
+    expect(voiceTurnDeadlineMs()).toBe(14000);
 
     process.env.CST_VOICE_TURN_DEADLINE_MS = 'not-a-number';
-    expect(voiceTurnDeadlineMs()).toBe(7000);
+    expect(voiceTurnDeadlineMs()).toBe(12000);
 
     delete process.env.CST_VOICE_TURN_DEADLINE_MS;
-    expect(voiceTurnDeadlineMs()).toBe(7000);
+    expect(voiceTurnDeadlineMs()).toBe(12000);
   });
 
   // ── 8. The deadline applies at the HTTP boundary ─────────────────────────

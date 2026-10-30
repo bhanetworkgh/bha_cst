@@ -305,10 +305,10 @@ describe('LOOP-1790985133889-8D7U — requestPassthrough() authenticates the sam
 describe('LOOP-1790985133889-8D7U — getSystemStats() gets its own request budget', () => {
   // GET /api/v1/system/stats scans the whole platform: measured 13.8s with a
   // bearer token and 39.0s key-only on bhavfarm1.duckdns.org, versus 234-777ms
-  // for /dashboard/summary. Under the shared 5000ms default it failed on every
-  // attempt, so this pins the per-endpoint override that fixes it.
+  // for /dashboard/summary. Under the shared 8000ms default it still needs
+  // the per-endpoint override for the very slow endpoints.
   it('exceeds the shared default by enough headroom for the measured latency', () => {
-    expect(VFARM_DEFAULT_TIMEOUT_MS).toBe(5000);
+    expect(VFARM_DEFAULT_TIMEOUT_MS).toBe(8000);
     expect(VFARM_SYSTEM_STATS_TIMEOUT_MS).toBeGreaterThan(39000);
   });
 

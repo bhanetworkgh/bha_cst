@@ -292,16 +292,20 @@ export class VfarmConnector {
             // the five-bucket split is flagged as unavailable rather than
             // invented. A cabinet's null fleet_status is never promoted into a
             // reporting-device bucket.
-            const statusParts: string[] = [`${d.total} devices`];
+const statusParts: string[] = [`${d.total} devices`];
             if (d.online) statusParts.push(`${d.online} online`);
             if (d.offline) statusParts.push(`${d.offline} offline`);
             const remainder = d.total - d.online - d.offline;
             if (remainder > 0) statusParts.push(`${remainder} with an unknown status`);
 
-            const parts: string[] = [`${farmLabel}: status ${statusLabel}.`];
-            parts.push(`${statusParts.join(', ')}.`);
+            const unhealthyCount = d.unhealthy || 0;
+
+            // Build the voice response prioritizing farm summary first (required format)
+            const farmSummary = `Your farm has ${d.total} devices. ${d.online} are online, ${d.offline} are offline, and ${unhealthyCount} are unhealthy.`;
+
+            const parts: string[] = [farmSummary];
             if (d.unhealthy > 0) {
-              parts.push(`Of those, ${d.unhealthy} ${d.unhealthy === 1 ? 'is' : 'are'} flagged unhealthy.`);
+              parts.push(`Of those, ${unhealthyCount} ${unhealthyCount === 1 ? 'is' : 'are'} flagged unhealthy.`);
             }
 
             // Authoritative five-bucket fleet status, when the upstream
@@ -361,6 +365,7 @@ export class VfarmConnector {
             // reading for every sensor/device in that farm. We fetch these and
             // report them per-unit rather than leaving the caller with only
             // aggregate counts. No BHARAG fallback — vFarm is the only source.
+            const correlationId = `vfarm-readings-${farmId}-${Date.now()}`;
             let perUnitReadings: Array<{
               unit_id: string;
               farm_id: string;
@@ -374,7 +379,7 @@ export class VfarmConnector {
               stale?: boolean;
             }> = [];
             try {
-              const readings = await adapter.listLatestReadings?.({ farmId, speaker: speakerIdentity });
+              const readings = await adapter.listLatestReadings({ farmId, speaker: speakerIdentity, correlationId });
               if (readings && Array.isArray(readings) && readings.length > 0) {
                 perUnitReadings = readings
                   .filter((r: any) => r && (r.sensor_id || r.device_id))
@@ -393,11 +398,11 @@ export class VfarmConnector {
                       stale: reading.stale,
                     };
                   });
-                }
-              } catch (err: any) {
+              }
+            } catch (err: any) {
               // Per-unit readings are additive: if they fail, we still report
               // the farm-level aggregate above and note the limitation honestly.
-              Logger.warn(`vFarm per-unit readings failed for farm ${farmId}: ${err?.message}`);
+              Logger.warn(`vFarm per-unit readings failed for farm ${farmId}: ${err?.message}`, { correlation_id: correlationId });
             }
 
             // Build the per-unit readings text block.
@@ -421,7 +426,7 @@ export class VfarmConnector {
             }
 
             return {
-              text: `${parts.join(' ')}${unitReadingsText}`,
+              text: `${parts.join(' ')} I could retrieve ${perUnitReadings.length} unit readings.${perUnitReadings.length < d.total ? ' Some readings are currently unavailable.' : ''}${unitReadingsText}`,
               telemetry: {
                 unit_id: 'unbound',
                 farm_id: farmId,

@@ -84,7 +84,7 @@ export const VFARM_DEFAULT_BASE_URL = 'https://vfarm.bhanetwork.org';
  * Operators with a slow upstream should set VFARM_API_TIMEOUT_MS explicitly and
  * confirm the multiplied retry budget still fits their own request timeout.
  */
-export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
+export const VFARM_DEFAULT_TIMEOUT_MS = 8000;
 
 /**
  * Per-endpoint override for GET /api/v1/system/stats, which scans the whole
@@ -776,18 +776,33 @@ export class VfarmLiveClient {
    * the upstream).
    *
    * Per-sensor failure classification:
-   * - 404 → `no_reading` (legitimate; sensor exists but has no readings)
+   * - 404 → `reading_not_available` (legitimate; sensor exists but has no readings)
    * - 401/403 → `unauthorized` (needs token refresh)
-   * - 422 → `invalid_request` (caller bug)
-   * - 5xx → `upstream_error`
-   * - timeout → `timeout`
-   * - network error → `upstream_error`
+   * - 422 → `invalid_request` (caller bug - e.g. using farm_id instead of sensor_id)
+   * - 5xx → `upstream_unavailable`
+   * - timeout → `upstream_timeout`
+   * - network error → `upstream_unavailable`
+   * - 200 with valid data → `success`
    *
    * Successful readings are returned in the result array. Failures are logged
-   * with appropriate severity but do not block other sensors from returning
-   * their readings.
+   * with appropriate severity and classification but do not block other sensors
+   * from returning their readings. Results maintain the original device inventory
+   * order for stable output.
+   *
+   * @param farmId - The farm ID to fetch readings for
+   * @param limit - Maximum number of devices to process (default 100)
+   * @param timeoutMs - Per-request timeout in ms (default: client timeoutMs)
+   * @param concurrency - Max concurrent device-reading requests (default 12, max 12)
+   * @param correlationId - Optional correlation ID for structured logging
+   * @returns Array of successful readings with classification metadata
    */
-  async listLatestReadings(farmId: string, limit = 100, timeoutMs?: number): Promise<LatestReadingResponse[]> {
+  async listLatestReadings(
+    farmId: string,
+    limit = 100,
+    timeoutMs?: number,
+    concurrency = 12,
+    correlationId?: string
+  ): Promise<LatestReadingResponse[]> {
     const perDeviceTimeout = timeoutMs ?? this.timeoutMs;
     // 1. List devices for the farm
     const deviceList = await this.listAllDevices(farmId, limit);

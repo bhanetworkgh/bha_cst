@@ -747,8 +747,21 @@ export class VfarmTenantAdapter implements ITenantAdapter {
    * Farm-scoped and authorized by the speaker's grant list (re-checked
    * inside `assertSpeakerFarmAccess`). Returns empty array when there are no
    * readings — never fabricated values.
+   *
+   * @param farmId - The farm ID to fetch readings for
+   * @param speaker - Optional speaker identity for authorization
+   * @param timeoutMs - Per-request timeout in ms (default: client timeoutMs)
+   * @param concurrency - Max concurrent device-reading requests (default 12, max 12)
+   * @param correlationId - Optional correlation ID for structured logging
+   * @returns Array of successful readings
    */
-  public async listLatestReadings(params: { farmId: string; speaker?: SpeakerIdentity }): Promise<any[]> {
+  public async listLatestReadings(params: {
+    farmId: string;
+    speaker?: SpeakerIdentity;
+    timeoutMs?: number;
+    concurrency?: number;
+    correlationId?: string;
+  }): Promise<any[]> {
     if (params.speaker) {
       assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
     }
@@ -756,7 +769,23 @@ export class VfarmTenantAdapter implements ITenantAdapter {
       return [];
     }
     try {
-      return await this.liveClient.listLatestReadings(params.farmId);
+      const correlationId = params.correlationId || `vfarm-readings-${params.farmId}-${Date.now()}`;
+      const startTime = Date.now();
+      const readings = await this.liveClient.listLatestReadings(
+        params.farmId,
+        100,
+        params.timeoutMs,
+        params.concurrency,
+        correlationId
+      );
+      const duration = Date.now() - startTime;
+      Logger.info(`vFarm listLatestReadings completed`, {
+        correlation_id: correlationId,
+        farm_id: params.farmId,
+        reading_count: readings.length,
+        duration_ms: duration,
+      });
+      return readings;
     } catch (err: any) {
       // Upstream failure — surface as empty so the connector can report
       // honestly rather than claiming readings it cannot retrieve.
