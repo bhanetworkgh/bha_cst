@@ -606,3 +606,190 @@ This section documents the code-level fixes implemented on 2026-10-30 to address
 ---
 
 **Documentation Boundary:** All Category A evidence is based on local code inspection, unit tests, typecheck, and build. Category B and C evidence requires deployed execution and authorized testing respectively. Do not conflate local test passes with production acceptance.
+
+
+---
+
+## L. Reliability Commit Review — 2026-10-30
+
+**Commit:** `bf0d57dea7dec33a422cd7a2aa327937a4738811`
+**Review date:** 2026-10-30
+
+### L.1 Security Ledger — Review Findings
+
+**Implementation:** `Logger.audit()` (logger.ts L96-112) persists to DB via `DbClient.recordSecurityLedgerEvent()` (db/client.ts L1022-1057). The persistence is fire-and-forget: an untracked `void (async () => { ... })()` IIFE with an empty `catch` block.
+
+**Deficiency analysis:**
+
+| Question | Answer |
+|----------|--------|
+| Can fire-and-forget persistence lose events? | **YES.** The async IIFE is untracked. If `recordSecurityLedgerEvent` rejects, the catch block silently swallows the error. The event exists only in the in-memory ring buffer (max 200) and console log. |
+| Are failures observable? | **PARTIALLY.** `recordSecurityLedgerEvent` itself logs `Logger.error(...)` on Postgres failure (db/client.ts L1052). However, the empty catch in `Logger.audit()` (logger.ts L108-111) means the error is logged TWICE (once inside the method, once... actually not — the catch is empty, so only the inner log fires). The caller of `Logger.audit()` has no way to know persistence failed. |
+| Can shutdown discard pending writes? | **YES.** The IIFE creates an untracked Promise. If the process exits (SIGTERM, crash) while the DB write is in flight, the write is lost. `DbClient.disconnect()` closes the pool but does not wait for pending audit writes. |
+
+**Tests:** 13 tests in `tests/security/security_ledger_persistence.test.ts` cover:
+- Ring buffer and console output (5 tests)
+- DB persistence success and failure (8 tests)
+- The test `does not throw and logs error when the database insert fails` explicitly verifies errors are swallowed.
+
+**Assessment:** The fire-and-forget design is intentional — Logger methods must never break the caller's flow. The in-memory ring buffer + console log provide the primary audit trail. DB persistence is a secondary durability layer. However, the consequence is that **durable security-ledger persistence cannot be guaranteed** until production verification shows records appearing in the `security_ledger` table.
+
+**Code change:** Tests-only (regression tests added). No transport implementation change needed — the design is intentional.
+
+### L.2 Twilio Attribution — Review Findings
+
+**Send path:** `processOutboundQueue()` (outbound.ts L281+) sends via `TwilioClientWrapper.sendSms()` (L496), then persists:
+1. `DbClient.updateOutboundFromE164(msg.id, fromNumber)` — from-number (L504)
+2. `DbClient.updateOutboundProviderSid(msg.id, res.sid)` — Twilio MessageSid (L506)
+3. `DbClient.updateOutboundStatus(msg.id, 'sent', ...)` — status transition (L508)
+
+**Callback path:** `updateDeliveryStatusByProviderSid(providerSid, status)` (db/client.ts L805+) looks up the persisted outbound row by `provider_sid` column. Attribution comes from the **persisted row**, not untrusted callback `To`/`From` values.
+
+**Deficiency analysis:**
+
+| Question | Answer |
+|----------|--------|
+| Does the send path persist provider_sid before callbacks arrive? | **YES** — `updateOutboundProviderSid` is called synchronously after `sendSms` returns and before status is set to `sent` (L504-508). |
+| Does callback attribution come from persisted row? | **YES** — `updateDeliveryStatusByProviderSid` returns `tenant_id`, `project_id`, `turn_id` from the matched row (L913, L996-1006). |
+| Is `updateOutboundProviderSid` durable? | **PARTIALLY** — it uses log-and-swallow pattern (db/client.ts L770-786). If the UPDATE fails, the provider_sid is lost from the DB row. The in-memory store retains it for the process lifetime, but a restart loses it. The message would then be recovered by `reclaimStaleOutboundMessages` as `outcome_unknown`. |
+| Is cross-tenant isolation enforced? | **YES** — the sub-select in `updateDeliveryStatusByProviderSid` picks exactly one row and returns that row's own `tenant_id`/`project_id` (L893-913). |
+
+**Tests:** 4 tests in `tests/transport/outbound_attribution_edge_cases.test.ts` cover SID persistence, DB failure resilience, and the full send→callback chain.
+
+**Assessment:** The implementation is correct. The `updateOutboundProviderSid` log-and-swallow is a known trade-off: throwing would crash the send path after Twilio already accepted the message, which would be worse (message sent but CST thinks it failed). The `reclaimStaleOutboundMessages` mechanism handles the recovery. No transport implementation change needed.
+
+**Code change:** Tests-only (regression tests added).
+
+### L.3 Voice Deadline — Review Findings
+
+**Implementation:** `runVoiceTurnWithDeadline()` (turn_deadline.ts L61-108) wraps the turn in `Promise.race` against a timeout. On timeout:
+1. `AbortController.abort()` fires (L76)
+2. The turn's in-flight work stops at its next checkpoint
+3. `Logger.audit()` records a `tripwire: true` entry with the deadline and correlation ID (L89-100)
+4. The function returns `null` (L101)
+5. The caller (VoiceInterface) sees `null` and responds with a timeout status
+
+**Deficiency analysis:**
+
+| Question | Answer |
+|----------|--------|
+| Can a timed-out turn later be represented as successful? | **NO** — the turn returns `null` on timeout. The caller sets `status: 'failed', error: 'TURN_TIMEOUT'`. No transcript, delivery, or SMS row is persisted for the timed-out turn. |
+| Does abort propagate to the synthesizer? | **YES** — the `AbortSignal` is threaded through `ProcessVoiceTurnInput.signal` to the synthesizer's HTTP request. Test `the abort signal is propagated to the synthesizer and it stops early` verifies this. |
+| Can a late completion produce duplicate dashboard publication? | **NO** — test `a late completion after timeout does not publish a duplicate dashboard event` explicitly verifies no new `publish` calls after timeout. The losing promise's `.catch(() => undefined)` (L72) prevents unhandled rejection. |
+| Is the audit entry observable? | **YES** — `Logger.audit()` is called with `tripwire: true`, `deadline_ms`, and `correlation_id`. However, the DB persistence of this audit entry is fire-and-forget (same limitation as L.1). |
+
+**Tests:** 7 tests in `tests/voice/voice_lifecycle.test.ts` cover fast completion, timeout abandonment, late completion, no duplicate publication, no SMS enqueue, tripwire audit, and abort propagation.
+
+**Assessment:** Implementation is correct. No defect remains.
+
+**Code change:** Tests-only (regression tests added).
+
+### L.4 vFarm Readings Reliability — Review Findings
+
+**Implementation:** `listLatestReadings()` (live_client.ts L790-865) uses `Promise.allSettled` with bounded concurrency (5). Each sensor failure is classified:
+
+| Classification | HTTP Status | Log Level | Code Path |
+|---------------|-------------|-----------|-----------|
+| `no_reading` | 404 | INFO | L821-825 |
+| `unauthorized` | 401/403 | WARN | L826-830 |
+| `invalid_request` | 422 | ERROR | L831-835 |
+| `upstream_error` | 5xx | WARN | L836-840 |
+| `timeout` | AbortError | WARN | L841-845 |
+| `upstream_error` | Other | WARN | L846-852 |
+
+**Caller behavior:** Failed sensors return `null` and are excluded from the results array (L853-854, L858-863). Callers receive partial results — they see successful readings only.
+
+**Deficiency analysis:**
+
+| Question | Answer |
+|----------|--------|
+| Do callers preserve classifications? | **YES** — classifications are logged with structured metadata (`sensor_id`, `farm_id`, `category`). Callers see the partial array. |
+| Can failures be treated as valid readings? | **NO** — failed sensors return `null` and are filtered out at L858-862 (`r.status === 'fulfilled' && r.value`). |
+| Is bounded concurrency enforced? | **YES** — `CONCURRENCY = 5` with batched `Promise.allSettled` (L800-857). Test verifies `maxConcurrent <= 5` with 10 devices. |
+
+**Tests:** 8 tests in `tests/adapters/vfarm_per_sensor_classification.test.ts` cover all classification paths plus concurrency.
+
+**Assessment:** Implementation is correct. No defect remains.
+
+**Code change:** Implementation enhancement (per-sensor classification added to live_client.ts) + regression tests.
+
+---
+
+## M. P1 Gate Selection
+
+### Selected Gate: **Security-Ledger Durable Persistence Proof**
+
+**Rationale:** Of the three candidates, this gate has the fewest unresolved external dependencies:
+
+| Gate | External Dependencies | Feasibility |
+|------|----------------------|-------------|
+| Twilio attribution proof | Requires production deployment, authorized live SMS send, callback trace, and provider SID verification | **HIGH** — depends on Twilio credentials + deployment |
+| Security-ledger durable persistence proof | Requires production deployment + one SQL query | **LOWEST** — code is ready; verification is a single read-only query |
+| Authorized signed voice E2E | Requires Twilio + ElevenLabs credentials, authorized test number, full voice pipeline | **HIGHEST** — multiple provider dependencies |
+
+### Gate Definition
+
+| Property | Value |
+|----------|-------|
+| Gate ID | P1-SECURITY-LEDGER-DURABLE |
+| Exact code involved | `engine/src/config/logger.ts` (L96-112), `engine/src/db/client.ts` (L1022-1057) |
+| Files involved | `logger.ts`, `db/client.ts`, `tests/security/security_ledger_persistence.test.ts` |
+| Tests required | 13 tests already passing (L.1 above) |
+| Production evidence required | Post-deploy SQL: `SELECT count(*) FROM security_ledger` > 0. At least one `SECURITY_LEDGER` event must be present in the DB after deployment, proving the fire-and-forget path actually persists. |
+| Operator evidence required | Screenshot or query output showing `security_ledger` records with `timestamp > <deploy_time>` |
+| Owner dependency | Deployment to production (requires GitHub push access or CI/CD trigger) |
+| Artifact that closes the gate | A documented SQL result showing `count(*) > 0` for `security_ledger` rows created after the deploy SHA that includes commit `bf0d57d`, with the query timestamp and operator identity recorded |
+
+### What This Gate Does NOT Close
+
+- It does not prove every audit event is persisted (fire-and-forget can still lose events).
+- It does not prove shutdown-safe persistence (untracked promises are still discardable).
+- It proves the **mechanism works** — at least one event makes it to durable storage.
+
+---
+
+## N. Acceptance Evidence Categories
+
+### Category A — Code and Local Tests
+
+| Item | Evidence |
+|------|----------|
+| Implementation | Commit `bf0d57dea7dec33a422cd7a2aa327937a4738811` on branch `fix/cst-production-reliability-2026-10-30` |
+| Regression tests | 33 new tests across 4 files (see K.2-K.5) |
+| Full test suite | 1038 passed, 6 skipped |
+| Typecheck | `npm run typecheck` → clean |
+| Build | `npm run build` → successful |
+
+### Category B — Production Telemetry
+
+| Item | Status |
+|------|--------|
+| Deployed SHA | `78075b19757f` (pre-fix). Fix commit `bf0d57d` NOT deployed. |
+| Render logs | Historical lines supplied (2026-10-28). No fresh retrieval. |
+| SQL results | Pre-fix: `security_ledger` count = 0. Post-fix: pending deployment. |
+| Provider callbacks | Production shows `outbound_row_found=false` for historical SIDs. Post-fix messages not verified. |
+| Runtime metrics | Not available (no metrics infrastructure). |
+
+### Category C — Signed E2E Acceptance
+
+| Item | Status |
+|------|--------|
+| Authorized signed SMS | **BLOCKED** — no authorized test |
+| Authorized real voice call | **BLOCKED** — no authorized test |
+| Provider SID and timestamps | **BLOCKED** |
+| Webhook/application trace | **BLOCKED** |
+| Resolved tenant/project | **BLOCKED** |
+| Persisted transcript | **BLOCKED** |
+| Operator sign-off | **BLOCKED** |
+
+### Rule
+
+**Implementation + local tests ≠ acceptance.**
+
+Entries 393 and 399 remain **PARTIAL** until the applicable Category B and C evidence exists and explicit owner approval is recorded.
+
+`DW-1792187689082-B0M2` remains **OPEN**. It has not been changed or closed.
+
+---
+
+**Documentation Boundary:** All Category A evidence is based on local code inspection, unit tests, typecheck, and build. Category B and C evidence requires deployed execution and authorized testing respectively. Do not conflate local test passes with production acceptance.

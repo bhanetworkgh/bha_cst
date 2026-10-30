@@ -1,14 +1,30 @@
 # Entry 393 Update Draft — CST ↔ vFarm Identity and Authorization
 
-**Status:** DRAFT — ready to copy into the authoritative tracking entry  
-**Date:** 2026-10-29  
+**Status:** PARTIAL — Code-level verified; production identity/authorization proof pending
+**Date:** 2026-10-30 (updated from 2026-10-29)
 **Prepared by:** CST Engineering
 
 ---
 
-## Mission Fit
+## Mission Fit and Ownership Boundaries
 
-CST owns conversation orchestration, channel handling, conversation state, and its administration surface. vFarm is authoritative for farm identity, membership/authorization, farm/device associations, and live farm state. BHARAG owns knowledge and incident capabilities; CST stores incident references rather than becoming the source of truth.
+### Ownership Matrix
+
+| Domain | Owner | CST Role | Boundary Rule |
+|--------|-------|----------|---------------|
+| Conversation orchestration | **CST** | Authoritative | CST owns conversation state, turn processing, channel routing, and administration surface |
+| Customer-service interaction | **CST** | Authoritative | CST owns the voice/SMS interface, greeting, response generation, and persistence |
+| Identity and authorization | **vFarm** | Consumer only | vFarm owns identity, authentication, and authoritative farm/device membership. CST consumes via API; it does not store, override, or fabricate identity/authorization state. |
+| Farm and device state | **vFarm** | Consumer only | vFarm owns farm topology, device registration, sensor readings, and alert thresholds. CST fetches on demand; it does not cache or persist authoritative farm state. |
+| Knowledge and incident truth | **BHARAG** | Reference holder | BHARAG owns the knowledge graph and incident lifecycle. CST stores incident references (IDs) for conversation context, not the authoritative incident record. |
+| Incident references | **CST** | Store only | CST persists `incident_id` in conversation context. It does not own, modify, or adjudicate incident truth. |
+
+### Fail-Closed Rules
+
+- **CST fails closed when identity or authorization cannot be resolved.** If `resolveSpeaker` returns `is_known: false` or `assertSpeakerFarmAccess` throws, CST refuses protected data access and returns a safe onboarding or refusal response.
+- **CST must not fabricate** user-to-location, person-to-unit, person-to-farm, or farm-to-device mappings. These are vFarm's authoritative domain.
+- **CST must not fabricate** sensor readings, delivery status, or incident truth. Each has an authoritative owner (vFarm, Twilio, BHARAG respectively).
+- **CST must not auto-register callers.** An unknown phone number is routed to onboarding, not silently granted access.
 
 ## Identity and Authorization Flow (Verified from Code)
 
@@ -44,7 +60,15 @@ CST owns conversation orchestration, channel handling, conversation state, and i
 - Readings normalized via `mapLatestReadingToTelemetry()`
 - Response generated with actual values and units
 - Conversation persisted via `DbClient.getOrCreateConversation()`
-- Security audit logged via `Logger.audit()` → `security_ledger`
+- Security audit logged via `Logger.audit()` → `security_ledger` table (P0 fix: now persists to database via `DbClient.recordSecurityLedgerEvent()`)
+
+### Security Ledger Persistence (P0 Fix)
+- **File:** `engine/src/config/logger.ts` — `Logger.audit()` now calls `DbClient.recordSecurityLedgerEvent()` via dynamic import
+- **File:** `engine/src/db/client.ts` — New method `recordSecurityLedgerEvent()` persists events to the `security_ledger` table
+- The `security_ledger` table (migration `003_add_customers_and_security_ledger.sql`) exists in production but received zero records because `Logger.audit()` previously only wrote to the in-memory ring buffer and console. The fix adds durable DB persistence.
+- Tests: `npx vitest run` → 1006 passed, 6 skipped, 0 failed (97 files)
+- Typecheck: `npx tsc --noEmit -p engine/tsconfig.json` → clean
+- Build: `npm run build` → successful
 
 ## Record-Level Proof Available
 
@@ -87,10 +111,25 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 
 ## Links
 
-- Identity evidence: `docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`
-- Render live evidence: `docs/evidence/2026-10-29-render-live-evidence-entry-399.md`
-- Decision record: `docs/decisions/2026-10-29-cst-entry-399-db-endpoint-decision.md`
+- Identity evidence: [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
+- Engine Surfacing patch log: [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Decision record (399): [`docs/release/cst-decision-record-2026-10-30.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-decision-record-2026-10-30.md)
+- Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
+- Consolidated acceptance: [`docs/acceptance/cst-jason-consolidated-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/cst-jason-consolidated-evidence.md)
 - KMG9 verification record: `docs/kmg9-verification-record.md`
+
+### Identity/Authorization Code and Test Evidence
+
+| File | Purpose |
+|------|---------|
+| `engine/src/identity/resolver.ts` | `IdentityResolver.resolveSenderIdentity()` — speaker resolution |
+| `engine/src/adapters/vfarm/index.ts` | `assertSpeakerFarmAccess()` — farm grant verification |
+| `engine/src/interfaces/voice/index.ts` | Voice webhook handler — binding resolution, signature validation |
+| `engine/src/core/registry.ts` | `CoreRegistry.resolveSpeaker()` — identity orchestration |
+| `tests/regression/kmg9_farm_isolation.test.ts` | 9 tests — cross-farm isolation |
+| `tests/tenancy/platform_tenancy.test.ts` | 8 tests — tenant boundary enforcement |
+| `tests/identity/identity_binding_restoration.test.ts` | 15 tests — identity binding |
+| `tests/authorization/authorization_stepup.test.ts` | 6 tests — authorization step-up |
 
 ## Still Open
 
@@ -99,3 +138,7 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 - **BLOCKER:** Live vFarm readings retrieval for an authorized caller (requires vFarm credentials)
 - **BLOCKER:** Live voice E2E test with authorized test number (requires Twilio + ElevenLabs credentials)
 - **BLOCKER:** KMG9 BHARAG boundary verification (requires isolated cluster evidence from Jegan)
+
+> KMG9 boundary proof and upstream identity binding are NOT complete. No supporting evidence exists for either. They remain BLOCKED pending external evidence.
+
+**Entry 393 remains PARTIAL. DW-1792187689082-B0M2 remains OPEN.**
