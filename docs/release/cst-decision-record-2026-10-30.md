@@ -1,6 +1,18 @@
 # CST Decision Record — Entry 399 (2026-10-30)
 
 **Status:** PARTIAL — Database continuity, endpoint contract, and code-level requirements complete; production telemetry and authorized E2E acceptance pending
+
+**Production baseline:** PR #17 live, SHA `41d3ead81b81d466586b99d970595394335a009e`
+**Postgres allowlist:** `103.120.71.129/32` (tightened from previous `0.0.0.0/0`)
+**Web-service ingress:** `0.0.0.0/0` (Render web service — all public HTTPS)
+**vFarm authentication:** RESOLVED — do not list as a blocker
+**Migration state:** 23 files found, 23 already recorded, 0 applied, 2 drifted (006, 010 contents changed)
+**Sensor filtering:** PARTIAL — post-deploy rack-only IDs observed, no explicit classification trace
+**Metric questions:** FAIL for observed call — reading_count=0 twice, 10,000ms timeout
+**SMS on current SHA:** NOT VERIFIED — two sends were pre-SHA-17
+**Callback attribution:** OPEN — 35 unmatched SIDs, 105 refusal entries
+**Conversation persistence:** NOT VERIFIED — SQL inspection failed (TLS/allowlist)
+**Environment variables:** NOT VERIFIED — 13-variable claim needs fresh inventory
 **Date:** 2026-10-30
 **Branch:** `fix/cst-production-reliability-2026-10-30`
 **Commit:** `bf0d57dea7dec33a422cd7a2aa327937a4738811`

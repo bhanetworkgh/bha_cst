@@ -210,6 +210,234 @@ CST does NOT override with local workaround.
 
 ---
 
+## E. Operator-Reported E2E Results (2026-10-30)
+
+**Source:** Operator-reported from latest test run (not independently verified via Render logs or call records).
+
+| Claim | Status | Evidence Source |
+|---|---|---|
+| Device online status working | **Operator-reported** | User report — not independently verified |
+| Device offline status working | **Operator-reported** | User report — not independently verified |
+| Unit availability being reported correctly | **Operator-reported** | User report — not independently verified |
+| Calls no longer hanging up automatically | **Operator-reported** | User report — not independently verified |
+| No call errors during latest test | **Operator-reported** | User report — not independently verified |
+
+**What is needed for independent verification:**
+- Render log excerpts with timestamps for the test window
+- Call SID(s) and Twilio correlation IDs
+- Device IDs and sensor IDs queried
+- Raw received measurements (sanitized)
+- Normalized CST fields
+- Total response duration per turn (must be < 12000ms)
+- Voice intent recognized
+- Caller-facing response text
+- Conversation turn persisted: yes/no
+- Security/audit log correlation
+- 12000ms deadline met: yes/no
+- Unauthorized caller test: fail-closed confirmed
+- Operator + reviewer sign-off
+
+**Historical failures retained (not deleted):**
+- Rack sensor timeouts (29-43s) exceeding voice deadline — mitigated by 8000ms timeout + 12 concurrency + partial results
+- Twilio delivery callback attribution failures — fail-closed, unresolved for historical SIDs
+- Voice turn abandonment without persistence — mitigated by 12000ms deadline with controlled response
+- Low-confidence transcript misrouting — existing intent classification behavior
+
+## F. Jason's vFarm Contract Requirements (October 30, 2026)
+
+Source: Jason's instructions in #bha-coordination, October 30, 2026, 22:37 PKT.
+
+### F.1 Device Discovery Contract
+
+CST must retrieve devices from `GET /api/v1/devices` and use returned fields:
+- `id` — device identifier
+- `device_type` — authoritative device classification
+- `sensor_type_id` — sensor type identifier
+- `status` — legacy device status
+- `fleet_status` — five-bucket fleet status (Jegan PR #100)
+- `parent_device_id` — parent relationship
+
+CST must NOT infer device types from names or invent local classifications.
+
+### F.2 Strict Sensor Filtering
+
+Only devices with `device_type = sensor` may be passed to `GET /api/v1/readings/latest?sensor_id={sensor_id}`.
+
+Never call `/readings/latest` for:
+- Loads (pumps, valves, lights)
+- Relay channels
+- Cabinets
+
+Filtering must happen BEFORE the readings request, not after.
+
+**Current code state:** `live_client.ts` already filters to `device.device_type === 'sensor'` (line 816). The fallback to all devices when no sensors found should be removed — non-sensor devices must NEVER be queried for readings.
+
+### F.3 State Questions (No Readings Requested)
+
+Questions like "Is the pump on?", "Is the light on?", "Is the valve on or off?", "Is the rover online?" must use `GET /api/v1/devices` and its authoritative `fleet_status` value directly. No readings request should be made for a state question.
+
+Five fleet-status buckets: `on`, `off`, `online`, `unhealthy`, `offline`.
+- Cabinets and relay channels: `fleet_status = null`, excluded from fleet totals
+- Loads: `on`/`off`
+- Reporting devices: `online`/`unhealthy`/`offline`
+
+### F.4 Metric Questions (Sensor-Only Readings)
+
+For temperature, humidity, pH, soil moisture:
+1. Retrieve device list from `GET /api/v1/devices`
+2. Identify correct sensor by `device_type = 'sensor'`
+3. Verify `device_type` is `sensor` before any readings call
+4. Request readings for that sensor only: `GET /api/v1/readings/latest?sensor_id={sensor_id}`
+5. Read correct direct response field or `values[...]` field
+6. Preserve source timestamp and sensor identity
+7. Fail safely if sensor, reading, or value cannot be verified
+
+Documented examples:
+- `rack2_dht` — DHT11; temperature and humidity as direct fields
+- `rack1_mq7` — MQ7; metric value under `values`
+- `rack1_ph` — pH; metric value under `values`
+- `rack1_soil` — soil moisture; metric value under `values`
+
+### F.5 CST Architectural Role
+
+- CST owns customer conversation and integration/tool-routing logic
+- vFarm owns device/sensor domain logic, domain screens, system of record
+- CST uses vFarm endpoints as tools
+- CST must NOT become a duplicated vFarm UI or second system of record
+- Local CST logic only routes questions to correct vFarm tool calls and safely presents verified results
+
+### F.6 vFarm Liveness Contract Dependency
+
+Canonical document: `vfarm/docs/DEVICE_LIVENESS_CONTRACT_V1.md`
+
+Agreed liveness model:
+- Devices created offline
+- Devices become online only after explicit presence or accepted reading
+- Backstop demotes devices on stale and null `last_seen_at`
+- Backstop runs on documented 15-second tick
+- `device_silent` alerts when device remains online beyond stale window
+- Alert clears on next heartbeat
+- Offline state cascades down parent tree
+- Unreadable presence payloads never treated as proof of online status
+
+Required vFarm tests (not CST's responsibility):
+- `test_device_presence_unit.py::test_backstop_demotes_null_last_seen`
+- Extended `test_fleet_status.py` for never-heard-online device
+- `test_presence_silent_e2e.py` for stale-window behavior
+
+Required worked session-log example:
+1. Seeded device with no heartbeat
+2. `device_silent` alert raised
+3. Backstop setting device offline in same window
+4. Alert clearing on next heartbeat
+5. All four ledger rows and their IDs
+
+**Status:** NOT COMPLETE — vFarm implementation and tests pending. CST documents dependency only.
+
+### F.7 Tracking References (Preserved, Not Closed)
+
+| Reference | Scope | Status | Notes |
+|---|---|---|---|
+| `LOOP-1792186179087-EWQI` | Unresolved upstream user-to-location/device binding | OPEN | vFarm-owned |
+| `DW-1792187689082-B0M2` | Original CST acceptance watch | OPEN | Lives in #cst thread, not #bha-coordination |
+| `DW-1793381880209-HWB8` | Jason's request for Ahad to confirm state/metric mapping | OPEN | Requires Ahad's confirmation |
+| `DW-1793369987250-7L0R` | Separate Genie fleet-status audit | OPEN | Do NOT assign to CST as completed |
+| `LOOP-1793370378564-YXEC` | Separate Genie fleet-status audit | OPEN | Do NOT assign to CST as completed |
+| `DW-1793289606909-UUCT` | Entry 393/399 acceptance requirements | OPEN | Tracked in acceptance report |
+
+## G. Slack-Ready Drafts (NOT SENT)
+
+### G.1 Jason-Facing Concise Summary (for #bha-coordination thread 1793368337.737139)
+
+> **CST — Device & Readings Contract Alignment Update**
+>
+> **What was done:**
+> - Updated CST documentation to reflect Jason's October 30 vFarm device-status contract (5 fleet buckets: on/off/online/unhealthy/offline)
+> - Documented strict sensor filtering: only `device_type = sensor` devices are queried via `/readings/latest`
+> - Documented state questions (pump/light/valve status) use `fleet_status` from devices endpoint — no readings request
+> - Documented metric questions (temperature, humidity, pH, soil moisture) use sensor-only readings with correct field extraction
+> - Preserved CST/vFarm architectural boundary: CST routes questions, vFarm owns device/sensor domain
+> - Recorded latest operator-reported E2E results (labeled as operator-reported, not independently verified)
+> - Updated voice deadline: 12000ms default, 14000ms hard cap; timeout: 8000ms; concurrency: 12
+>
+> **What remains (upstream vFarm dependency):**
+> - vFarm PR #100 deployment with `fleet_status`/`fleet_counts` (Jegan)
+> - Migration `e8b0d2f4a6c1` (actuator → relay label)
+> - `NEVER_HEARD_DEVICE_FALSE_ONLINE` fix (Kavin, target Nov 2)
+> - Research Twin §10 rule review (Jegan)
+> - Device liveness contract: `DEVICE_LIVENESS_CONTRACT_V1.md` — CST documents dependency only
+>
+> **What is needed for formal acceptance:**
+> - Authorized live E2E test with signed evidence (Category C)
+> - Render log inspection for latest test window
+> - Call SIDs, timestamps, device readings for reproducibility
+>
+> **Current status:** PARTIAL — Code and local tests complete (1055 passed). Production verification (Category B) and authorized E2E (Category C) pending.
+>
+> **Decision Watches remain OPEN:** DW-1792187689082-B0M2, DW-1793381880209-HWB8, DW-1793289606909-UUCT
+
+### G.2 Channel-Ready Engineering Update (for #bha-coordination)
+
+> **CST Engineering Update — vFarm Contract & E2E Status**
+>
+> **Code changes:**
+> - `live_client.ts`: timeout 5000→8000ms, concurrency 5→12, failure classification (6 types), correlation ID logging
+> - `connectors/vfarm.ts`: farm summary first in voice response, partial results before deadline
+> - `turn_deadline.ts`: deadline 7000→12000ms, hard cap 14000ms
+> - `schemas.ts`: `fleet_status`, `fleet_counts` types
+> - `index.ts`: `getFleetStatusForSpeaker()`, `getDeviceFleetStatus()` methods
+> - `admin.js`: five-status rendering with cabinet/relay-channel exclusion
+> - New test: `vfarm_fleet_status.test.ts` (17 tests)
+> - Updated 5 existing test files for new signatures/formats
+>
+> **Documentation:**
+> - Engine Surfacing Patch Log: Section D (vFarm contract), Section E (operator E2E), Section F (Jason's requirements), Section G (Slack drafts)
+> - Render Live Evidence: updated blockers, deadline requirements
+> - Production Env Audit: 13 missing/incorrect variables documented
+>
+> **Verification:**
+> - `npm run typecheck` → CLEAN
+> - `npm run build` → SUCCESS
+> - `npm test` → 1055 passed | 6 skipped | 0 failed (102 files)
+> - `git diff --check` → clean
+>
+> **Operator-reported E2E (not independently verified):**
+> - Device online/offline status working
+> - Unit availability reporting correctly
+> - Calls no longer auto-hanging up
+> - No call errors during latest test
+>
+> **Remaining blockers:**
+> 1. vFarm PR #100 deployment (Jegan) — provides `fleet_status`/`fleet_counts`
+> 2. Migration `e8b0d2f4a6c1` (vFarm)
+> 3. `NEVER_HEARD_DEVICE_FALSE_ONLINE` fix (Kavin, target Nov 2)
+> 4. Research Twin §10 rule review (Jegan)
+> 5. Device liveness contract verification (vFarm)
+> 6. 13 missing/incorrect env vars in Render (JWT expired, farm key, BHARAG keys, Twilio creds, etc.)
+> 7. Signed E2E acceptance (Jason/Destiny)
+>
+> **Branch:** `fix/vfarm-voice-status-reliability` (NOT pushed, NOT merged)
+> **Decision Watches:** DW-1792187689082-B0M2, DW-1793381880209-HWB8, DW-1793289606909-UUCT all remain OPEN
+
+### G.3 Files Changed in This Update
+
+1. `docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md` — Sections E, F, G added
+2. `docs/evidence/2026-10-29-render-live-evidence-entry-399.md` — Status, blockers, E2E checklist updated
+
+### G.4 Remaining Evidence and Decisions Required
+
+| Item | Owner | Evidence Needed |
+|---|---|---|
+| vFarm PR #100 deployed | Jegan | Live API response showing `fleet_status`/`fleet_counts` |
+| Migration `e8b0d2f4a6c1` | vFarm team | Deployment log showing migration applied |
+| `NEVER_HEARD_DEVICE_FALSE_ONLINE` fix | Kavin | PR + deployment evidence (target Nov 2) |
+| Research Twin §10 rule | Jegan | Approved §10 criteria document |
+| Device liveness contract | vFarm team | Implementation + 3 required tests + worked example |
+| 13 env vars in Render | Ahad/owner | Updated Render configuration |
+| Signed E2E acceptance | Jason/Destiny | Authorized live test with call SIDs, timestamps, readings |
+| Latest E2E independent verification | Operator | Render logs, call records, traces for test window |
+
+---
 ## Patch Log Path
 
 `docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`
