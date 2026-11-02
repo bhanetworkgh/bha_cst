@@ -292,8 +292,8 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
             ok: true,
             json: async () => ({
               devices: [
-                { id: 'unit_bay_04' },
-                { id: 'unit_bay_05' },
+                { id: 'unit_bay_04', device_type: 'sensor' },
+                { id: 'unit_bay_05', device_type: 'sensor' },
               ],
               total: 2,
               online_count: 2,

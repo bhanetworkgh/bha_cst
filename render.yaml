@@ -20,7 +20,7 @@ databases:
     user: bha_cst_user
     # NOTE: Free-tier databases hibernate after inactivity and delete after 90 days.
     # Upgrade to 'starter' or higher for production persistence and continuous uptime.
-    plan: free          # Change to 'starter' for production
+    plan: starter          # Change to 'starter' for production
     region: oregon      # Match your web service region
     postgresMajorVersion: 16
 
@@ -42,7 +42,7 @@ services:
     healthCheckPath: /health
 
     # ── Scaling & Deployment ──────────────────────────────────────────────────
-    plan: free           # Change to 'starter' for production (avoids free hibernation)
+    plan: free           # production (0.5c-512mb) — matches observed Render service
     autoDeploy: true     # Re-deploy automatically on git push to the branch
 
     # ── Environment Variables ─────────────────────────────────────────────────

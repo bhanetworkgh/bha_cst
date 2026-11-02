@@ -159,12 +159,49 @@ export function createApp(): Express {
 
   app.get('/api/health', async (_req: Request, res: Response) => {
     const adapter = CoreRegistry.getVfarmAdapter();
-    const vfarmHealth = adapter ? await adapter.getHealth(process.env.VFARM_TENANT_ID || 'tenant-vfarm-01') : null;
+    const tenantId = process.env.VFARM_TENANT_ID || 'tenant-vfarm-01';
+    // ── Separate API reachability from authoritative farm health ──────────
+    // 1. `api_reachability` → can CST reach the upstream at all? (probe)
+    // 2. `farm_health`      → what does vFarm's authoritative farm health
+    //    endpoint say? Only `healthy` from vFarm maps to CST `healthy`.
+    //    `unhealthy` maps to `unhealthy`. Everything else is `degraded` or
+    //    `unknown`. We NEVER derive health from health_score, relay state,
+    //    device count or locally invented thresholds.
+    const apiReachability = adapter ? await adapter.getHealth(tenantId) : null;
+    let farmHealth: { status: string; health_score?: number; raw_status?: string | null } | null = null;
+    if (adapter && adapter.hasLiveClient()) {
+      try {
+        const farmId = process.env.VFARM_DEFAULT_FARM_ID || '';
+        if (farmId) {
+          const upstream = await adapter.getFarmHealthDirect(farmId);
+          const raw = upstream?.status ?? null;
+          let mapped: string;
+          if (raw === 'healthy') {
+            mapped = 'healthy';
+          } else if (raw === 'unhealthy') {
+            mapped = 'unhealthy';
+          } else if (raw === null || raw === undefined) {
+            mapped = 'unknown';
+          } else {
+            // Unrecognized, stale, failed, or any other value → degraded
+            mapped = 'degraded';
+          }
+          farmHealth = {
+            status: mapped,
+            raw_status: raw,
+            health_score: upstream?.health_score,
+          };
+        }
+      } catch {
+        farmHealth = { status: 'degraded', raw_status: null };
+      }
+    }
     res.status(200).json({
-      status: 'ok',
+      status: farmHealth?.status || apiReachability?.status || 'unknown',
       service: process.env.SERVICE_NAME || 'bha-cst-engine',
       timestamp: new Date().toISOString(),
-      vfarm: vfarmHealth,
+      api_reachability: apiReachability,
+      farm_health: farmHealth,
     });
   });
 

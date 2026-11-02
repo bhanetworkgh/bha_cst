@@ -799,6 +799,21 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   }
 
   /**
+   * Direct pass-through to the authoritative vFarm farm health endpoint.
+   * Returns the raw upstream response without re-interpretation.
+   * Used by `/api/health` to separate API reachability from farm health.
+   */
+  public async getFarmHealthDirect(farmId: string): Promise<{ status?: string; health_score?: number } | null> {
+    if (!this.liveClient) return null;
+    try {
+      return await this.liveClient.getFarmHealth(farmId);
+    } catch (err: any) {
+      Logger.warn(`vFarm getFarmHealthDirect: failed for farm ${farmId}: ${err?.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Seed the DEV/TEST FIXTURE state.
    *
    * PRODUCTION SEEDS NOTHING HERE. A production adapter's projects, farms

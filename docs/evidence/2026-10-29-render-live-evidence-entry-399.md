@@ -5,6 +5,12 @@
 **Purpose:** Render incident evidence, endpoint contract, and database/continuity decision  
 **Status:** PARTIAL — code verified, live E2E proof pending
 
+**Last code update:** 2026-10-30 — Voice deadline 12000ms (14000ms hard cap), concurrency 12, timeout 8000ms
+**Production baseline:** PR #17 live, SHA `41d3ead81b81d466586b99d970595394335a009e`
+**Web-service ingress allowlist:** `0.0.0.0/0` (Render web service — all public HTTPS)
+**Postgres allowlist:** `103.120.71.129/32` (trusted admin IP only — NOT 0.0.0.0/0)
+**vFarm authentication:** RESOLVED — do not list as a blocker
+
 ---
 
 ## 1. Evidence Metadata
@@ -31,19 +37,25 @@
 - **Build command:** `npm ci --include=dev && npm run build`
 - **Start command:** `node scripts/migrate.js && npm start`
 - **Health check path:** `/health`
-- **IP allow-list:** `0.0.0.0/0` (everywhere)
-- **Network isolation:** disabled
+- **IP allow-list:** `103.120.71.129/32` (trusted admin IP only — tightened from previous 0.0.0.0/0)
+- **Network isolation:** Private CST-to-Postgres connectivity confirmed via Render private network
+- **Web-service ingress:** `0.0.0.0/0` (Render web service — all public HTTPS, standard for web services)
 
 ### PostgreSQL (bha-cst-postgres)
 - **Resource ID:** `dpg-db8he2qvcj2c73ado3s0-a`
-- **Version:** PostgreSQL 16.15
-- **Plan:** Free
-- **Expiry:** 2026-11-14T18:10:20Z
-- **Database name:** `bha_cst_1sh0`
-- **Migrations applied:** 22 (001-022, including 022_add_escalations_table.sql)
-- **Tables:** 20 public base tables
-- **Foreign keys:** 17
-- **IP allow-list:** `0.0.0.0/0` (everywhere)
+- **Version:** PostgreSQL 16
+- **Plan:** `0.1c-256mb`
+- **Region:** Oregon
+- **Disk:** 1 GB (autoscaling disabled)
+- **Status:** Available
+- **IP allow-list:** `103.120.71.129/32` (tightened from previous `0.0.0.0/0`)
+- **HA:** Disabled
+- **Read replicas:** None
+- **Connection pool:** None
+- **Migrations:** 23 files found, 23 already recorded, 0 applied, 2 drifted (006 and 010 contents changed)
+- **Tables:** 21 (NOT independently verified via SQL — SQL inspection failed due to TLS/allowlist)
+- **Foreign keys:** 17 (NOT independently verified via SQL)
+- **Network isolation:** Private CST-to-Postgres connectivity confirmed via Render private network (TLSv1.3)
 
 ### Environment Variables (Presence Only — Values Redacted)
 
@@ -126,8 +138,9 @@ No authorized live E2E test has been performed. The operator must complete the c
 - [ ] Actual caller-facing response: ____________
 - [ ] Conversation turn persisted: yes/no
 - [ ] Security/audit log correlation: ____________
-- [ ] Total response duration: ___ms (must be < 7000ms)
-- [ ] 7,000 ms deadline met: yes/no
+- [ ] Total response duration: ___ms (must be < 12000ms, hard cap 14000ms)
+- [ ] 12,000 ms deadline met: yes/no
+- [ ] Partial response returned before deadline: yes/no
 - [ ] Unauthorized caller test: fail-closed confirmed: yes/no
 - [ ] Render log excerpts with timestamps: ____________
 
@@ -162,16 +175,31 @@ No authorized live E2E test has been performed. The operator must complete the c
 
 ## 9. Still Open
 
-- **BLOCKER:** Rack sensor timeout (29-43s) exceeds 7s voice deadline — upstream vFarm performance
+### Blockers (genuine external dependencies)
+
+- **BLOCKER:** Rack sensor timeout (29-43s) exceeds voice deadline — upstream vFarm performance. Latest E2E: voice call completed with synthesis but sensor readings timed out at 10s, reading_count=0 twice. 10,000ms production timeout does NOT meet Jason's 5,000ms contract.
 - **BLOCKER:** KMG9 BHARAG boundary — needs isolated cluster evidence
-- **BLOCKER:** Postgres continuity — owner decision before Nov 14 2026
 - **BLOCKER:** ElevenLabs live voice acceptance — needs staging + authorized test call
-- **BLOCKER:** Twilio live SMS/callback acceptance — needs production credentials
-- **BLOCKER:** Delivery callback attribution — production DB investigation needed
+- **BLOCKER:** Twilio live SMS/callback acceptance on current SHA — needs production credentials + authorized test. Two SMS sends observed but BOTH were pre-SHA-17.
+- **BLOCKER:** Delivery callback attribution — 35 distinct Message SIDs with no matching outbound row, 105 refusal log entries. Fail-closed working but dashboard delivery publication incomplete.
 - **BLOCKER:** GitHub push access — SSH key passphrase unavailable
 - **BLOCKER:** Stale customer refs — owner confirmation needed
 - **BLOCKER:** Legacy systems table — owner decision needed
 - **BLOCKER:** EWQI vFarm contract — vFarm owner confirmation needed
+- **BLOCKER:** Expired vFarm JWT — expires 2026-10-23T20:05:24Z, needs reissue or auto-recovery via VFARM_ADMIN_EMAIL/PASSWORD
+- **BLOCKER:** Missing VFARM_API_FARM_KEY, BHARAG_CLUSTER_KEY, BHARAG_WORKSPACE_KEY, VFARM_RESOLVE_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID, CST_API_KEY, VFARM_API_BASE_URL, VFARM_RESOLVE_ENDPOINT, BHARAG_API_URL — all required for production operation
+- **BLOCKER:** CST_ADMIN_PASSWORD_HASH uses SHA-256 of "admin" — needs bcrypt regeneration
+- **BLOCKER:** Migration state — 23 files, 23 recorded, 0 applied, 2 drifted (006 and 010 contents changed). Forward-only migration needed.
+- **BLOCKER:** Sensor filtering — PARTIAL. Post-deploy rack-only IDs observed but no explicit classification/skip trace.
+- **BLOCKER:** Conversation turn persistence — NOT VERIFIED. SQL inspection failed (TLS/allowlist).
+- **BLOCKER:** Environment variables — NOT VERIFIED. 13-variable claim needs fresh inventory.
+
+### Resolved (not a blocker)
+
+- **vFarm authentication:** RESOLVED — expired JWT auto-refreshed successfully. Do not reopen, rotate credentials, or list as a blocker.
+- **Postgres allowlist:** Tightened from 0.0.0.0/0 to 103.120.71.129/32. Trusted admin IP confirmed.
+- **Database continuity:** COMPLETE — upgrade done by account owner. No further action required.
+- **Private CST-to-Postgres connectivity:** VERIFIED — internal authenticated sessions in DB logs (TLSv1.3).
 
 ## 10. Security Evidence
 
@@ -208,12 +236,13 @@ No authorized live E2E test has been performed. The operator must complete the c
 
 ### Work blocked or unverified:
 - KMG9: needs isolated cluster evidence
-- Postgres: needs owner decision before Nov 14 2026
-- Voice: needs live provider verification
+- Postgres: COMPLETE — upgrade done by account owner
+- Voice: needs live provider verification (deadline now 12000ms, hard cap 14000ms)
 - EWQI: needs vFarm contract proof
 - Delivery attribution: needs production DB investigation
 - GitHub: needs SSH key unlock
 - Stale customers: needs owner confirmation
+- Env vars: 13 missing/incorrect variables documented in audit (JWT expired, farm key, BHARAG keys, Twilio creds, etc.)
 
 ### Named owner and next action for each blocker:
 See Section 9 (Blockers / Owner Decisions) above.

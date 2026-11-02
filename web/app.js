@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { session: null };
+const state = { session: null, pending: false };
 const loginView = $('#login-view');
 const chatView = $('#chat-view');
 const list = $('#message-list');
@@ -12,9 +12,11 @@ async function api(path, options = {}) {
   return data;
 }
 
-function renderMessage(message) {
+function renderMessage(message, options = {}) {
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
+  if (options.pending) article.classList.add('message-pending');
+  if (options.id) article.id = options.id;
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
   avatar.textContent = message.role === 'user' ? ($('#user-initials').textContent || 'ME') : 'CST';
@@ -30,6 +32,27 @@ function renderMessage(message) {
   body.appendChild(time);
   article.append(avatar, body);
   list.appendChild(article);
+  return article;
+}
+
+/** Set the composer to pending (disabled) or idle (enabled). */
+function setComposerPending(pending) {
+  state.pending = pending;
+  const sendButton = $('#send-button');
+  const typingState = $('#typing-state');
+  const form = $('#message-form');
+  sendButton.disabled = pending;
+  input.disabled = pending;
+  if (pending) {
+    input.setAttribute('aria-busy', 'true');
+    form.setAttribute('aria-busy', 'true');
+    typingState.classList.remove('hidden');
+    typingState.setAttribute('aria-live', 'assertive');
+  } else {
+    input.removeAttribute('aria-busy');
+    form.removeAttribute('aria-busy');
+    typingState.classList.add('hidden');
+  }
 }
 
 function setSession(session) {
@@ -78,18 +101,49 @@ async function openWorkspace(event) {
 async function loadHistory() {
   const history = await api('/api/v1/web/history');
   list.replaceChildren();
-  history.messages.forEach(renderMessage);
+  history.messages.forEach((m) => renderMessage(m));
   if (!history.messages.length) renderMessage({ role: 'assistant', text: 'Welcome back. Ask me about the farms in your project scope.', created_at: Date.now() });
   list.scrollTop = list.scrollHeight;
 }
 
 async function sendMessage(event) {
   event.preventDefault();
+  // Prevent duplicate submissions while a request is pending.
+  if (state.pending) return;
   const text = input.value.trim();
   if (!text) return;
-  $('#send-button').disabled = true;
-  $('#typing-state').classList.remove('hidden');
-  try { const response = await api('/api/v1/web/message', { method: 'POST', body: JSON.stringify({ text }) }); renderMessage({ role: 'user', text, created_at: Date.now() }); renderMessage({ role: 'assistant', text: response.reply_text, media: response.media_url ? [response.media_url] : [], created_at: Date.now() }); input.value = ''; list.scrollTop = list.scrollHeight; } catch (error) { renderMessage({ role: 'assistant', text: `We couldn't complete that request: ${error.message}`, created_at: Date.now() }); } finally { $('#send-button').disabled = false; $('#typing-state').classList.add('hidden'); }
+
+  // 1. Show user message IMMEDIATELY — before the API call.
+  renderMessage({ role: 'user', text, created_at: Date.now() });
+  input.value = '';
+  list.scrollTop = list.scrollHeight;
+
+  // 2. Lock the composer and show typing indicator.
+  setComposerPending(true);
+
+  try {
+    const response = await api('/api/v1/web/message', { method: 'POST', body: JSON.stringify({ text }) });
+    renderMessage({
+      role: 'assistant',
+      text: response.reply_text,
+      media: response.media_url ? [response.media_url] : [],
+      created_at: Date.now(),
+    });
+    list.scrollTop = list.scrollHeight;
+  } catch (error) {
+    // Show a clear failure message — do not silently swallow.
+    const errorArticle = renderMessage({
+      role: 'assistant',
+      text: `We couldn't complete that request. ${error.message}. Please try again.`,
+      created_at: Date.now(),
+    });
+    errorArticle.classList.add('message-error');
+    list.scrollTop = list.scrollHeight;
+  } finally {
+    // 3. Unlock the composer.
+    setComposerPending(false);
+    input.focus();
+  }
 }
 
 async function init() {

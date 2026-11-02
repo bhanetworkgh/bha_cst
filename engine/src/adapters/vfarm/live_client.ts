@@ -84,7 +84,7 @@ export const VFARM_DEFAULT_BASE_URL = 'https://vfarm.bhanetwork.org';
  * Operators with a slow upstream should set VFARM_API_TIMEOUT_MS explicitly and
  * confirm the multiplied retry budget still fits their own request timeout.
  */
-export const VFARM_DEFAULT_TIMEOUT_MS = 10000;
+export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
 
 /**
  * Per-endpoint override for GET /api/v1/system/stats, which scans the whole
@@ -811,12 +811,20 @@ export class VfarmLiveClient {
       return [];
     }
 
-    // 2. Fetch latest reading for each device (bounded concurrency: 5 at a time)
-    // Filter to sensors only: device.device_type === "sensor" (with fallback to all devices if no device_type is specified)
-    const filteredSensors = devices.filter(
+    // 2. Filter to sensors only: only device.device_type === "sensor" may be queried.
+    // NEVER fall back to all devices — non-sensor devices (loads, relay channels,
+    // cabinets) must never be passed to /readings/latest. Fail closed.
+    const sensors = devices.filter(
       (device: any) => device.device_type === 'sensor',
     );
-    const sensors = filteredSensors.length > 0 ? filteredSensors : devices;
+    if (sensors.length === 0) {
+      Logger.warn(`vFarm listLatestReadings: no sensor-type devices found for farm ${farmId} — returning empty (fail-closed)`, {
+        farm_id: farmId,
+        total_devices: devices.length,
+        device_types: [...new Set(devices.map((d: any) => d.device_type).filter(Boolean))],
+      });
+      return [];
+    }
 
     const CONCURRENCY = 5;
     const results: LatestReadingResponse[] = [];
@@ -849,37 +857,39 @@ export class VfarmLiveClient {
             return reading;
           } catch (err: any) {
             // Classify the per-sensor failure for observability.
+            // Propagate correlation ID to every per-sensor log line for tracing.
             const status = err?.status;
+            const logMeta = { sensor_id: sensorId, farm_id: farmId, correlation_id: correlationId };
             if (status === 404) {
               Logger.info(
                 `vFarm per-sensor: sensor ${sensorId} returned no readings (404)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'no_reading' },
+                { ...logMeta, category: 'no_reading' },
               );
             } else if (status === 401 || status === 403) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} unauthorized (auth/token issue)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'unauthorized', http_status: status },
+                { ...logMeta, category: 'unauthorized', http_status: status },
               );
             } else if (status === 422) {
               Logger.error(
                 `vFarm per-sensor: sensor ${sensorId} returned 422 (invalid request)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'invalid_request', http_status: status },
+                { ...logMeta, category: 'invalid_request', http_status: status },
               );
             } else if (status !== undefined && status >= 500) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} upstream error (${status})`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error', http_status: status },
+                { ...logMeta, category: 'upstream_error', http_status: status },
               );
             } else if (err?.name === 'VfarmNetworkError' && /timed out/i.test(err?.message || '')) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} timed out after ${perDeviceTimeout}ms`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'timeout' },
+                { ...logMeta, category: 'timeout' },
               );
             } else {
               // Network error, unexpected status, or non-JSON body
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} failed (${err?.name || 'error'})`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error' },
+                { ...logMeta, category: 'upstream_error' },
               );
             }
             // No readings for this sensor — skip (return null)

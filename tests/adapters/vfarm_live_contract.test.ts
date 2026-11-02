@@ -308,7 +308,7 @@ describe('LOOP-1790985133889-8D7U — getSystemStats() gets its own request budg
   // for /dashboard/summary. Under the shared 8000ms default it still needs
   // the per-endpoint override for the very slow endpoints.
   it('exceeds the shared default by enough headroom for the measured latency', () => {
-    expect(VFARM_DEFAULT_TIMEOUT_MS).toBe(10000);
+    expect(VFARM_DEFAULT_TIMEOUT_MS).toBe(5000);
     expect(VFARM_SYSTEM_STATS_TIMEOUT_MS).toBeGreaterThan(39000);
   });
 

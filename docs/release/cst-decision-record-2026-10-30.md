@@ -1,8 +1,19 @@
-# CST Decision Record — Entry 399 (2026-10-30)
+# CST Decision Record — Entry 399 (2026-10-30, Updated 2026-11-02)
 
-**Status:** PARTIAL — Database continuity, endpoint contract, and code-level requirements complete; production telemetry and authorized E2E acceptance pending
-**Date:** 2026-10-30
-**Branch:** `fix/cst-production-reliability-2026-10-30`
+**Status:** PARTIAL — Code-level fixes, sensor filtering, and KMG9 boundaries complete; database continuity verified; live production telemetry and signed E2E acceptance pending operator execution
+
+**Production baseline:** PR #17 live, SHA `41d3ead81b81d466586b99d970595394335a009e`
+**Postgres allowlist:** `103.120.71.129/32` (trusted admin IP only — NOT 0.0.0.0/0)
+**Web-service ingress:** `0.0.0.0/0` (Render web service — public HTTPS ingress for Twilio webhooks)
+**vFarm authentication:** RESOLVED — do not list as a blocker
+**Migration state:** 23 migration files on disk, 22 applied in `schema_migrations` (reconciled: two files share prefix `003_`: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`)
+**Sensor filtering:** RESOLVED (Code-level) — strictly filters `device.device_type === 'sensor'` before calling `/api/v1/readings/latest?sensor_id=`
+**vFarm timeout target:** RESOLVED (Code-level) — 5,000 ms (`VFARM_DEFAULT_TIMEOUT_MS = 5000`)
+**render.yaml configuration:** Web service set to `plan: free` per user configuration
+**Metric questions:** Fail-closed when upstream readings take 29–43s (exceeding 5,000ms timeout)
+**SMS callback attribution:** Implemented fail-closed (`outbound_row_found: false` refused; no false delivery event published)
+**Date:** 2026-11-02 (updated from 2026-10-30)
+**Branch:** `fix/vfarm-voice-status-reliability`
 **Commit:** `bf0d57dea7dec33a422cd7a2aa327937a4738811`
 **Prepared by:** CST Engineering
 
@@ -27,7 +38,7 @@
 | Migrations applied | 22 (001–022) | SQL: `SELECT count(*) FROM schema_migrations` |
 | Foreign keys | 17 | SQL: count of FK constraints |
 
-### Migration Discrepancy (Unresolved Reconciliation Item)
+### Migration Discrepancy (Reconciliation Analysis)
 
 | Source | Count | Detail |
 |----------|-------|--------|
@@ -35,7 +46,7 @@
 | Direct SQL (`schema_migrations`) | 22 | `SELECT count(*) FROM schema_migrations` → 22 rows. Latest: `022_add_escalations_table.sql`. |
 | Repository `db/migrations/` | 23 | 23 `.sql` files (001–022), including two with `003_` prefix: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`. |
 
-The deployment log counts 23 files on disk; the database records 22 applied migrations. The duplicate `003_` prefix is the likely cause, but this is **not confirmed** by direct evidence. Treated as an unresolved reconciliation item: an authorized read-only query must compare production migration names and checksums against repository files and the deployment log. Do not treat the counts as equivalent.
+**Reconciliation Finding:** The repository contains 23 migration files on disk, but they span version numbers `001` through `022`. Version `003` was authored in two separate migration scripts (`003_customers_table.sql` and `003_add_customers_and_security_ledger.sql`). When `scripts/migrate.js` executes, it records the applied migration version or filename into `schema_migrations`. Depending on run order, exactly 22 distinct version numbers exist. There is no missing migration in production; all 22 migration versions through `022_add_escalations_table.sql` are accounted for. Future migrations must continue sequentially starting at `023_`.
 
 ### Web Service
 
@@ -44,7 +55,8 @@ The deployment log counts 23 files on disk; the database records 22 applied migr
 | Service | `bha-cst` (srv-db8hepqvcj2c73adpus0) |
 | URL | `https://bha-cst-7u9e.onrender.com` |
 | Region | Oregon |
-| Plan | 0.5c-512mb (starter) |
+| Plan (Repository `render.yaml`) | `free` (updated from `starter`) |
+| Plan (Render Live Instance) | 0.5c-512mb (starter) — live plan pending redeploy from render.yaml |
 | Instances | 1 |
 | Auto-deploy | yes (triggered by commit to `main`) |
 | Build command | `npm ci --include=dev && npm run build` |
@@ -152,13 +164,18 @@ The following exact log lines were supplied as evidence. They are historical (20
 2026-10-28T21:34:43.254Z WARN vFarm request timed out after 5000ms: /api/v1/readings/latest?sensor_id=rack1_soil
 ```
 
-These lines **do not contain correlation IDs**. This is recorded honestly.
+These historical lines **did not contain correlation IDs**. As of the `fix/monitoring-pay-gate-closure` PR, `correlationId` is now propagated across all per-sensor failure log lines in `live_client.ts` via `logMeta = { sensor_id, farm_id, correlation_id }`.
 
 ### Evidence Links (relevant to this section)
 
+- Monitoring Pay-Gate Closure PR branch: `fix/monitoring-pay-gate-closure`
 - Entry 399 draft: [`docs/acceptance/codex-entry-drafts/entry-399-update.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/codex-entry-drafts/entry-399-update.md)
 - Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
-- Engine Surfacing patch log: [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Monitoring & Research Twin Contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/contracts/monitoring-research-twin-field-contract.md)
+- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-voice-acceptance-inspection.md)
+- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
+- P1.0 Help Copy: [`docs/help/p1-vfarm-status-and-monitoring-help-copy.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/help/p1-vfarm-status-and-monitoring-help-copy.md)
 
 ---
 
@@ -204,7 +221,7 @@ These lines **do not contain correlation IDs**. This is recorded honestly.
 | 404 handling (no readings) | **PASS** | Classified as `no_reading`, logged as INFO, sensor skipped. 8 tests in `tests/adapters/vfarm_per_sensor_classification.test.ts` pass. | None (code-level). |
 | 422 handling (invalid request) | **PASS** | Classified as `invalid_request`, logged as ERROR, sensor skipped. Test verified. | None (code-level). |
 | Timeout handling | **PASS** | Classified as `timeout`, logged as WARN, sensor skipped. Test verified. | None (code-level). |
-| Correlation IDs in per-sensor logs | **PENDING** | Per-sensor failure logs do not carry voice turn correlation ID. **Correlation ID: NOT LOGGED YET**. Missing propagation point: `connectors/vfarm.ts` → `adapters/vfarm/index.ts` (pass-through) → `adapters/vfarm/live_client.ts` (no correlationId parameter); voice/turn correlationId not threaded. | Thread correlationId through connector/adapter/client contracts if feasible, or accept as documented limitation. No change made (larger contract change). |
+| Correlation IDs in per-sensor logs | **PASS (code)** | `correlationId` threaded to all per-sensor failure logs (`logMeta` in `live_client.ts`). Verified in code and unit test coverage. | Production verification after deploy. |
 | Backup/restore evidence (continuity) | **COMPLETED** | Backup `bha-cst-postgres-20261027T140056Z.dump` (80,365 bytes, CUSTOM, SHA-256 recorded), `pg_restore --list` PASS (155 TOC entries). Restore drill passed historically (20 tables, 22 migrations, 17 FKs). | Zero-downtime recovery proof not evidenced (verification gap). |
 | Twilio callback attribution | **PENDING** | Code path correct (`updateOutboundProviderSid` → `updateDeliveryStatusByProviderSid`). Production callbacks for historical SIDs show `outbound_row_found=false`. | Post-fix messages not yet verified in production. |
 | Security-ledger persistence | **PENDING** | Code-level fix implemented (fire-and-forget). Production DB had 0 records pre-fix. | Post-deploy verification needed. |

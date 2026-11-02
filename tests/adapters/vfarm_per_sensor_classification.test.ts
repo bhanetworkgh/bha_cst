@@ -36,7 +36,7 @@ function mockFetchForDevicesAndReadings(
 ): any {
   return vi.fn(async (url: string) => {
     if (url.includes('/api/v1/devices?farm_id')) {
-      return jsonResponse(200, { devices: [{ id: 'sensor_1' }, { id: 'sensor_2' }, { id: 'sensor_3' }] });
+      return jsonResponse(200, { devices: [{ id: 'sensor_1', device_type: 'sensor' }, { id: 'sensor_2', device_type: 'sensor' }, { id: 'sensor_3', device_type: 'sensor' }] });
     }
     for (const [sensorId, response] of responses) {
       if (url.includes(`/api/v1/readings/latest?sensor_id=${sensorId}`)) {
@@ -161,7 +161,7 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
   it('classifies timeout as timeout category (not upstream_error)', async () => {
     const timeoutFetch = vi.fn(async (url: string) => {
       if (url.includes('/api/v1/devices?farm_id')) {
-        return jsonResponse(200, { devices: [{ id: 'sensor_timeout' }] });
+        return jsonResponse(200, { devices: [{ id: 'sensor_timeout', device_type: 'sensor' }] });
       }
       if (url.includes('/api/v1/readings/latest?sensor_id=sensor_timeout')) {
         // Simulate a network error with timeout in message
@@ -211,7 +211,7 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
     // Create 10 devices
     const devices: any[] = [];
     for (let i = 0; i < 10; i++) {
-      devices.push({ id: `sensor_${i}` });
+      devices.push({ id: `sensor_${i}`, device_type: 'sensor' });
     }
 
     let maxConcurrent = 0;
