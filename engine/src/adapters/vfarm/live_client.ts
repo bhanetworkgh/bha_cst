@@ -84,7 +84,7 @@ export const VFARM_DEFAULT_BASE_URL = 'https://vfarm.bhanetwork.org';
  * Operators with a slow upstream should set VFARM_API_TIMEOUT_MS explicitly and
  * confirm the multiplied retry budget still fits their own request timeout.
  */
-export const VFARM_DEFAULT_TIMEOUT_MS = 10000;
+export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
 
 /**
  * Per-endpoint override for GET /api/v1/system/stats, which scans the whole
@@ -811,12 +811,20 @@ export class VfarmLiveClient {
       return [];
     }
 
-    // 2. Fetch latest reading for each device (bounded concurrency: 5 at a time)
-    // Filter to sensors only: device.device_type === "sensor" (with fallback to all devices if no device_type is specified)
-    const filteredSensors = devices.filter(
+    // 2. Filter to sensors only: only device.device_type === "sensor" may be queried.
+    // NEVER fall back to all devices — non-sensor devices (loads, relay channels,
+    // cabinets) must never be passed to /readings/latest. Fail closed.
+    const sensors = devices.filter(
       (device: any) => device.device_type === 'sensor',
     );
-    const sensors = filteredSensors.length > 0 ? filteredSensors : devices;
+    if (sensors.length === 0) {
+      Logger.warn(`vFarm listLatestReadings: no sensor-type devices found for farm ${farmId} — returning empty (fail-closed)`, {
+        farm_id: farmId,
+        total_devices: devices.length,
+        device_types: [...new Set(devices.map((d: any) => d.device_type).filter(Boolean))],
+      });
+      return [];
+    }
 
     const CONCURRENCY = 5;
     const results: LatestReadingResponse[] = [];
