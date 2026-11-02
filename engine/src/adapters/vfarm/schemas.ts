@@ -297,15 +297,27 @@ export const deviceRollupResponseSchema = z.object({
 }).passthrough();
 export type DeviceRollupResponse = z.infer<typeof deviceRollupResponseSchema>;
 
-// ── GET /api/v1/readings/latest ──────────────────────────────────────────────
+// ── GET /api/v1/readings/latest?sensor_id={sensor_id} ────────────────────────
+const readingNumberSchema = z.union([
+  z.number().finite(),
+  z.string().regex(/^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$/),
+]).transform((value) => Number(value));
+
+export const sensorValueSchema = z.object({
+  unit: z.string().nullable().optional(),
+  value: z.unknown().optional(),
+  status: z.string().nullable().optional(),
+}).passthrough();
+export type SensorValue = z.infer<typeof sensorValueSchema>;
+
 export const latestReadingResponseSchema = z.object({
-  id: z.number().optional(),
-  sensor_id: z.string().optional(),
-  reading_ts: z.string().optional(),
-  received_at: z.string().optional(),
-  temperature_c: z.number().nullable().optional(),
+  id: z.number().nullable().optional(),
+  sensor_id: z.string().nullable().optional(),
+  reading_ts: z.string().nullable().optional(),
+  received_at: z.string().nullable().optional(),
+  temperature_c: readingNumberSchema.nullable().optional(),
   temperature_status: z.string().nullable().optional(),
-  humidity_rh: z.number().nullable().optional(),
+  humidity_rh: readingNumberSchema.nullable().optional(),
   humidity_status: z.string().nullable().optional(),
   firmware: z.string().nullable().optional(),
   uptime_s: z.number().nullable().optional(),
@@ -313,29 +325,29 @@ export const latestReadingResponseSchema = z.object({
   error_code: z.string().nullable().optional(),
   error_message: z.string().nullable().optional(),
   // The `values` object holds the actual per-sensor readings. Each sub-object
-  // has { unit, value, status }. Confirmed keys from a live probe:
-  //   temperature, humidity, co, ph, soil_moisture, relay, voltage, wifi_rssi.
-  // Jegan's proposal named `co_ppm`, `ph`, `soil_moisture` — the actual key
-  // for CO is `co` (not `co_ppm`). `co_ppm` is NOT present.
-  values: z.record(z.string(), z.object({
-    unit: z.string().nullable().optional(),
-    value: z.unknown().optional(),
-    status: z.string().nullable().optional(),
-  })).optional(),
+  // has { unit, value, status }. Confirmed keys from vFarm:
+  //   soil_moisture, ph, temperature, humidity, co, relay, voltage, wifi_rssi.
+  values: z.record(z.string(), sensorValueSchema).nullable().optional(),
+  cst_selection_contract: z.string().optional(),
 }).passthrough();
 export type LatestReadingResponse = z.infer<typeof latestReadingResponseSchema>;
 
 // ── GET /api/v1/readings ────────────────────────────────────────────────────
-export const readingItemSchema = z.object({
-  reading_at: z.string(),
-  value: z.unknown(),
-  unit: z.string().optional(),
-}).passthrough();
+// Keep this aligned with ReadingResponse in the checked-in vFarm OpenAPI
+// contract. Historical readings endpoint returns complete reading rows.
+export const readingItemSchema = latestReadingResponseSchema.extend({
+  id: z.number().optional(),
+  sensor_id: z.string(),
+  reading_ts: z.string(),
+  received_at: z.string(),
+});
 
 export const readingsListResponseSchema = z.object({
-  readings: z.array(readingItemSchema).optional(),
-  items: z.array(readingItemSchema).optional(),
-  total: z.number().int().optional(),
+  sensor_id: z.string(),
+  from: z.string(),
+  to: z.string(),
+  count: z.number().int(),
+  readings: z.array(readingItemSchema),
 }).passthrough();
 export type ReadingsListResponse = z.infer<typeof readingsListResponseSchema>;
 
@@ -490,5 +502,4 @@ export const StatsResponseSchema = statsResponseSchema;
 export const LoginResponseSchema = loginResponseSchema;
 export const TokenCreatedResponseSchema = tokenCreatedResponseSchema;
 export const TokenResponseSchema = tokenResponseSchema;
-
 

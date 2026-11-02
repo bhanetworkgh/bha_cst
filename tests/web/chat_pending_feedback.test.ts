@@ -165,11 +165,12 @@ function buildDocument(): HTMLElement {
   const doc: any = new HTMLElement('#document');
   const messageList = el('div', { id: 'message-list', role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions', 'aria-label': 'Chat messages' });
   const typingState = el('div', { id: 'typing-state', class: 'typing-state hidden', role: 'status', 'aria-live': 'assertive', 'aria-atomic': 'true' });
+  const messageStatus = el('p', { id: 'message-status', role: 'status', 'aria-live': 'polite' });
   const messageForm = el('form', { id: 'message-form', class: 'composer', 'aria-label': 'Message composer' });
   const messageInput = el('textarea', { id: 'message-input', rows: '1', 'aria-label': 'Message', autocomplete: 'off' });
   const sendButton = el('button', { id: 'send-button', class: 'send-button', type: 'submit', 'aria-label': 'Send message' });
   messageForm.append(messageInput, sendButton);
-  doc.append(messageList, typingState, messageForm, el('div', { id: 'user-initials' }), el('div', { id: 'login-view' }), el('form', { id: 'login-form' }), el('div', { id: 'chat-view', class: 'chat-view hidden' }), el('div', { id: 'project-select' }), el('button', { id: 'logout-button' }), el('button', { id: 'mobile-menu' }), el('button', { id: 'overview-nav', class: 'conversation-item' }), el('button', { id: 'chat-nav', class: 'conversation-item' }), el('button', { id: 'activity-nav', class: 'conversation-item' }), el('button', { id: 'overview-chat-button', class: 'primary-button compact-button' }), el('div', { class: 'sidebar' }));
+  doc.append(messageList, typingState, messageStatus, messageForm, el('div', { id: 'user-initials' }), el('div', { id: 'login-view' }), el('form', { id: 'login-form' }), el('div', { id: 'chat-view', class: 'chat-view hidden' }), el('div', { id: 'project-select' }), el('button', { id: 'logout-button' }), el('button', { id: 'mobile-menu' }), el('button', { id: 'overview-nav', class: 'conversation-item' }), el('button', { id: 'chat-nav', class: 'conversation-item' }), el('button', { id: 'activity-nav', class: 'conversation-item' }), el('button', { id: 'overview-chat-button', class: 'primary-button compact-button' }), el('div', { class: 'sidebar' }));
   return doc;
 }
 
@@ -214,7 +215,10 @@ function submitForm() {
   form.requestSubmit();
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+const tick = async () => {
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+};
 
 // ─── Load the real client code once the shim and default fetch are in place ─
 

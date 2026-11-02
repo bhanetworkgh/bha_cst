@@ -31,6 +31,20 @@ function jsonResponse(status: number, body: unknown): Response {
   } as Response;
 }
 
+function readingRow(sensorId: string, values: Record<string, unknown>) {
+  return {
+    id: 1,
+    sensor_id: sensorId,
+    reading_ts: '2026-10-27T10:00:00Z',
+    received_at: '2026-10-27T10:00:01Z',
+    values,
+  };
+}
+
+function readingsBody(sensorId: string, values: Record<string, unknown>) {
+  return readingRow(sensorId, values);
+}
+
 function mockFetchForDevicesAndReadings(
   responses: Map<string, Response>,
 ): any {
@@ -39,7 +53,7 @@ function mockFetchForDevicesAndReadings(
       return jsonResponse(200, { devices: [{ id: 'sensor_1', device_type: 'sensor' }, { id: 'sensor_2', device_type: 'sensor' }, { id: 'sensor_3', device_type: 'sensor' }] });
     }
     for (const [sensorId, response] of responses) {
-      if (url.includes(`/api/v1/readings/latest?sensor_id=${sensorId}`)) {
+      if (url.includes(`sensor_id=${sensorId}`)) {
         return response;
       }
     }
@@ -48,7 +62,7 @@ function mockFetchForDevicesAndReadings(
 }
 
 function findLogEntry(spy: ReturnType<typeof vi.spyOn>, category: string, sensorId: string) {
-  return spy.mock.calls.find((call) => {
+  return spy.mock.calls.find((call: any[]) => {
     // Logger methods are called with (message, meta). The meta is the second argument.
     const meta = call[1];
     if (meta && typeof meta === 'object') {
@@ -65,9 +79,9 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
   it('returns successful readings and skips sensors with no readings (404)', async () => {
     const fetchFn = mockFetchForDevicesAndReadings(
       new Map([
-        ['sensor_1', jsonResponse(200, { sensor_id: 'sensor_1', temperature_c: 22.5, values: { temperature: { value: 22.5 } } })],
+        ['sensor_1', jsonResponse(200, readingsBody('sensor_1', { temperature: { value: 22.5, unit: 'celsius' } }))],
         ['sensor_2', jsonResponse(404, { error: 'No readings found for sensor' })],
-        ['sensor_3', jsonResponse(200, { sensor_id: 'sensor_3', values: { ph: { value: 6.2 } } })],
+        ['sensor_3', jsonResponse(200, readingsBody('sensor_3', { ph: { value: 6.2, unit: null } }))],
       ]),
     );
 
@@ -163,7 +177,7 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
       if (url.includes('/api/v1/devices?farm_id')) {
         return jsonResponse(200, { devices: [{ id: 'sensor_timeout', device_type: 'sensor' }] });
       }
-      if (url.includes('/api/v1/readings/latest?sensor_id=sensor_timeout')) {
+      if (url.includes('sensor_id=sensor_timeout')) {
         // Simulate a network error with timeout in message
         throw new VfarmNetworkError('vFarm request timed out after 5000ms: /api/v1/readings/latest');
       }
@@ -187,7 +201,7 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
   it('returns partial results when some sensors succeed and others fail', async () => {
     const fetchFn = mockFetchForDevicesAndReadings(
       new Map([
-        ['sensor_1', jsonResponse(200, { sensor_id: 'sensor_1', values: { temperature: { value: 22.5 } } })],
+        ['sensor_1', jsonResponse(200, readingsBody('sensor_1', { temperature: { value: 22.5, unit: 'celsius' } }))],
         ['sensor_2', jsonResponse(404, { error: 'No readings found for sensor' })],
         ['sensor_3', jsonResponse(500, { error: 'Internal server error' })],
       ]),
@@ -217,12 +231,13 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
     let maxConcurrent = 0;
     let currentConcurrent = 0;
     const trackConcurrency = async (url: string) => {
-      if (url.includes('/api/v1/readings/latest')) {
+      if (url.includes('sensor_id=')) {
         currentConcurrent++;
         maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
         await new Promise((r) => setTimeout(r, 10));
         currentConcurrent--;
-        return jsonResponse(200, { sensor_id: url.match(/sensor_id=(\w+)/)?.[1] || 'unknown' });
+        const sensorId = url.match(/sensor_id=(\w+)/)?.[1] || 'unknown';
+        return jsonResponse(200, readingsBody(sensorId, { temperature: { value: 22.5, unit: 'celsius' } }));
       }
       if (url.includes('/api/v1/devices')) {
         return jsonResponse(200, { devices });
@@ -252,6 +267,6 @@ describe('VfarmLiveClient.listLatestReadings — per-sensor failure classificati
     const results = await client.listLatestReadings('test_farm');
     expect(results).toHaveLength(0);
     // Should not have called the readings endpoint
-    expect(fetchFn.mock.calls.filter((c) => c[0].includes('/readings/latest'))).toHaveLength(0);
+    expect(fetchFn.mock.calls.filter((c) => c[0].includes('sensor_id='))).toHaveLength(0);
   });
 });

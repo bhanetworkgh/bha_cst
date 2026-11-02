@@ -14,8 +14,8 @@
 
 ## 2. Upstream Presence Contract & Known Defect
 
-### Upstream 5-Minute Online Contract
-Under the upstream vFarm presence contract, devices report heartbeats/readings periodically. Devices without activity within the upstream window transition to `offline`.
+### Five-Minute Presence Rule — BLOCKED
+CST passes through vFarm's authoritative `fleet_status`; it does not calculate online/offline state locally. The exact presence window, including whether five minutes is implemented for every device class, is **BLOCKED** pending Jeganathan's confirmation and deployed vFarm evidence. CST must not describe the five-minute rule as verified.
 
 ### Known Defect: `NEVER_HEARD_DEVICE_FALSE_ONLINE`
 > [!WARNING]
@@ -49,6 +49,15 @@ Under the upstream vFarm presence contract, devices report heartbeats/readings p
 >
 > If farm health indicates degraded or unknown, CST is unable to verify authoritative health from vFarm. We do not infer health from partial sensor readings or health scores."
 
-### Sensor Telemetry & Missing Readings
-> "Telemetry readings are requested strictly from active sensor-type devices. When a sensor reading is missing or null, CST reports `telemetry_unavailable` rather than assuming normal operational values. If a required sensor is offline or stale, dependent systems are flagged as degraded."
+### Sensor Telemetry, Freshness & Missing Readings
+> "Telemetry readings are requested only from devices whose authoritative vFarm `device_type` is `sensor`. CST currently uses `GET /api/v1/readings?sensor_id={sensor_id}&limit=1`; the history endpoint's ordering is not verified, so CST does not claim that the returned row is definitively the newest. Missing, malformed, timed-out, or unauthorized readings are unavailable—not zero, normal, or healthy. A stale reading remains labeled stale and is not proof of current device presence or farm health."
+
+### Health Freshness
+The current CST farm-health response contract has no confirmed authoritative health timestamp. `/api/health` therefore reports `staleness_evaluation: unavailable_no_timestamp`. Freshness handling is implemented at the normalization boundary for an explicitly contracted timestamp and budget, but no timestamp field or farm-health freshness window is claimed in production.
+
+### Pilot Capability Boundaries
+- Live verification of `rack1_soil`, `rack1_ph`, `rack2_dht`, and `rack1_mq7` is **BLOCKED** by the current vFarm farm-discovery HTTP 401; no current value or online claim is made from that failed check.
+- Temperature, humidity, pH, soil-moisture, and air-quality values may be rendered only when present in a valid upstream reading. Their current production availability is **NOT VERIFIED**.
+- Camera/media capability is **NOT VERIFIED** for this pilot and is not promised by this help copy.
+- `OFFLINE_UPSTREAM` means CST could not retrieve authoritative upstream state; it is not a device offline verdict. `NEVER_HEARD` remains an upstream-owned correction and is not inferred by CST.
 

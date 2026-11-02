@@ -1320,10 +1320,11 @@ adminRouter.get('/vfarm/devices/:device_id/rollup', async (req: Request, res: Re
 });
 
 /**
- * GET /api/v1/admin/vfarm/readings/latest?farm_id=...
- * Proxies GET /api/v1/readings/latest — latest readings across the farm.
+ * GET /api/v1/admin/vfarm/readings/farm?farm_id=...
+ * Returns one reading per sensor via the interim vFarm readings endpoint.
+ * Uses the interim upstream history endpoint through VfarmLiveClient.
  */
-adminRouter.get('/vfarm/readings/latest', async (req: Request, res: Response) => {
+adminRouter.get('/vfarm/readings/farm', async (req: Request, res: Response) => {
   try {
     const client = getLiveClient(res);
     if (!client) return;
@@ -1337,13 +1338,13 @@ adminRouter.get('/vfarm/readings/latest', async (req: Request, res: Response) =>
     const readings = await client.listLatestReadings(farmId, limit);
     res.status(200).json({ readings, total: readings.length });
   } catch (err: any) {
-    sendProxyError(res, 'readings/latest', err);
+    sendProxyError(res, 'readings/farm', err);
   }
 });
 
 /**
  * GET /api/v1/admin/vfarm/readings/sensor-latest?sensor_id=...
- * Proxies GET /api/v1/readings/latest?sensor_id=...
+ * Returns latest sensor reading via GET /api/v1/readings/latest?sensor_id=...
  */
 adminRouter.get('/vfarm/readings/sensor-latest', async (req: Request, res: Response) => {
   try {
@@ -2041,4 +2042,3 @@ adminRouter.get('/sms-consent/:phoneE164/history', async (req: Request, res: Res
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });
-

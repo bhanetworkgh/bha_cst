@@ -13,7 +13,13 @@ import {
   DEV_FIXTURE_ONBOARDING_REPLY,
 } from './dev_seed.js';
 import { assertSpeakerFarmAccess, VfarmAuthorizationError } from './authorization.js';
-import { CONFIG_HASH_RE, type FarmResponse, type OrgResponse } from './schemas.js';
+import {
+  CONFIG_HASH_RE,
+  type FarmHealthResponse,
+  type FarmResponse,
+  type OrgResponse,
+} from './schemas.js';
+import { normalizeFarmHealth, type FarmHealthStatus, type FarmHealthStaleness } from './health.js';
 
 export { VfarmAuthorizationError, assertSpeakerFarmAccess } from './authorization.js';
 
@@ -499,8 +505,10 @@ export class VfarmTenantAdapter implements ITenantAdapter {
    */
   public async getFarmStatusForSpeaker(params: { farmId: string; speaker: SpeakerIdentity }): Promise<{
     farm_name?: string;
-    status?: string;
-    health_score?: number;
+    status: FarmHealthStatus;
+    raw_status: string | null;
+    health_score: number | null;
+    staleness_evaluation: FarmHealthStaleness;
     devices: {
       total: number;
       online: number;
@@ -515,21 +523,28 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
     if (!this.liveClient) return null;
 
-    const [health, devices] = await Promise.all([
-      this.liveClient.getFarmHealth(params.farmId).catch(() => null),
-      this.liveClient.listAllDevices(params.farmId).catch(() => null),
+    const [healthResult, devicesResult] = await Promise.allSettled([
+      this.liveClient.getFarmHealth(params.farmId),
+      this.liveClient.listAllDevices(params.farmId),
     ]);
+    const health = healthResult.status === 'fulfilled' ? healthResult.value : null;
+    const devices = devicesResult.status === 'fulfilled' ? devicesResult.value : null;
     if (!health && !devices) return null;
 
     // The live device-list payload types its counters loosely; read them
     // through a loose record rather than widening the public return type.
     const dev = (devices ?? {}) as Record<string, any>;
     const hl = (health ?? {}) as Record<string, any>;
+    const normalizedHealth = normalizeFarmHealth(health, {
+      upstreamError: healthResult.status === 'rejected',
+    });
 
     return {
       farm_name: hl.farm_name,
-      status: hl.status,
-      health_score: typeof hl.health_score === 'number' ? hl.health_score : undefined,
+      status: normalizedHealth.status,
+      raw_status: normalizedHealth.raw_status,
+      health_score: normalizedHealth.health_score,
+      staleness_evaluation: normalizedHealth.staleness_evaluation,
       devices: {
         total: dev.total ?? dev.devices?.length ?? hl.device_count ?? 0,
         online: dev.online_count ?? hl.online_count ?? 0,
@@ -652,14 +667,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (params.speaker) {
       assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
     }
-    if (!this.liveClient) {
-      return {
-        sensor_id: params.deviceId,
-        reading_ts: new Date().toISOString(),
-        temperature_c: 22.5,
-        humidity_rh: 65,
-      };
-    }
+    if (!this.liveClient) return null;
     try {
       return await this.liveClient.getLatestReading(params.deviceId);
     } catch (err: any) {
@@ -685,8 +693,10 @@ export class VfarmTenantAdapter implements ITenantAdapter {
    *   on / off        — loads (pumps, valves, lights) driven by a relay channel
    *   online          — reporting device, health >= 80 or no score yet
    *   unhealthy       — reporting device, health < 80
-   *   offline         — explicitly offline, not heard for 5 min, never heard
+   *   offline         — upstream-reported offline/never-heard state
    *   null            — cabinets (frames, not reporting devices)
+   *
+   * The exact upstream presence window is not asserted by CST.
    *
    * A missing field from an older upstream contract is reported as
    * `unavailable` rather than reinterpreted as offline. A null cabinet
@@ -803,14 +813,12 @@ export class VfarmTenantAdapter implements ITenantAdapter {
    * Returns the raw upstream response without re-interpretation.
    * Used by `/api/health` to separate API reachability from farm health.
    */
-  public async getFarmHealthDirect(farmId: string): Promise<{ status?: string; health_score?: number } | null> {
+  public async getFarmHealthDirect(farmId: string): Promise<FarmHealthResponse | null> {
     if (!this.liveClient) return null;
-    try {
-      return await this.liveClient.getFarmHealth(farmId);
-    } catch (err: any) {
-      Logger.warn(`vFarm getFarmHealthDirect: failed for farm ${farmId}: ${err?.message}`);
-      return null;
-    }
+    // Preserve the distinction between an empty/missing response and a failed
+    // upstream request. `/api/health` maps a thrown request failure to
+    // degraded; collapsing it to null would incorrectly report unknown.
+    return await this.liveClient.getFarmHealth(farmId);
   }
 
   /**

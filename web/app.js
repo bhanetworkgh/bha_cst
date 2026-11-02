@@ -12,6 +12,13 @@ async function api(path, options = {}) {
   return data;
 }
 
+const WEB_MESSAGE_TIMEOUT_MS = 30000;
+
+function setMessageStatus(text) {
+  const status = $('#message-status');
+  if (status) status.textContent = text;
+}
+
 function renderMessage(message, options = {}) {
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
@@ -42,12 +49,14 @@ function setComposerPending(pending) {
   const typingState = $('#typing-state');
   const form = $('#message-form');
   sendButton.disabled = pending;
+  sendButton.setAttribute('aria-disabled', String(pending));
   input.disabled = pending;
   if (pending) {
     input.setAttribute('aria-busy', 'true');
     form.setAttribute('aria-busy', 'true');
     typingState.classList.remove('hidden');
     typingState.setAttribute('aria-live', 'assertive');
+    typingState.textContent = 'Message accepted. CST is processing your request.';
   } else {
     input.removeAttribute('aria-busy');
     form.removeAttribute('aria-busy');
@@ -77,6 +86,7 @@ function showView(view) {
   $('#page-title').textContent = view === 'overview' ? 'Project overview' : view === 'chat' ? 'How can we help?' : 'Recent activity';
   ['overview-nav', 'chat-nav', 'activity-nav'].forEach((id) => $(`#${id}`).classList.remove('active'));
   $(`#${view}-nav`).classList.add('active');
+  $('.sidebar').classList.remove('open');
   if (view === 'activity') renderActivity();
 }
 
@@ -115,14 +125,28 @@ async function sendMessage(event) {
 
   // 1. Show user message IMMEDIATELY — before the API call.
   renderMessage({ role: 'user', text, created_at: Date.now() });
+  setMessageStatus('Message submitted.');
   input.value = '';
   list.scrollTop = list.scrollHeight;
 
   // 2. Lock the composer and show typing indicator.
   setComposerPending(true);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEB_MESSAGE_TIMEOUT_MS);
+
   try {
-    const response = await api('/api/v1/web/message', { method: 'POST', body: JSON.stringify({ text }) });
+    const response = await api('/api/v1/web/message', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    setMessageStatus('CST is responding.');
+    // Give the responding state a real paint before replacing it with delivered.
+    await new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve(undefined));
+      else setTimeout(resolve, 0);
+    });
     renderMessage({
       role: 'assistant',
       text: response.reply_text,
@@ -130,16 +154,21 @@ async function sendMessage(event) {
       created_at: Date.now(),
     });
     list.scrollTop = list.scrollHeight;
+    setMessageStatus('Response delivered.');
   } catch (error) {
     // Show a clear failure message — do not silently swallow.
+    const message = controller.signal.aborted ? 'The request timed out' : error.message;
     const errorArticle = renderMessage({
       role: 'assistant',
-      text: `We couldn't complete that request. ${error.message}. Please try again.`,
+      text: `We couldn't complete that request. ${message}. Please try again.`,
       created_at: Date.now(),
     });
     errorArticle.classList.add('message-error');
+    input.value = text;
+    setMessageStatus(`Error: response could not be delivered. ${message}.`);
     list.scrollTop = list.scrollHeight;
   } finally {
+    clearTimeout(timeoutId);
     // 3. Unlock the composer.
     setComposerPending(false);
     input.focus();

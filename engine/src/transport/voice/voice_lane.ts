@@ -6,7 +6,7 @@ import { SystemsRegistry } from '../../systems/registry.js';
 import { CoreRegistry } from '../../core/registry.js';
 import { IdentityResolver } from '../../identity/resolver.js';
 import { IntentRouter } from '../../router/index.js';
-import { DbClient, VoiceDeliveryRecord } from '../../db/client.js';
+import { DbClient, stableVoiceId, VoiceDeliveryRecord } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
 import {
@@ -57,6 +57,19 @@ export type VoiceTurnResult =
   | VoiceTurnSuccessResult
   | VoiceTurnRefusedResult
   | VoiceTurnDroppedResult;
+
+/**
+ * Record a failed/refused turn without replacing the original routing or
+ * synthesis failure. Successful delivery records are deliberately not routed
+ * through this helper because their persistence failure must be exposed.
+ */
+async function recordVoiceDeliveryBestEffort(delivery: VoiceDeliveryRecord): Promise<void> {
+  try {
+    await DbClient.recordVoiceDelivery(delivery);
+  } catch (err: any) {
+    Logger.warn(`Failed to record voice delivery outcome: ${err.message}`);
+  }
+}
 
 export class VoiceLaneService {
   private static defaultSynthesizer: AudioSynthesizer | null = null;
@@ -224,7 +237,7 @@ export class VoiceLaneService {
       outboundMessage = await IntentRouter.routeAndHandle(inboundMsg, identity);
     } catch (routeErr: any) {
       Logger.error(`VoiceLane routing failure: ${routeErr.message}`, { correlation_id, tenant_id: tenantId });
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: systemId,
         tenant_id: tenantId,
         status: 'failed',
@@ -269,7 +282,7 @@ export class VoiceLaneService {
         correlation_id,
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: systemId,
         tenant_id: tenantId,
         message_id: outboundMessage.id,
@@ -309,7 +322,7 @@ export class VoiceLaneService {
         meta: { system_id: systemId, tenant_id: tenantId, correlation_id },
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: systemId,
         tenant_id: tenantId,
         message_id: outboundMessage.id,
@@ -367,7 +380,7 @@ export class VoiceLaneService {
         meta: { system_id: systemId, tenant_id: tenantId, voice_id: voiceId, error: errorMsg, correlation_id },
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: systemId,
         tenant_id: tenantId,
         message_id: outboundMessage.id,
@@ -389,63 +402,106 @@ export class VoiceLaneService {
       };
     }
 
-    // 8. Wire into audit and health surfaces on successful synthesis
+    // 8. Persist the spoken turn before reporting synthesis success.
+    //
+    // Transcript persistence is required for an interactive turn to be durable.
+    // The voice-delivery ledger is written last so a failed transcript cannot
+    // leave a successful synthesized row that health surfaces would count as a
+    // delivered turn.
     const audioBytes = Buffer.from(audioPayload.audioBase64, 'base64').length;
-
-    // A. Record spoken delivery event for Destiny health signal
-    await DbClient.recordVoiceDelivery({
-      system_id: systemId,
-      tenant_id: tenantId,
-      message_id: outboundMessage.id,
-      status: 'synthesized',
-      voice_id: voiceId,
-      model_id: system.elevenlabs_model_id,
-      character_count: outboundMessage.body.length,
-      audio_bytes: audioBytes,
-      mime_type: audioPayload.mimeType,
-      correlation_id,
-      delivered_at: new Date().toISOString(),
-    });
-
-    // B. Link to Alert Audit Log (write-time secret masking & 64KB cap)
-    await AlertAuditLog.write(
-      outboundMessage.id!,
-      tenantId,
-      outboundMessage.body,
-      {
-        template_id: 'voice_clone_tts',
-        version: '1.0.0',
-        params: {
-          channel: 'voice',
-          voice_id: voiceId,
-          model_id: system.elevenlabs_model_id,
-          audio_bytes: audioBytes,
-          mime_type: audioPayload.mimeType,
-          correlation_id,
-        },
-      }
+    const messageId = stableVoiceId('vmsg_out', [tenantId, resolvedProjectId, correlation_id]);
+    const conv = DbClient.getAllConversations().find(
+      (c: any) => c.customer_ref === identity.customer_ref && (c.tenant_id === tenantId || c.organization_id === tenantId)
     );
 
-    // C. Add outbound message to conversation transcripts
+    if (!conv) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        actor: identity.customer_ref,
+        role: identity.role,
+        entry_point: 'api',
+        tool_or_route: 'VoiceLaneService.processVoiceTurn',
+        outcome: 'error',
+        reason: 'Voice Lane turn cannot be persisted: no conversation is available for the resolved speaker.',
+        correlation_id,
+      });
+      return {
+        status: 'failed',
+        reason: 'Voice response could not be persisted',
+        error: 'VOICE_PERSISTENCE_FAILED',
+        correlation_id,
+      };
+    }
+
     try {
-      const conv = DbClient.getAllConversations().find(
-        (c: any) => c.customer_ref === identity.customer_ref && (c.tenant_id === tenantId || c.organization_id === tenantId)
+      await DbClient.addMessageToTranscript({
+        message_id: messageId,
+        conversation_id: conv.conversation_id,
+        tenant_id: tenantId,
+        project_id: resolvedProjectId,
+        direction: 'outbound',
+        from_e164: to_e164,
+        to_e164: from_e164,
+        body: outboundMessage.body,
+        media_refs: [`voice:elevenlabs:${voiceId}`],
+        provider_sid: correlation_id,
+      });
+
+      // B. Link to Alert Audit Log (write-time secret masking & 64KB cap).
+      // This remains tied to the actual outbound SMS queue row because the
+      // voice Lane routed through IntentRouter, unlike the Twilio voice path.
+      await AlertAuditLog.write(
+        outboundMessage.id!,
+        tenantId,
+        outboundMessage.body,
+        {
+          template_id: 'voice_clone_tts',
+          version: '1.0.0',
+          params: {
+            channel: 'voice',
+            voice_id: voiceId,
+            model_id: system.elevenlabs_model_id,
+            audio_bytes: audioBytes,
+            mime_type: audioPayload.mimeType,
+            correlation_id,
+          },
+        }
       );
-      if (conv) {
-        await DbClient.addMessageToTranscript({
-          message_id: outboundMessage.id!,
-          conversation_id: conv.conversation_id,
-          tenant_id: tenantId,
-          direction: 'outbound',
-          from_e164: to_e164,
-          to_e164: from_e164,
-          body: outboundMessage.body,
-          media_refs: [`voice:elevenlabs:${voiceId}`],
-          provider_sid: outboundMessage.id,
-        });
-      }
-    } catch (transcriptErr: any) {
-      Logger.warn(`Failed to append voice message to transcript: ${transcriptErr.message}`);
+
+      // A. Record spoken delivery event for Destiny health signal.
+      await DbClient.recordVoiceDelivery({
+        system_id: systemId,
+        tenant_id: tenantId,
+        conversation_id: conv.conversation_id,
+        message_id: messageId,
+        status: 'synthesized',
+        voice_id: voiceId,
+        model_id: system.elevenlabs_model_id,
+        character_count: outboundMessage.body.length,
+        audio_bytes: audioBytes,
+        mime_type: audioPayload.mimeType,
+        correlation_id,
+        delivered_at: new Date().toISOString(),
+      });
+    } catch (persistenceErr: any) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        actor: identity.customer_ref,
+        role: identity.role,
+        entry_point: 'api',
+        tool_or_route: 'VoiceLaneService.processVoiceTurn',
+        outcome: 'error',
+        reason: `Voice Lane turn persistence failed: ${persistenceErr.message}`,
+        correlation_id,
+      });
+      return {
+        status: 'failed',
+        reason: 'Voice response could not be persisted',
+        error: 'VOICE_PERSISTENCE_FAILED',
+        correlation_id,
+      };
     }
 
     // D. Log audit event
@@ -467,7 +523,7 @@ export class VoiceLaneService {
       audioBase64: audioPayload.audioBase64,
       mimeType: audioPayload.mimeType,
       correlation_id,
-      message_id: outboundMessage.id!,
+      message_id: messageId,
     };
   }
 
@@ -519,7 +575,7 @@ export class VoiceLaneService {
         modelId,
       });
     } catch (err: any) {
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: systemId,
         tenant_id: tenantId,
         status: 'failed',

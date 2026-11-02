@@ -38,7 +38,7 @@ const PHONE = '+15551234567';
 const HEALTH = {
   farm_id: FARM,
   farm_name: 'v-farm',
-  status: 'critical',
+  status: 'unhealthy',
   device_count: 26,
   online_count: 19,
   offline_count: 6,

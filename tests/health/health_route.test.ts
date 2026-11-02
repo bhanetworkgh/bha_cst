@@ -256,4 +256,44 @@ describe('GET /api/health — authoritative farm health mapping', () => {
     expect(res.body.status).toBe('ok');
     expect(res.body.service).toBe('bha-cst-engine');
   });
+
+  it('malformed upstream response (invalid status shape) maps to degraded, never healthy', async () => {
+    registerMockAdapter({
+      getFarmHealthDirect: vi.fn().mockResolvedValue({ status: null as any, health_score: 'not-a-number' }),
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy', latency_ms: 40 }),
+    });
+
+    const res = await request(app).get('/api/health');
+
+    expect(res.body.status).toBe('unknown');
+    expect(res.body.status).not.toBe('healthy');
+    expect(res.body.farm_health.raw_status).toBeNull();
+  });
+
+  it('upstream returns an object with no status field → unknown', async () => {
+    registerMockAdapter({
+      getFarmHealthDirect: vi.fn().mockResolvedValue({ health_score: 88 }),
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy', latency_ms: 40 }),
+    });
+
+    const res = await request(app).get('/api/health');
+
+    expect(res.body.status).toBe('unknown');
+    expect(res.body.farm_health.status).toBe('unknown');
+    expect(res.body.farm_health.raw_status).toBeNull();
+  });
+
+  it('preserves authoritative health while marking freshness unavailable when no timestamp exists', async () => {
+    registerMockAdapter({
+      getFarmHealthDirect: vi.fn().mockResolvedValue({ status: 'healthy', health_score: 99 }),
+      getHealth: vi.fn().mockResolvedValue({ status: 'healthy', latency_ms: 40 }),
+    });
+
+    const res = await request(app).get('/api/health');
+
+    // vFarm says healthy, but without a source timestamp CST cannot evaluate
+    // freshness — staleness is explicitly unavailable, not inferred healthy.
+    expect(res.body.farm_health.staleness_evaluation).toBe('unavailable_no_timestamp');
+    expect(res.body.farm_health.status).toBe('healthy');
+  });
 });

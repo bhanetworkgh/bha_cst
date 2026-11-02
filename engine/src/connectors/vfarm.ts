@@ -15,7 +15,9 @@ export interface VfarmUnitStatus {
   ec_level?: number;
   water_level?: number;
   relay?: number;
-  last_updated: string;
+  last_updated: string | null;
+  reading_ts?: string | null;
+  received_at?: string | null;
   /** True when the reading timestamp is older than the freshness threshold. */
   stale?: boolean;
   /**
@@ -27,6 +29,17 @@ export interface VfarmUnitStatus {
   fleet_status?: string | null;
   /** Which vFarm device-status contract the fleet_status value comes from. */
   upstream_contract?: 'fleet_status' | 'legacy_status' | 'unavailable';
+  temperature_status?: string | null;
+  humidity_status?: string | null;
+  soil_moisture_status?: string | null;
+  ph_status?: string | null;
+  co_status?: string | null;
+  temperature_unit?: string | null;
+  humidity_unit?: string | null;
+  soil_moisture_unit?: string | null;
+  ph_unit?: string | null;
+  co_unit?: string | null;
+  values?: Record<string, { unit?: string | null; value?: unknown; status?: string | null }>;
 }
 
 /**
@@ -77,15 +90,15 @@ function mapLatestReadingToTelemetry(
   farmId: string,
   unitId: string,
   reading: {
-    reading_ts?: string;
-    received_at?: string;
+    reading_ts?: string | null;
+    received_at?: string | null;
     temperature_c?: unknown;
     temperature_status?: string | null;
     humidity_rh?: unknown;
     humidity_status?: string | null;
     error_code?: string | null;
     error_message?: string | null;
-    values?: Record<string, { unit?: string | null; value?: unknown; status?: string | null }>;
+    values?: Record<string, { unit?: string | null; value?: unknown; status?: string | null }> | null;
   },
 ): VfarmUnitStatus {
   const hasError = Boolean(reading.error_code || reading.error_message);
@@ -96,7 +109,7 @@ function mapLatestReadingToTelemetry(
   const tempVal = vals.temperature?.value ?? reading.temperature_c;
   const humVal = vals.humidity?.value ?? reading.humidity_rh;
   const phVal = vals.ph?.value;
-  const coVal = vals.co?.value;
+  const coVal = vals.co?.value ?? vals.co_ppm?.value;
   const soilVal = vals.soil_moisture?.value;
   const relayVal = vals.relay?.value;
 
@@ -106,6 +119,18 @@ function mapLatestReadingToTelemetry(
   const co = parseNumericField(coVal);
   const soil = parseNumericField(soilVal);
   const relay = parseNumericField(relayVal);
+
+  const tempStatus = vals.temperature?.status ?? reading.temperature_status ?? null;
+  const humStatus = vals.humidity?.status ?? reading.humidity_status ?? null;
+  const phStatus = vals.ph?.status ?? null;
+  const coStatus = (vals.co?.status ?? vals.co_ppm?.status) ?? null;
+  const soilStatus = vals.soil_moisture?.status ?? null;
+
+  const tempUnit = vals.temperature?.unit ?? (reading.temperature_c != null ? 'celsius' : null);
+  const humUnit = vals.humidity?.unit ?? (reading.humidity_rh != null ? 'percent' : null);
+  const phUnit = vals.ph?.unit ?? null;
+  const coUnit = (vals.co?.unit ?? vals.co_ppm?.unit) ?? null;
+  const soilUnit = vals.soil_moisture?.unit ?? null;
 
   // Status comes from vFarm's own status fields, not from locally invented
   // thresholds. A reading with ALL sensor values missing/null/undefined is
@@ -119,13 +144,28 @@ function mapLatestReadingToTelemetry(
   } else if (allValuesMissing) {
     // No usable sensor data — do not claim normal.
     status = 'telemetry_unavailable';
-  } else if (reading.temperature_status === 'warning' || reading.humidity_status === 'warning') {
+  } else if (
+    tempStatus === 'warning' ||
+    humStatus === 'warning' ||
+    soilStatus === 'warning' ||
+    phStatus === 'warning' ||
+    coStatus === 'warning'
+  ) {
     status = 'warning';
-  } else if (temp != null && (temp < 10 || temp > 35)) {
-    status = 'warning';
+  } else if (
+    tempStatus === 'fault' || tempStatus === 'error' || tempStatus === 'unhealthy' ||
+    humStatus === 'fault' || humStatus === 'error' || humStatus === 'unhealthy' ||
+    soilStatus === 'fault' || soilStatus === 'error' || soilStatus === 'unhealthy' ||
+    phStatus === 'fault' || phStatus === 'error' || phStatus === 'unhealthy' ||
+    coStatus === 'fault' || coStatus === 'error' || coStatus === 'unhealthy'
+  ) {
+    status = 'fault';
   } else {
+    // CST does not invent sensor thresholds or a separate farm-health score.
     status = 'normal';
   }
+
+  const primaryTs = reading.reading_ts || reading.received_at || null;
 
   return {
     unit_id: unitId,
@@ -137,16 +177,25 @@ function mapLatestReadingToTelemetry(
     ec_level: co,
     water_level: soil,
     relay: relay,
-    last_updated: reading.reading_ts || reading.received_at || new Date().toISOString(),
+    last_updated: primaryTs,
+    reading_ts: reading.reading_ts || null,
+    received_at: reading.received_at || null,
     stale: (() => {
-      const ts = reading.reading_ts || reading.received_at;
-      if (!ts) return false;
-      const age = Date.now() - new Date(ts).getTime();
+      if (!primaryTs) return false;
+      const age = Date.now() - new Date(primaryTs).getTime();
       return Number.isFinite(age) && age > 24 * 60 * 60 * 1000;
     })(),
-    // Preserve the upstream status fields for the response.
-    ...(reading.temperature_status ? { temperature_status: reading.temperature_status } : {}),
-    ...(reading.humidity_status ? { humidity_status: reading.humidity_status } : {}),
+    ...(tempStatus ? { temperature_status: tempStatus } : {}),
+    ...(humStatus ? { humidity_status: humStatus } : {}),
+    ...(soilStatus ? { soil_moisture_status: soilStatus } : {}),
+    ...(phStatus ? { ph_status: phStatus } : {}),
+    ...(coStatus ? { co_status: coStatus } : {}),
+    ...(tempUnit ? { temperature_unit: tempUnit } : {}),
+    ...(humUnit ? { humidity_unit: humUnit } : {}),
+    ...(soilUnit ? { soil_moisture_unit: soilUnit } : {}),
+    ...(phUnit ? { ph_unit: phUnit } : {}),
+    ...(coUnit ? { co_unit: coUnit } : {}),
+    ...(reading.values ? { values: reading.values } : {}),
   };
 }
 
@@ -188,7 +237,7 @@ export class VfarmConnector {
           unit_id: unitId || 'unbound',
           farm_id: farmId || 'unbound',
           status: 'telemetry_unavailable',
-          last_updated: new Date().toISOString(),
+          last_updated: null,
         },
       };
     }
@@ -231,7 +280,7 @@ export class VfarmConnector {
             unit_id: 'unbound',
             farm_id: farmId,
             status: 'telemetry_unavailable',
-            last_updated: new Date().toISOString(),
+            last_updated: null,
           },
         };
       }
@@ -312,7 +361,10 @@ const statusParts: string[] = [`${d.total} devices`];
             // Build the voice response prioritizing farm summary first (required format)
             const farmSummary = `Your farm has ${d.total} devices. ${d.online} are online, ${d.offline} are offline, and ${unhealthyCount} are unhealthy.`;
 
-            const parts: string[] = [farmSummary];
+            const parts: string[] = [
+              farmSummary,
+              `vFarm farm health: ${statusLabel}.`,
+            ];
             if (d.unhealthy > 0) {
               parts.push(`Of those, ${unhealthyCount} ${unhealthyCount === 1 ? 'is' : 'are'} flagged unhealthy.`);
             }
@@ -384,7 +436,7 @@ const statusParts: string[] = [`${d.total} devices`];
               ph_level?: number;
               ec_level?: number;
               water_level?: number;
-              last_updated: string;
+              last_updated: string | null;
               stale?: boolean;
             }> = [];
             try {
@@ -442,13 +494,12 @@ const statusParts: string[] = [`${d.total} devices`];
               telemetry: {
                 unit_id: 'unbound',
                 farm_id: farmId,
-                status:
-                  farmStatus.status === 'critical' || farmStatus.status === 'fault'
-                    ? 'fault'
-                    : farmStatus.status === 'warning'
-                      ? 'warning'
-                      : 'normal',
-                last_updated: new Date().toISOString(),
+                status: (() => {
+                  if (farmStatus.status === 'healthy') return 'normal';
+                  if (farmStatus.status === 'unhealthy') return 'fault';
+                  return 'telemetry_unavailable';
+                })(),
+                last_updated: null,
               },
             };
           }
@@ -472,7 +523,7 @@ const statusParts: string[] = [`${d.total} devices`];
                 unit_id: 'unbound',
                 farm_id: farmId,
                 status: 'telemetry_unavailable',
-                last_updated: new Date().toISOString(),
+                last_updated: null,
               },
             };
           }
@@ -496,7 +547,7 @@ const statusParts: string[] = [`${d.total} devices`];
           unit_id: 'unbound',
           farm_id: farmId,
           status: 'telemetry_unavailable',
-          last_updated: new Date().toISOString(),
+          last_updated: null,
         },
       };
     }
@@ -547,7 +598,7 @@ const statusParts: string[] = [`${d.total} devices`];
                   unit_id: unitId,
                   farm_id: farmId,
                   status: 'telemetry_unavailable',
-                  last_updated: new Date().toISOString(),
+                  last_updated: null,
                   fleet_status: fleetStatus,
                   upstream_contract: fleetContract as any,
                 },
@@ -585,7 +636,7 @@ const statusParts: string[] = [`${d.total} devices`];
                   unit_id: unitId,
                   farm_id: farmId,
                   status: 'telemetry_unavailable',
-                  last_updated: new Date().toISOString(),
+                  last_updated: null,
                 },
               };
             }
@@ -620,7 +671,7 @@ const statusParts: string[] = [`${d.total} devices`];
       unit_id: unitId,
       farm_id: farmId,
       status: 'telemetry_unavailable',
-      last_updated: new Date().toISOString(),
+      last_updated: null,
     };
 
     return {

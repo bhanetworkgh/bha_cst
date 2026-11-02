@@ -24,7 +24,7 @@ import pg from 'pg';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DbClient, ConversationPersistenceError } from '../../engine/src/db/client.js';
+import { DbClient, ConversationPersistenceError, VoiceDeliveryPersistenceError } from '../../engine/src/db/client.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -363,15 +363,7 @@ describe('LOOP-1790985133890-XKWD — conversation persistence: durability (no d
     expect(calls.some((c) => c.includes('INSERT INTO messages'))).toBe(false);
   });
 
-  it('warns instead of persisting a voice delivery when the tenant has no systems row', async () => {
-    stubPool.query.mockImplementation(async (sql: string) => {
-      if (sql.includes('FROM systems')) {
-        // No system row for this tenant.
-        return { rows: [] };
-      }
-      return { rows: [] };
-    });
-
+  it('rejects instead of persisting a voice delivery when the tenant has no systems row', async () => {
     const calls: string[] = [];
     stubPool.query.mockImplementation(async (sql: string) => {
       calls.push(sql);
@@ -379,16 +371,17 @@ describe('LOOP-1790985133890-XKWD — conversation persistence: durability (no d
       return { rows: [] };
     });
 
-    await DbClient.recordVoiceDelivery({
+    await expect(DbClient.recordVoiceDelivery({
       tenant_id: 'tenant-without-system',
       project_id: PROJECT,
       status: 'sent',
       character_count: 10,
       audio_bytes: 100,
-    } as any);
+    } as any)).rejects.toBeInstanceOf(VoiceDeliveryPersistenceError);
 
     // `voice_deliveries.system_id` is NOT NULL + FK. With no parent row the
-    // write is skipped (fail closed) rather than fed a fabricated id.
+    // write must fail the caller instead of silently leaving an in-memory row.
     expect(calls.some((c) => c.includes('INSERT INTO voice_deliveries'))).toBe(false);
+    expect(DbClient.getAllVoiceDeliveries()).toHaveLength(0);
   });
 });

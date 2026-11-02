@@ -87,6 +87,12 @@ const envSchema = z.object({
   // ── Engine Dashboard Event Publisher ──────────────────────────────────────
   ENGINE_DASHBOARD_URL:      optionalEnv(z.string().url()),
   ENGINE_DASHBOARD_KEY:      optionalEnv(z.string().min(1)),
+
+  // ── Research Twin candidate transport ─────────────────────────────────────
+  // Reported unavailable/blocked until the external contract is approved.
+  RT_ENDPOINT_URL:            optionalEnv(z.string().url()),
+  RT_SERVICE_API_KEY:         optionalEnv(z.string().min(1)),
+  RT_CALLBACK_SIGNING_SECRET: optionalEnv(z.string().min(1)),
 });
 
 export type Env = z.infer<typeof envSchema>;
