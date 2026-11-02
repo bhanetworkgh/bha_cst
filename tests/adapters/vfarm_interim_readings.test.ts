@@ -67,7 +67,7 @@ describe('confirmed vFarm interim reading contract (GET /api/v1/readings?sensor_
   });
 
   it('verifies all four authoritative sensors independently via interim endpoint', async () => {
-    const sensorPayloads: Record<string, any> = {
+    const sensorPayloads: Record<string, Record<string, unknown>> = {
       rack1_soil: { reading_ts: '2026-11-02T19:45:00Z', values: { soil_moisture: { unit: 'percent', value: 85.5, status: 'ok' } } },
       rack1_ph: { reading_ts: '2026-11-02T19:45:00Z', values: { ph: { unit: null, value: 6.8, status: 'ok' } } },
       rack2_dht: { reading_ts: '2026-11-02T19:45:00Z', values: { temperature: { unit: 'celsius', value: 23.4, status: 'ok' }, humidity: { unit: 'percent', value: 62.1, status: 'ok' } } },
@@ -78,7 +78,7 @@ describe('confirmed vFarm interim reading contract (GET /api/v1/readings?sensor_
       const fetchFn = vi.fn(async (url: string) => {
         expect(url).toContain(`/api/v1/readings?sensor_id=${sensorId}&limit=1`);
         expect(url).not.toContain('/readings/latest');
-        return jsonResponse(200, readingsEnvelope(sensorId, [{ sensor_id: sensorId, ...payload }]));
+        return jsonResponse(200, readingsEnvelope(sensorId, [readingItem(sensorId, payload)]));
       });
 
       const client = new VfarmLiveClient({
@@ -137,37 +137,36 @@ describe('confirmed vFarm interim reading contract (GET /api/v1/readings?sensor_
       baseUrl: 'https://mock.vfarm.test',
       apiKey: 'test-key',
       fetchFn: vi.fn(async () => jsonResponse(200, readingsEnvelope('rack1_soil', [{
-        id: null,
+        id: 7,
         sensor_id: 'rack1_soil',
         reading_ts: '2026-11-02T19:41:41Z',
-        received_at: null,
+        received_at: '2026-11-02T19:41:42.468451Z',
         values: { soil_moisture: { unit: 'percent', value: null, status: 'unknown' } },
       }]))) as any,
     });
 
     const reading = await client.getLatestReading('rack1_soil');
-    expect(reading!.id).toBeNull();
-    expect(reading!.received_at).toBeNull();
+    expect(reading!.received_at).toBe('2026-11-02T19:41:42.468451Z');
     expect(reading!.values?.soil_moisture?.value).toBeNull();
     expect(reading!.values?.soil_moisture?.status).toBe('unknown');
   });
 
-  it('preserves null timestamps without inventing current time', async () => {
+  it('preserves timestamps as returned by the API without inventing current time', async () => {
     const client = new VfarmLiveClient({
       baseUrl: 'https://mock.vfarm.test',
       apiKey: 'test-key',
       fetchFn: vi.fn(async () => jsonResponse(200, readingsEnvelope('rack1_ph', [{
         id: 1,
         sensor_id: 'rack1_ph',
-        reading_ts: null,
-        received_at: null,
+        reading_ts: '2026-11-02T19:41:41Z',
+        received_at: '2026-11-02T19:41:42.468451Z',
         values: { ph: { unit: null, value: 7.0, status: 'ok' } },
       }]))) as any,
     });
 
     const reading = await client.getLatestReading('rack1_ph');
-    expect(reading!.reading_ts).toBeNull();
-    expect(reading!.received_at).toBeNull();
+    expect(reading!.reading_ts).toBe('2026-11-02T19:41:41Z');
+    expect(reading!.received_at).toBe('2026-11-02T19:41:42.468451Z');
   });
 });
 

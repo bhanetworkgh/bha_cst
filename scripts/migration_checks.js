@@ -112,7 +112,12 @@ export const migrationEffectChecks = {
   },
 
   '020_dashboard_publish_outcomes.sql': async (client) =>
-    await tableExists(client, 'dashboard_publish_outcomes'),
+    (await tableExists(client, 'dashboard_publish_outcomes')) &&
+    (await columnExists(client, 'dashboard_publish_outcomes', 'event_type')) &&
+    (await columnExists(client, 'dashboard_publish_outcomes', 'status')) &&
+    (await indexExists(client, 'idx_dashboard_publish_outcomes_status')) &&
+    (await indexExists(client, 'idx_dashboard_publish_outcomes_created')) &&
+    (await indexExists(client, 'unq_dashboard_publish_outcomes_event')),
 
   '021_repair_service_number_bindings.sql': async (client) => {
     const r = await client.query(
@@ -122,7 +127,58 @@ export const migrationEffectChecks = {
   },
 
   '022_add_escalations_table.sql': async (client) =>
-    await tableExists(client, 'escalations'),
+    (await tableExists(client, 'escalations')) &&
+    (await columnExists(client, 'escalations', 'id')) &&
+    (await columnExists(client, 'escalations', 'caller_phone')) &&
+    (await columnExists(client, 'escalations', 'tenant_id')) &&
+    (await columnExists(client, 'escalations', 'project_id')) &&
+    (await columnExists(client, 'escalations', 'conversation_id')) &&
+    (await columnExists(client, 'escalations', 'correlation_id')) &&
+    (await columnExists(client, 'escalations', 'caller_email')) &&
+    (await columnExists(client, 'escalations', 'reason')) &&
+    (await columnExists(client, 'escalations', 'transcript')) &&
+    (await columnExists(client, 'escalations', 'slack_notified')) &&
+    (await columnExists(client, 'escalations', 'slack_notified_at')) &&
+    (await columnExists(client, 'escalations', 'slack_error')) &&
+    (await columnExists(client, 'escalations', 'created_at')) &&
+    (await columnExists(client, 'escalations', 'status')) &&
+    (await constraintExists(client, 'ck_escalation_status')) &&
+    (await indexExists(client, 'idx_escalations_correlation')) &&
+    (await indexExists(client, 'idx_escalations_tenant')) &&
+    (await indexExists(client, 'idx_escalations_status')) &&
+    (await indexExists(client, 'idx_escalations_caller_phone')),
+
+  '023_reconcile_duplicate_003_and_schema_drift.sql': async (client) => {
+    if (!(await tableExists(client, 'customers'))) return false;
+    if (!(await tableExists(client, 'security_ledger'))) return false;
+    if (!(await columnExists(client, 'customers', 'id'))) return false;
+    if (!(await columnExists(client, 'customers', 'updated_at'))) return false;
+    if (!(await constraintExists(client, 'unq_customers_tenant_project_phone'))) return false;
+    if (!(await indexExists(client, 'idx_customers_phone'))) return false;
+    if (!(await indexExists(client, 'idx_customers_tenant_phone'))) return false;
+    if (!(await indexExists(client, 'idx_security_ledger_tenant'))) return false;
+
+    const pkRes = await client.query(`
+      SELECT string_agg(a.attname, ',' ORDER BY k.ord) AS pk_cols
+        FROM pg_constraint c
+        CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+       WHERE c.conrelid = to_regclass('public.customers')
+         AND c.contype = 'p'
+    `);
+    if (pkRes.rows[0]?.pk_cols !== 'id') return false;
+
+    const lenRes = await client.query(`
+      SELECT column_name, character_maximum_length
+        FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'customers'
+         AND column_name IN ('unit_id', 'farm_id')
+    `);
+    if (lenRes.rows.length !== 2) return false;
+    return lenRes.rows.every((row) => Number(row.character_maximum_length) === 128);
+  },
 };
 
 /** Human-readable summary of which migrations in `files` lack an explicit check. */

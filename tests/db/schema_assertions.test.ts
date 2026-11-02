@@ -148,4 +148,54 @@ describe('Schema assertions — required database state (read-only, from migrati
     expect(binding).toBeGreaterThan(voice);
     expect(outcomes).toBeGreaterThanOrEqual(0);
   });
+
+  // ── Migration 022: escalations table, columns, constraints, and indexes ──
+
+  it('defines the escalations table with required columns, check constraint, and indexes (022)', () => {
+    const sql = byName('022_add_escalations_table.sql');
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS escalations/i);
+    const requiredCols = [
+      'id',
+      'caller_phone',
+      'tenant_id',
+      'project_id',
+      'conversation_id',
+      'correlation_id',
+      'caller_email',
+      'reason',
+      'transcript',
+      'slack_notified',
+      'slack_notified_at',
+      'slack_error',
+      'created_at',
+      'status',
+    ];
+    for (const col of requiredCols) {
+      expect(sql, `escalations.${col} must exist in 022`).toMatch(new RegExp(`\\b${col}\\b`, 'i'));
+    }
+    expect(sql).toMatch(/CONSTRAINT\s+ck_escalation_status\s+CHECK\s*\(\s*status\s+IN\s*\(\s*'pending'\s*,\s*'notified'\s*,\s*'failed'\s*\)\s*\)/i);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_escalations_correlation ON escalations\(correlation_id\)/i);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_escalations_tenant ON escalations\(tenant_id,\s*created_at DESC\)/i);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_escalations_status ON escalations\(status\)/i);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_escalations_caller_phone ON escalations\(caller_phone\)/i);
+  });
+
+  // ── Migration 023: forward-only duplicate-003 and schema drift reconciliation ──
+
+  it('reconciles duplicate 003 customers schema and preserves historical 006/010 checksums via 023', () => {
+    const sql023 = byName('023_reconcile_duplicate_003_and_schema_drift.sql');
+    expect(sql023).toMatch(/ADD COLUMN IF NOT EXISTS id VARCHAR\(64\)/i);
+    expect(sql023).toMatch(/ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ/i);
+    expect(sql023).toMatch(/ALTER COLUMN unit_id TYPE VARCHAR\(128\)/i);
+    expect(sql023).toMatch(/ALTER COLUMN farm_id TYPE VARCHAR\(128\)/i);
+    expect(sql023).toMatch(/ADD CONSTRAINT customers_pkey PRIMARY KEY \(id\)/i);
+    expect(sql023).toMatch(/CREATE TABLE IF NOT EXISTS security_ledger/i);
+    expect(sql023).toMatch(/idx_security_ledger_tenant/i);
+
+    // Ensure 006 and 010 do not contain unescaped apostrophes in SQL literals
+    const sql006 = byName('006_seed_initial_customers.sql');
+    const sql010 = byName('010_add_projects_bindings_and_project_id.sql');
+    expect(sql006).not.toContain("Support. I'm here");
+    expect(sql010).not.toContain("Support. I'm here");
+  });
 });

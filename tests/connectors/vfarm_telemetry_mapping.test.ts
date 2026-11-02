@@ -305,13 +305,19 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
           return {
             ok: true,
             json: async () => ({
-              id: 1,
               sensor_id: 'unit_bay_04',
-              reading_ts: '2026-10-27T10:00:00Z',
-              received_at: '2026-10-27T10:00:01Z',
-              temperature_c: null,
-              humidity_rh: null,
-              values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } },
+              from: '2026-10-27T10:00:00Z',
+              to: '2026-10-27T10:00:00Z',
+              count: 1,
+              readings: [{
+                id: 1,
+                sensor_id: 'unit_bay_04',
+                reading_ts: '2026-10-27T10:00:00Z',
+                received_at: '2026-10-27T10:00:01Z',
+                temperature_c: null,
+                humidity_rh: null,
+                values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } },
+              }],
             }),
           } as Response;
         }
@@ -319,13 +325,19 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
           return {
             ok: true,
             json: async () => ({
-              id: 2,
               sensor_id: 'unit_bay_05',
-              reading_ts: '2026-10-27T10:00:00Z',
-              received_at: '2026-10-27T10:00:01Z',
-              temperature_c: null,
-              humidity_rh: null,
-              values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } },
+              from: '2026-10-27T10:00:00Z',
+              to: '2026-10-27T10:00:00Z',
+              count: 1,
+              readings: [{
+                id: 2,
+                sensor_id: 'unit_bay_05',
+                reading_ts: '2026-10-27T10:00:00Z',
+                received_at: '2026-10-27T10:00:01Z',
+                temperature_c: null,
+                humidity_rh: null,
+                values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } },
+              }],
             }),
           } as Response;
         }
@@ -345,13 +357,13 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         'https://vfarm.bhanetwork.org/api/v1/devices?farm_id=farm_austin_main&limit=100',
         expect.anything()
       );
-      // Then: fetch readings per device via latest endpoint
+      // Then: fetch readings per device via interim endpoint
       expect(fetchSpy).toHaveBeenCalledWith(
-        'https://vfarm.bhanetwork.org/api/v1/readings/latest?sensor_id=unit_bay_04',
+        'https://vfarm.bhanetwork.org/api/v1/readings?sensor_id=unit_bay_04&limit=1',
         expect.anything()
       );
       expect(fetchSpy).toHaveBeenCalledWith(
-        'https://vfarm.bhanetwork.org/api/v1/readings/latest?sensor_id=unit_bay_05',
+        'https://vfarm.bhanetwork.org/api/v1/readings?sensor_id=unit_bay_05&limit=1',
         expect.anything()
       );
       expect(result).toHaveLength(2);

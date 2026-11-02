@@ -13,7 +13,7 @@
 -- ON CONFLICT (system_id) DO UPDATE, so they converge rather than conflict.
 INSERT INTO systems (system_id, tenant_id, organization_id, name, status, phone_numbers, onboarding_reply)
 VALUES ('system-vfarm-01', 'tenant-vfarm-01', 'tenant-vfarm-01', 'vFarm System', 'active', '[]'::jsonb,
-        'Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?')
+        'Welcome to vFarm Support! We received your message. A specialist will assist you shortly.')
 ON CONFLICT (system_id) DO UPDATE SET
   tenant_id    = EXCLUDED.tenant_id,
   organization_id = EXCLUDED.organization_id,

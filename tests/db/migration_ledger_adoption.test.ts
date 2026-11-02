@@ -45,7 +45,7 @@ function applyMigrations(db: string, prefixes: Set<number>): void {
 describe('migration_effect_checks against an already-applied consent schema', () => {
   const target = process.env.DATABASE_URL || 'postgresql://localhost:5432/bha_cst';
 
-  it('returns true for 016/017/018 when their effects exist', async () => {
+  it('returns true for 016/017/018 and 020/021/022/023 when their effects exist', async () => {
     if (!ENABLED) {
       expect(true).toBe(true);
       return;
@@ -57,6 +57,10 @@ describe('migration_effect_checks against an already-applied consent schema', ()
       expect(await migrationEffectChecks['016_sms_consent_spine.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['017_sms_consent_audit_fk.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['018_sms_consent_prompts.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['020_dashboard_publish_outcomes.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['021_repair_service_number_bindings.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
     } finally {
       client.release();
       await pool.end();
@@ -128,15 +132,27 @@ describe('migration ledger adoption defect (LOOP-HOFE)', () => {
       expect(await migrationEffectChecks['016_sms_consent_spine.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['017_sms_consent_audit_fk.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['018_sms_consent_prompts.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['020_dashboard_publish_outcomes.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['021_repair_service_number_bindings.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
 
       const ledger = await client.query(
-        'SELECT filename FROM schema_migrations WHERE filename IN ($1,$2,$3) ORDER BY filename',
-        ['016_sms_consent_spine.sql', '017_sms_consent_audit_fk.sql', '018_sms_consent_prompts.sql'],
+        'SELECT filename FROM schema_migrations WHERE filename IN ($1,$2,$3,$4,$5) ORDER BY filename',
+        [
+          '016_sms_consent_spine.sql',
+          '017_sms_consent_audit_fk.sql',
+          '018_sms_consent_prompts.sql',
+          '022_add_escalations_table.sql',
+          '023_reconcile_duplicate_003_and_schema_drift.sql',
+        ],
       );
       expect(ledger.rows.map((r) => r.filename)).toEqual([
         '016_sms_consent_spine.sql',
         '017_sms_consent_audit_fk.sql',
         '018_sms_consent_prompts.sql',
+        '022_add_escalations_table.sql',
+        '023_reconcile_duplicate_003_and_schema_drift.sql',
       ]);
     } finally {
       client.release();
@@ -150,5 +166,68 @@ describe('migration ledger adoption defect (LOOP-HOFE)', () => {
     }
     const out = run(`DATABASE_URL=${scratch} node scripts/migrate.js 2>&1`);
     expect(out).toMatch(/0 applied/);
+  });
+});
+
+describe('fresh database migration & duplicate-003 / 022 reconciliation', () => {
+  const base = process.env.DATABASE_URL || 'postgresql://localhost:5432/bha_cst';
+  const freshName = 'bha_cst_fresh_reconciliation_test';
+  const freshUrl = base.replace(/\/[^/]+$/, `/${freshName}`);
+  let pool: pg.Pool;
+
+  beforeAll(() => {
+    if (!ENABLED) return;
+    const admin = base.replace(/\/[^/]+$/, '/postgres');
+    run(`psql -d '${admin}' -c "DROP DATABASE IF EXISTS ${freshName}" -c "CREATE DATABASE ${freshName}" -q`, { stdio: 'pipe' });
+    pool = new pg.Pool({ connectionString: freshUrl, max: 1 });
+  });
+
+  afterAll(() => {
+    if (pool) void pool.end();
+    if (ENABLED) run(`psql -d '${base.replace(/\/[^/]+$/, '/postgres')}' -c "DROP DATABASE IF EXISTS ${freshName}" -q`, { stdio: 'pipe' });
+  });
+
+  it('executes full migration sequence 001..023 on a fresh database with zero drifted files', async () => {
+    if (!ENABLED) {
+      expect(true).toBe(true);
+      return;
+    }
+    const out = run(`DATABASE_URL=${freshUrl} node scripts/migrate.js 2>&1`);
+    expect(out).toContain('Successfully applied: 003_add_customers_and_security_ledger.sql');
+    expect(out).toContain('Successfully applied: 003_customers_table.sql');
+    expect(out).toContain('Successfully applied: 022_add_escalations_table.sql');
+    expect(out).toContain('Successfully applied: 023_reconcile_duplicate_003_and_schema_drift.sql');
+    expect(out).not.toContain('drifted');
+  });
+
+  it('verifies customers, security_ledger, and escalations schema effects and multi-project phone support', async () => {
+    if (!ENABLED) {
+      expect(true).toBe(true);
+      return;
+    }
+    const client = await pool.connect();
+    try {
+      expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
+
+      // Verify same phone can be registered in two projects of the same tenant
+      // (previously blocked by leftover customers_pkey (tenant_id, phone_e164) from 003_add_customers_and_security_ledger.sql)
+      await client.query(
+        `INSERT INTO customers (tenant_id, project_id, organization_id, workspace_id, phone_e164, customer_ref, role)
+         VALUES ('tenant-vfarm-01', 'proj-vfarm-main', 'tenant-vfarm-01', 'ws-vfarm-main', '+15550009999', 'cust_multi_1', 'manager'),
+                ('tenant-vfarm-01', 'proj-vfarm-dallas', 'tenant-vfarm-01', 'ws-vfarm-main', '+15550009999', 'cust_multi_2', 'tech')
+         ON CONFLICT (tenant_id, project_id, phone_e164) DO NOTHING`
+      );
+      const rows = await client.query(
+        `SELECT id, project_id, updated_at FROM customers WHERE phone_e164 = '+15550009999' ORDER BY project_id`
+      );
+      expect(rows.rows).toHaveLength(2);
+      expect(rows.rows[0].id).toBeTruthy();
+      expect(rows.rows[1].id).toBeTruthy();
+      expect(rows.rows[0].id).not.toBe(rows.rows[1].id);
+      expect(rows.rows[0].updated_at).toBeTruthy();
+    } finally {
+      client.release();
+    }
   });
 });
