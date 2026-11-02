@@ -111,14 +111,14 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 ## Links
 
 - Monitoring Pay-Gate Closure PR: branch `fix/monitoring-pay-gate-closure`
-- Identity evidence: [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
-- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
-- Decision record (399): [`docs/release/cst-decision-record-2026-10-30.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-decision-record-2026-10-30.md)
-- Monitoring & Research Twin contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/contracts/monitoring-research-twin-field-contract.md)
-- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-voice-acceptance-inspection.md)
-- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
-- Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
-- Consolidated acceptance: [`docs/acceptance/cst-jason-consolidated-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/cst-jason-consolidated-evidence.md)
+- Identity evidence: [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](../../evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
+- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](../../evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Decision record (399): [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md)
+- Monitoring & Research Twin contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](../../contracts/monitoring-research-twin-field-contract.md)
+- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](../../evidence/2026-11-02-voice-acceptance-inspection.md)
+- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](../../evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
+- Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](../../evidence/2026-10-29-render-live-evidence-entry-399.md)
+- Consolidated acceptance: [`docs/acceptance/cst-jason-consolidated-evidence.md`](../cst-jason-consolidated-evidence.md)
 - KMG9 verification record: `docs/kmg9-verification-record.md`
 
 ### Identity/Authorization Code and Test Evidence

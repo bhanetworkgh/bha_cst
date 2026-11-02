@@ -219,12 +219,12 @@ See the single consolidated decision record: [`docs/release/cst-decision-record-
 
 ## Evidence and Links
 
-- **Decision record (2026-10-30):** [`docs/release/cst-decision-record-2026-10-30.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-decision-record-2026-10-30.md)
-- **Engine Surfacing patch log:** [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
-- **Consolidated acceptance:** [`docs/acceptance/cst-jason-consolidated-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/cst-jason-consolidated-evidence.md)
-- **Identity evidence:** [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
-- **Render live evidence:** [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
-- **Database continuity plan:** [`docs/release/cst-database-continuity-plan.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-database-continuity-plan.md)
+- **Decision record (2026-10-30):** [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md)
+- **Engine Surfacing patch log:** [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](../../evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- **Consolidated acceptance:** [`docs/acceptance/cst-jason-consolidated-evidence.md`](../cst-jason-consolidated-evidence.md)
+- **Identity evidence:** [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](../../evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
+- **Render live evidence:** [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](../../evidence/2026-10-29-render-live-evidence-entry-399.md)
+- **Database continuity plan:** [`docs/release/cst-database-continuity-plan.md`](../../release/cst-database-continuity-plan.md)
 - **Test results:** `npx vitest run` → 1038 passed, 6 skipped, 0 failed
 - **Typecheck:** `npm run typecheck` → clean
 - **Build:** `npm run build` → successful
