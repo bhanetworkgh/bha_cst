@@ -301,16 +301,28 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
             }),
           } as Response;
         }
-        if (url.includes('/api/v1/readings/latest?sensor_id=unit_bay_04')) {
+        if (url.includes('sensor_id=unit_bay_04')) {
           return {
             ok: true,
-            json: async () => ({ sensor_id: 'unit_bay_04', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } } }),
+            json: async () => ({
+              id: 1,
+              sensor_id: 'unit_bay_04',
+              reading_ts: '2026-10-27T10:00:00Z',
+              received_at: '2026-10-27T10:00:01Z',
+              values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } },
+            }),
           } as Response;
         }
-        if (url.includes('/api/v1/readings/latest?sensor_id=unit_bay_05')) {
+        if (url.includes('sensor_id=unit_bay_05')) {
           return {
             ok: true,
-            json: async () => ({ sensor_id: 'unit_bay_05', reading_ts: '2026-10-27T10:00:00Z', values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } } }),
+            json: async () => ({
+              id: 2,
+              sensor_id: 'unit_bay_05',
+              reading_ts: '2026-10-27T10:00:00Z',
+              received_at: '2026-10-27T10:00:01Z',
+              values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } },
+            }),
           } as Response;
         }
         return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -329,7 +341,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         'https://vfarm.bhanetwork.org/api/v1/devices?farm_id=farm_austin_main&limit=100',
         expect.anything()
       );
-      // Then: fetch readings per device
+      // Then: fetch readings per device via latest endpoint
       expect(fetchSpy).toHaveBeenCalledWith(
         'https://vfarm.bhanetwork.org/api/v1/readings/latest?sensor_id=unit_bay_04',
         expect.anything()

@@ -218,6 +218,16 @@ services:
       - key: ENGINE_DASHBOARD_KEY
         sync: false
 
+      # --- Research Twin candidate transport (blocked until contract approval) ---
+      - key: RT_ENDPOINT_URL
+        sync: false
+
+      - key: RT_SERVICE_API_KEY
+        sync: false
+
+      - key: RT_CALLBACK_SIGNING_SECRET
+        sync: false
+
       # --- Slack Error Alerting ---
       - key: SLACK_WEBHOOK_URL
         sync: false

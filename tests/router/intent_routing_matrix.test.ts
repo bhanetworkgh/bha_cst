@@ -159,7 +159,10 @@ describe('intent routing — farm-scoped live state vs. general knowledge', () =
       vi.spyOn(adapter, 'hasLiveClient').mockReturnValue(true);
       vi.spyOn(adapter, 'getFarmStatusForSpeaker').mockResolvedValue({
         farm_name: 'Austin Main',
-        status: 'critical',
+        status: 'degraded',
+        raw_status: 'critical',
+        health_score: null,
+        staleness_evaluation: 'unavailable_no_timestamp',
         devices: { total: 26, online: 19, offline: 6, unhealthy: 10, maintenance: 0, error: 0 },
       });
 
@@ -236,6 +239,8 @@ describe('farm response integrity', () => {
     expect(res.text).toContain('19 are online');
     expect(res.text).toContain('6 are offline');
     expect(res.text).toContain('10 are unhealthy');
+    expect(res.text).toContain('vFarm farm health: DEGRADED.');
+    expect(res.text).not.toContain('vFarm farm health: CRITICAL.');
   });
 
   it('a farm with zero devices is described honestly and invents nothing', async () => {
@@ -277,6 +282,7 @@ describe('farm response integrity', () => {
     expect(res.text).toContain('0 are online');
     expect(res.text).toContain('0 are offline');
     expect(res.text).toContain('0 are unhealthy');
+    expect(res.text).toContain('vFarm farm health: DEGRADED.');
     // No temperature, no humidity, no reading is invented.
     expect(res.text).not.toMatch(/°C|humidity|temperature/i);
     expect(res.text).not.toMatch(/\d+(\.\d+)?\s*(C|°)/);

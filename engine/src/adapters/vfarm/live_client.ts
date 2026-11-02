@@ -22,6 +22,7 @@ import {
   FarmHealthResponseSchema,
   DeviceListResponseSchema,
   LatestReadingResponseSchema,
+  latestReadingResponseSchema,
   ReadingsListResponseSchema,
   StatsResponseSchema,
   CONFIG_HASH_PATTERN,
@@ -139,6 +140,90 @@ export class VfarmNetworkError extends Error {
     super(message);
     this.name = 'VfarmNetworkError';
   }
+}
+
+export interface SensorPlacement {
+  sensor_id: string;
+  cabinet_id: string | null;
+  cabinet_name: string | null;
+  parent_device_id: string | null;
+  parent_chain: string[];
+  zone_id: string | null;
+  location_id: string | null;
+  sublocation_id: string | null;
+  resolution: 'direct_cabinet_id' | 'parent_chain' | 'placement_match' | 'unresolved';
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** Resolve a sensor's cabinet using only relationships returned by vFarm. */
+export function resolveSensorPlacement(
+  sensor: DeviceResponse,
+  devices: DeviceResponse[],
+): SensorPlacement {
+  const devicesById = new Map(devices.map((device) => [device.id, device]));
+  const parentChain: string[] = [];
+  const visited = new Set<string>([sensor.id]);
+  let zoneId = sensor.zone_id ?? null;
+  let locationId = sensor.location_id ?? null;
+  let sublocationId = sensor.sublocation_id ?? null;
+  let cabinetId = optionalString(sensor.cabinet_id);
+  let resolution: SensorPlacement['resolution'] = cabinetId ? 'direct_cabinet_id' : 'unresolved';
+  let current = sensor;
+
+  while (current.parent_device_id && !visited.has(current.parent_device_id)) {
+    const parentId = current.parent_device_id;
+    parentChain.push(parentId);
+    visited.add(parentId);
+    const parent = devicesById.get(parentId);
+    if (!parent) break;
+
+    zoneId = zoneId ?? parent.zone_id ?? null;
+    locationId = locationId ?? parent.location_id ?? null;
+    sublocationId = sublocationId ?? parent.sublocation_id ?? null;
+
+    if (!cabinetId && parent.device_type === 'cabinet') {
+      cabinetId = parent.id;
+      resolution = 'parent_chain';
+    }
+    if (!cabinetId) {
+      const parentCabinetId = optionalString(parent.cabinet_id);
+      if (parentCabinetId) {
+        cabinetId = parentCabinetId;
+        resolution = 'parent_chain';
+      }
+    }
+    current = parent;
+  }
+
+  if (!cabinetId && (zoneId || locationId || sublocationId)) {
+    const candidates = devices.filter((device) => {
+      if (device.device_type !== 'cabinet') return false;
+      if (sensor.farm_id && device.farm_id && sensor.farm_id !== device.farm_id) return false;
+      return (device.zone_id ?? null) === zoneId
+        && (device.location_id ?? null) === locationId
+        && (device.sublocation_id ?? null) === sublocationId;
+    });
+    if (candidates.length === 1) {
+      cabinetId = candidates[0].id;
+      resolution = 'placement_match';
+    }
+  }
+
+  const cabinet = cabinetId ? devicesById.get(cabinetId) : undefined;
+  return {
+    sensor_id: sensor.id,
+    cabinet_id: cabinetId,
+    cabinet_name: optionalString(cabinet?.name ?? cabinet?.device_name),
+    parent_device_id: sensor.parent_device_id ?? null,
+    parent_chain: parentChain,
+    zone_id: zoneId,
+    location_id: locationId,
+    sublocation_id: sublocationId,
+    resolution,
+  };
 }
 
 export class VfarmLiveClient {
@@ -580,9 +665,29 @@ export class VfarmLiveClient {
     return this.request(path, DeviceListResponseSchema);
   }
 
-  async getLatestReading(sensorId: string): Promise<LatestReadingResponse> {
+  /**
+   * GET /api/v1/readings/latest?sensor_id={sensor_id}
+   * Fetches the authoritative latest reading for a single sensor.
+   * Parses the response directly as a single reading object.
+   */
+  async getLatestReading(sensorId: string): Promise<LatestReadingResponse | null> {
     const path = `/api/v1/readings/latest?sensor_id=${encodeURIComponent(sensorId)}`;
-    return this.request(path, LatestReadingResponseSchema);
+    const reading = await this.request(path, latestReadingResponseSchema);
+    if (!reading || typeof reading !== 'object') {
+      return null;
+    }
+    if (reading.sensor_id && reading.sensor_id !== sensorId) {
+      throw new VfarmNetworkError('vFarm readings response sensor_id mismatch');
+    }
+    return reading;
+  }
+
+  async getSensorPlacement(farmId: string, sensorId: string): Promise<SensorPlacement | null> {
+    const deviceList = await this.listAllDevices(farmId);
+    const devices = deviceList.devices ?? [];
+    const sensor = devices.find((device) => device.id === sensorId);
+    if (!sensor || sensor.device_type !== 'sensor') return null;
+    return resolveSensorPlacement(sensor, devices);
   }
 
   async getReadings(sensorId: string, limit = 100): Promise<ReadingsListResponse> {
@@ -767,13 +872,11 @@ export class VfarmLiveClient {
   // ── Readings (extended) ──────────────────────────────────────────────────
 
   /**
-   * GET /api/v1/readings/latest?sensor_id={device_id}
-   * Latest readings across all sensors in a farm.
+   * Get latest reading per sensor using GET /api/v1/readings/latest?sensor_id={device_id}.
    *
-   * The vFarm API requires `sensor_id` (not `farm_id`) for the readings/latest
-   * endpoint. We first list devices for the farm, then fetch the latest reading
-   * for each device in parallel (bounded concurrency to avoid overwhelming
-   * the upstream).
+   * We first list devices for the farm, then request
+   * GET /api/v1/readings/latest?sensor_id={device_id} for each sensor with
+   * bounded concurrency (5). Readings are parsed directly as single reading objects.
    *
    * Per-sensor failure classification:
    * - 404 → `reading_not_available` (legitimate; sensor exists but has no readings)
@@ -813,7 +916,7 @@ export class VfarmLiveClient {
 
     // 2. Filter to sensors only: only device.device_type === "sensor" may be queried.
     // NEVER fall back to all devices — non-sensor devices (loads, relay channels,
-    // cabinets) must never be passed to /readings/latest. Fail closed.
+    // cabinets) must never be passed to the readings endpoint. Fail closed.
     const sensors = devices.filter(
       (device: any) => device.device_type === 'sensor',
     );
@@ -845,6 +948,12 @@ export class VfarmLiveClient {
             });
             const reading = await client.getLatestReading(sensorId);
             if (reading && typeof reading === 'object') {
+              const enriched = reading as LatestReadingResponse & {
+                placement?: SensorPlacement;
+                device_type?: string;
+              };
+              enriched.placement = resolveSensorPlacement(dev, devices);
+              enriched.device_type = dev.device_type;
               // Attach device metadata (sensor label, name, tags) so the caller can display human-readable labels
               const sensorLabel = dev.sensor_label || dev.device_type_label || dev.device_name || dev.name || (Array.isArray(dev.tags) && dev.tags[0]) || undefined;
               if (sensorLabel && !(reading as any).sensor_label) {

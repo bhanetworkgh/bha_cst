@@ -65,10 +65,28 @@ function buildMockFetch() {
       });
     }
     if (url.includes('/readings/latest?sensor_id=')) {
-      return jsonResponse(200, { id: 1, sensor_id: DEVICE_ID, reading_ts: '2026-01-01T00:00:00Z', received_at: '2026-01-01T00:00:00Z' });
+      return jsonResponse(200, {
+        id: 1,
+        sensor_id: DEVICE_ID,
+        reading_ts: '2026-01-01T00:00:00Z',
+        received_at: '2026-01-01T00:00:00Z',
+        values: { temperature: { value: 22.5, unit: 'celsius', status: 'ok' } },
+      });
     }
     if (url.includes('/readings?sensor_id=')) {
-      return jsonResponse(200, { sensor_id: DEVICE_ID, from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z', count: 1, readings: [] });
+      return jsonResponse(200, {
+        sensor_id: DEVICE_ID,
+        from: '2026-01-01T00:00:00Z',
+        to: '2026-01-02T00:00:00Z',
+        count: 1,
+        readings: [{
+          id: 1,
+          sensor_id: DEVICE_ID,
+          reading_ts: '2026-01-01T00:00:00Z',
+          received_at: '2026-01-01T00:00:00Z',
+          values: { temperature: { value: 22.5, unit: 'celsius', status: 'ok' } },
+        }],
+      });
     }
     if (url.includes('/readings/stats')) {
       return jsonResponse(200, {

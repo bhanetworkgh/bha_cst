@@ -1,6 +1,6 @@
 import { maskPhone } from '../util/privacy.js';
 import { InboundMessage, OutboundMessage } from '../transport/twilio/types.js';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
 import type { SecurityLedgerEvent } from '../config/logger.js';
@@ -105,6 +105,58 @@ export class ConversationPersistenceError extends Error {
     super(`Conversation could not be persisted for tenant ${tenantId}: ${message}`);
     this.name = 'ConversationPersistenceError';
   }
+}
+
+/**
+ * Raised when a required voice transcript row could not be persisted.
+ *
+ * A voice response is not durably represented by the caller's in-memory
+ * transcript alone: a process restart would lose the turn even though the
+ * API reported that it completed. Callers MUST report persistence failure when
+ * PostgreSQL rejects the transcript write.
+ */
+export class TranscriptPersistenceError extends Error {
+  public readonly code = 'TRANSCRIPT_PERSISTENCE_FAILED';
+  constructor(
+    message: string,
+    public readonly tenantId: string,
+    public readonly messageId: string,
+  ) {
+    super(`Transcript could not be persisted for tenant ${tenantId}: ${message}`);
+    this.name = 'TranscriptPersistenceError';
+  }
+}
+
+/**
+ * Raised when a required voice-delivery ledger row could not be persisted.
+ *
+ * The delivery row is the durable record used by voice health and audit.
+ * Returning an in-memory delivery after a failed PostgreSQL write would make
+ * a failed voice turn look successful to the caller and the health surface.
+ */
+export class VoiceDeliveryPersistenceError extends Error {
+  public readonly code = 'VOICE_DELIVERY_PERSISTENCE_FAILED';
+  constructor(
+    message: string,
+    public readonly tenantId: string,
+    public readonly deliveryId: string,
+  ) {
+    super(`Voice delivery could not be persisted for tenant ${tenantId}: ${message}`);
+    this.name = 'VoiceDeliveryPersistenceError';
+  }
+}
+
+/**
+ * Derive a retry-stable identifier from the tenancy and turn correlation.
+ *
+ * Voice turns are retried when a transport response is lost. A random id for
+ * every attempt creates duplicate transcript and delivery rows for the same
+ * caller-visible turn. The id is scoped so the same correlation in another
+ * tenant or project remains a separate record.
+ */
+export function stableVoiceId(prefix: string, scope: string[]): string {
+  const digest = createHash('sha256').update(scope.join('|')).digest('hex').slice(0, 48);
+  return `${prefix}_${digest}`;
 }
 
 /**
@@ -1214,34 +1266,39 @@ export class DbClient {
     media_refs?: string[];
     provider_sid?: string;
   }): Promise<void> {
-    this.transcriptsStore.set(msg.message_id, {
+    const record = {
       ...msg,
       created_at: new Date().toISOString(),
-    });
-
+    };
     const pool = this.getPool();
-    if (pool) {
-      try {
-        const query = `
-          INSERT INTO messages (message_id, conversation_id, tenant_id, project_id, direction, from_e164, to_e164, body, media_refs, provider_sid, delivery_status, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', NOW())
-          ON CONFLICT (message_id) DO NOTHING
-        `;
-        await pool.query(query, [
-          msg.message_id,
-          msg.conversation_id,
-          msg.tenant_id,
-          msg.project_id || null,
-          msg.direction,
-          msg.from_e164,
-          msg.to_e164,
-          msg.body,
-          JSON.stringify(msg.media_refs || []),
-          msg.provider_sid || null,
-        ]);
-      } catch (err: any) {
-        Logger.error(`DbClient.addMessageToTranscript Postgres Error: ${err.message}`);
-      }
+
+    if (!pool) {
+      this.transcriptsStore.set(msg.message_id, record);
+      return;
+    }
+
+    try {
+      const query = `
+        INSERT INTO messages (message_id, conversation_id, tenant_id, project_id, direction, from_e164, to_e164, body, media_refs, provider_sid, delivery_status, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', NOW())
+        ON CONFLICT (message_id) DO NOTHING
+      `;
+      await pool.query(query, [
+        msg.message_id,
+        msg.conversation_id,
+        msg.tenant_id,
+        msg.project_id || null,
+        msg.direction,
+        msg.from_e164,
+        msg.to_e164,
+        msg.body,
+        JSON.stringify(msg.media_refs || []),
+        msg.provider_sid || null,
+      ]);
+      this.transcriptsStore.set(msg.message_id, record);
+    } catch (err: any) {
+      Logger.error(`DbClient.addMessageToTranscript Postgres Error: ${err.message}`);
+      throw new TranscriptPersistenceError(err.message, msg.tenant_id, msg.message_id);
     }
   }
 
@@ -2451,7 +2508,10 @@ export class DbClient {
    * Record a spoken delivery event for Destiny health tracking and audit.
    */
   static async recordVoiceDelivery(delivery: VoiceDeliveryRecord): Promise<VoiceDeliveryRecord> {
-    const id = delivery.id || `vd_${randomUUID()}`;
+    const stableScopeId = delivery.project_id || delivery.system_id || '';
+    const id = delivery.id || (delivery.correlation_id
+      ? stableVoiceId('vd', [delivery.tenant_id, stableScopeId, delivery.correlation_id])
+      : `vd_${randomUUID()}`);
     const now = new Date().toISOString();
     const record: VoiceDeliveryRecord = {
       ...delivery,
@@ -2463,63 +2523,78 @@ export class DbClient {
           : undefined,
     };
 
-    this.voiceDeliveriesStore.set(id, record);
-
     const pool = this.getPool();
-    if (pool) {
-      // Same defect class as the conversations insert: `voice_deliveries.system_id`
-      // has the same `REFERENCES systems(system_id)` FK (migration 009:18), and
-      // most voice call sites pass a project_id. The previous
-      // `|| record.project_id || 'system-vfarm-01'` chain fed the FK either a
-      // project id (no matching row) or a hardcoded literal. Resolve from
-      // tenant_id instead, exactly as conversations does.
-      const authoritativeSystemId = await this.resolveSystemIdForTenant(
-        pool,
-        record.tenant_id,
-        record.system_id || '',
+    if (!pool) {
+      this.voiceDeliveriesStore.set(id, record);
+      return record;
+    }
+
+    // `voice_deliveries.system_id` is NOT NULL and REFERENCES systems(system_id).
+    // The systems row must be resolved from the tenant boundary. If it is absent
+    // the row is genuinely unpersistable; fail the write rather than place an
+    // in-memory-only ledger record beside a supposedly durable operation.
+    let authoritativeSystemId: string;
+    try {
+      const systemRes = await pool.query(
+        `SELECT system_id FROM systems WHERE tenant_id = $1 LIMIT 1`,
+        [record.tenant_id],
       );
-      if (!authoritativeSystemId) {
-        // `system_id` is NOT NULL + FK. With no `systems` row for this tenant the
-        // row is genuinely unpersistable; skip the write rather than fabricate a
-        // value or fire a guaranteed-violating INSERT. The in-memory ledger below
-        // still records the event.
-        Logger.warn(
-          `DbClient.recordVoiceDelivery: no systems row for tenant ${record.tenant_id} — voice delivery not persisted (fail closed)`,
-        );
-        return record;
+      if (!systemRes.rows[0]?.system_id) {
+        throw new Error(`no systems row for tenant ${record.tenant_id}`);
       }
-      record.system_id = authoritativeSystemId;
-      try {
-        const query = `
-          INSERT INTO voice_deliveries (
-            id, system_id, tenant_id, conversation_id, message_id,
-            status, voice_id, model_id, character_count, audio_bytes,
-            mime_type, error_code, error_message, correlation_id,
-            delivered_at, created_at, project_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-        `;
-        await pool.query(query, [
-          record.id,
-          authoritativeSystemId,
-          record.tenant_id,
-          record.conversation_id || null,
-          record.message_id || null,
-          record.status,
-          record.voice_id || null,
-          record.model_id || null,
-          record.character_count || 0,
-          record.audio_bytes || 0,
-          record.mime_type || 'audio/mpeg',
-          record.error_code || null,
-          record.error_message || null,
-          record.correlation_id || null,
-          record.delivered_at || null,
-          record.created_at,
-          record.project_id || record.system_id || null,
-        ]);
-      } catch (err: any) {
-        Logger.error(`DbClient.recordVoiceDelivery Postgres Error: ${err.message}`);
-      }
+      authoritativeSystemId = String(systemRes.rows[0].system_id);
+    } catch (err: any) {
+      Logger.error(`DbClient.recordVoiceDelivery systems lookup failed: ${err.message}`);
+      throw new VoiceDeliveryPersistenceError(err.message, record.tenant_id, id);
+    }
+
+    record.system_id = authoritativeSystemId;
+    try {
+      const query = `
+        INSERT INTO voice_deliveries (
+          id, system_id, tenant_id, conversation_id, message_id,
+          status, voice_id, model_id, character_count, audio_bytes,
+          mime_type, error_code, error_message, correlation_id,
+          delivered_at, created_at, project_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        ON CONFLICT (id) DO UPDATE SET
+          system_id = EXCLUDED.system_id,
+          conversation_id = EXCLUDED.conversation_id,
+          message_id = EXCLUDED.message_id,
+          status = EXCLUDED.status,
+          voice_id = EXCLUDED.voice_id,
+          model_id = EXCLUDED.model_id,
+          character_count = EXCLUDED.character_count,
+          audio_bytes = EXCLUDED.audio_bytes,
+          mime_type = EXCLUDED.mime_type,
+          error_code = EXCLUDED.error_code,
+          error_message = EXCLUDED.error_message,
+          delivered_at = EXCLUDED.delivered_at,
+          project_id = EXCLUDED.project_id
+      `;
+      await pool.query(query, [
+        record.id,
+        authoritativeSystemId,
+        record.tenant_id,
+        record.conversation_id || null,
+        record.message_id || null,
+        record.status,
+        record.voice_id || null,
+        record.model_id || null,
+        record.character_count || 0,
+        record.audio_bytes || 0,
+        record.mime_type || 'audio/mpeg',
+        record.error_code || null,
+        record.error_message || null,
+        record.correlation_id || null,
+        record.delivered_at || null,
+        record.created_at,
+        record.project_id || authoritativeSystemId,
+      ]);
+      this.voiceDeliveriesStore.set(id, record);
+    } catch (err: any) {
+      Logger.error(`DbClient.recordVoiceDelivery Postgres Error: ${err.message}`);
+      throw new VoiceDeliveryPersistenceError(err.message, record.tenant_id, id);
     }
 
     return record;

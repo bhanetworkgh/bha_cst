@@ -641,21 +641,21 @@ export class VfarmLiveClient {
   // ── Readings (extended) ──────────────────────────────────────────────────
 
   /**
-   * GET /api/v1/readings/latest?farm_id={farm_id}&limit=100
-   * Latest readings across all sensors in a farm.
+   * Lists devices and requests one row per sensor through the interim history
+   * endpoint. Non-sensor devices are never sent to a readings route.
    */
   async listLatestReadings(farmId: string, limit = 100): Promise<LatestReadingResponse[]> {
-    const schema = {
-      parse: (d: unknown) => {
-        // API may return array or wrapper object
-        const arr = Array.isArray(d) ? d : ((d as Record<string, unknown>)?.readings ?? [d]);
-        return (arr as unknown[]).map((item) => LatestReadingResponseSchema.parse(item));
-      },
-    };
-    return this.request(
-      `/api/v1/readings/latest?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
-      schema,
-    );
+    const devices = await this.listAllDevices(farmId, limit);
+    const sensors = (devices.devices ?? []).filter((device) => device.device_type === 'sensor');
+    const readings: LatestReadingResponse[] = [];
+    for (const sensor of sensors) {
+      try {
+        readings.push(await this.getLatestReading(sensor.id));
+      } catch {
+        // A missing/slow sensor reading must not erase successful sibling rows.
+      }
+    }
+    return readings;
   }
 
   // ── Alerts ───────────────────────────────────────────────────────────────

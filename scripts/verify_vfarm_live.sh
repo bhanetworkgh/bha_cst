@@ -50,9 +50,7 @@ echo -e "${BOLD}${CYAN}   CST vFarm Integration Refactor — Live Smoke Verifica
 echo -e "${BOLD}${CYAN}================================================================${RESET}"
 echo -e " Target Base URL: ${BOLD}${VFARM_BASE_URL}${RESET}"
 if [ -n "$VFARM_FARM_KEY" ]; then
-  KEY_LEN=${#VFARM_FARM_KEY}
-  KEY_MASKED="${VFARM_FARM_KEY:0:7}...${VFARM_FARM_KEY: -6}"
-  echo -e " Auth Header:     ${BOLD}X-Farm-Key: ${KEY_MASKED} (${KEY_LEN} chars)${RESET}"
+  echo -e " Auth Header:     ${BOLD}X-Farm-Key: configured (value redacted)${RESET}"
 else
   echo -e " Auth Header:     ${BOLD}${RED}MISSING (VFARM_FARM_KEY is unset)${RESET}"
 fi
@@ -184,18 +182,19 @@ fi
 echo ""
 
 # ------------------------------------------------------------------------------
-# STEP 4: Telemetry & Stats (Using device ID from Step 3)
+# STEP 4: Telemetry & Stats (Using a sensor device from Step 3)
 # ------------------------------------------------------------------------------
 echo -e "${BOLD}▶ Step 4: Telemetry & Stats${RESET}"
-TARGET_SENSOR_ID="${FIRST_DEVICE_ID}"
+TARGET_SENSOR_ID=$(echo "$HTTP_BODY_3" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const body=JSON.parse(s);const sensor=(body.devices||[]).find(d=>d.device_type==='sensor'&&d.id);if(sensor)process.stdout.write(sensor.id);})")
 
 if [ -z "$TARGET_SENSOR_ID" ]; then
-  echo -e "  ${YELLOW}[INFO] No devices discovered on farm. Using fallback sensor ID for Step 4 testing.${RESET}"
-  TARGET_SENSOR_ID="device-001"
+  record_fail "Step 4: Sensor Selection" "No authoritative sensor-type device was returned; telemetry checks skipped rather than using a fabricated ID."
+  echo -e "\n ${RED}${BOLD}✗ SOME INTEGRATION CHECKS FAILED${RESET}"
+  exit 1
 fi
 echo -e "  Target Sensor ID: ${BOLD}${TARGET_SENSOR_ID}${RESET}"
 
-# 4a: Latest Reading
+# 4a: Authoritative single latest reading
 URL_STEP4A="${VFARM_BASE_URL}/api/v1/readings/latest?sensor_id=${TARGET_SENSOR_ID}"
 echo -e "  GET ${URL_STEP4A}"
 HTTP_RESP_4A=$(curl -s -w "\n%{http_code}" -H "X-Farm-Key: ${VFARM_FARM_KEY}" -H "Accept: application/json" "${URL_STEP4A}")
@@ -203,7 +202,7 @@ HTTP_BODY_4A=$(echo "$HTTP_RESP_4A" | sed '$d')
 HTTP_CODE_4A=$(echo "$HTTP_RESP_4A" | tail -n 1)
 
 if [ "$HTTP_CODE_4A" = "200" ]; then
-  record_pass "Step 4a: Latest Reading" "HTTP 200 OK — Latest reading: ${HTTP_BODY_4A:0:80}..."
+  record_pass "Step 4a: Latest Reading" "HTTP 200 OK — Authoritative latest reading received"
 else
   record_fail "Step 4a: Latest Reading" "Expected HTTP 200, received HTTP ${HTTP_CODE_4A}. Body: ${HTTP_BODY_4A}"
 fi

@@ -10,11 +10,20 @@ import { CstDashboardPublisher, getDashboardPublisher, replayUnpublishedDashboar
 import { checkProgrammaticApiKeyBootConfig } from './middleware/programmatic_api_key.js';
 import { RetryableBootstrap } from './bootstrap/bounded.js';
 import { buildQueueHeartbeatPayload } from './observability/queue_heartbeat.js';
+import { getResearchTwinConfigStatus } from './research_twin/config.js';
 
 // Validate all required env vars at startup — throws a clear error listing
 // every missing field before binding any port.
 const env = getEnv();
 const app = createApp();
+
+const researchTwinStatus = getResearchTwinConfigStatus();
+Logger.info('Research Twin integration configuration checked', {
+  state: researchTwinStatus.state,
+  operational: researchTwinStatus.operational,
+  contract: researchTwinStatus.contract,
+  missing: researchTwinStatus.missing,
+});
 
 /**
  * Maximum time the boot may spend waiting for the database-backed registry.

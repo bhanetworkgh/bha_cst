@@ -6,7 +6,7 @@ import { CoreRegistry } from '../../core/registry.js';
 import { CoreEngine } from '../../core/engine.js';
 import { MessageEnvelope, EnvelopeResponse } from '../../core/envelope.js';
 import { SpeakerIdentity, matchesCapability } from '../../core/types.js';
-import { DbClient, VoiceDeliveryRecord } from '../../db/client.js';
+import { DbClient, stableVoiceId, VoiceDeliveryRecord } from '../../db/client.js';
 import { Logger } from '../../config/logger.js';
 import {
   AudioSynthesizer,
@@ -20,6 +20,21 @@ import { isTestRunner } from '../../config/runtime.js';
 
 export const voiceInterfaceRouter = Router();
 
+/**
+ * Record a terminal/refused voice turn without letting the evidence write
+ * replace the more important original failure in the caller's response.
+ *
+ * Successful turns use `DbClient.recordVoiceDelivery` directly: a failed
+ * success ledger must be returned to the caller instead of being hidden.
+ */
+async function recordVoiceDeliveryBestEffort(delivery: VoiceDeliveryRecord): Promise<void> {
+  try {
+    await DbClient.recordVoiceDelivery(delivery);
+  } catch (err: any) {
+    Logger.warn(`Failed to record voice delivery outcome: ${err.message}`);
+  }
+}
+
 export interface VoiceSynthesizeRequest {
   tenant_id: string;
   project_id: string;
@@ -31,6 +46,8 @@ export interface VoiceSynthesizeRequest {
   model_id?: string;
   /** Cancellation signal, threaded to the synthesizer's HTTP request. */
   signal?: AbortSignal;
+  /** When false, the caller owns the successful delivery ledger write. */
+  record_delivery?: boolean;
 }
 
 /**
@@ -593,7 +610,7 @@ export class VoiceInterface {
         details: { tripwire: true },
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: binding.project_id,
         project_id: binding.project_id,
         tenant_id: binding.tenant_id,
@@ -673,7 +690,7 @@ export class VoiceInterface {
       engineResponse = await CoreEngine.processEnvelope(envelope, activeSpeaker);
     } catch (coreErr: any) {
       Logger.error(`Voice turn CoreEngine error: ${coreErr.message}`, { correlation_id });
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: binding.project_id,
         project_id: binding.project_id,
         tenant_id: binding.tenant_id,
@@ -722,7 +739,7 @@ export class VoiceInterface {
         correlation_id,
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: binding.project_id,
         project_id: binding.project_id,
         tenant_id: binding.tenant_id,
@@ -780,7 +797,7 @@ export class VoiceInterface {
         correlation_id,
       });
 
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: binding.project_id,
         project_id: binding.project_id,
         tenant_id: binding.tenant_id,
@@ -826,6 +843,7 @@ export class VoiceInterface {
         voice_id: voiceId,
         model_id: project.elevenlabs_model_id,
         signal: input.signal,
+        record_delivery: false,
       });
     } catch (synthErr: any) {
       // A synthesis aborted by the response deadline is a timeout, not a
@@ -884,7 +902,7 @@ export class VoiceInterface {
       };
     }
 
-    // 9. Conversation transcripts.
+    // 9. Conversation transcripts and the voice-delivery ledger.
     //
     // NO alert_audit_log row here, deliberately.
     //
@@ -896,31 +914,91 @@ export class VoiceInterface {
     // so every write failed with `alert_audit_log_outbound_message_id_fkey`
     // (observed live) and no audit row was ever stored.
     //
-    // The turn is audited, in the stores that model it: the `voice_deliveries`
-    // row written above (status, voice_id, character_count, audio_bytes,
-    // mime_type, correlation_id), the transcript row below (the rendered reply
-    // text, project_id, tenant_id, direction), and the structured audit entry
-    // that follows. Inventing a `messages_out` row to satisfy the FK would
-    // fabricate a message that was never sent.
+    // The turn is audited, in the stores that model it: the transcript row
+    // below (the rendered reply text, project_id, tenant_id, direction), the
+    // `voice_deliveries` row written only after that transcript succeeds, and
+    // the structured audit entry that follows. Inventing a `messages_out` row
+    // to satisfy the FK would fabricate a message that was never sent.
+    const messageId = stableVoiceId('vmsg_out', [
+      binding.tenant_id,
+      binding.project_id,
+      correlation_id,
+    ]);
 
-    const messageId = `vmsg_out_${randomUUID()}`;
-    if (conversationId) {
-      try {
-        await DbClient.addMessageToTranscript({
-          message_id: messageId,
-          conversation_id: conversationId,
-          tenant_id: binding.tenant_id,
-          project_id: binding.project_id,
-          direction: 'outbound',
-          from_e164: to_e164,
-          to_e164: from_e164,
-          body: engineResponse.reply_text,
-          media_refs: [`voice:elevenlabs:${voiceId}`],
-          provider_sid: correlation_id,
-        });
-      } catch (transcriptErr: any) {
-        Logger.warn(`Failed to append voice message to transcript: ${transcriptErr.message}`);
-      }
+    if (!conversationId) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: binding.tenant_id,
+        actor: speaker.customer_ref || maskPhone(from_e164),
+        role: speaker.role,
+        entry_point: 'api',
+        tool_or_route: 'VoiceInterface.processVoiceTurn',
+        outcome: 'error',
+        reason: 'Voice turn cannot be persisted: Core Engine returned no conversation id.',
+        correlation_id,
+      });
+      return {
+        status: 'failed',
+        reason: 'Voice response could not be persisted',
+        error: 'VOICE_PERSISTENCE_FAILED',
+        correlation_id,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        httpStatus: 500,
+      };
+    }
+
+    try {
+      await DbClient.addMessageToTranscript({
+        message_id: messageId,
+        conversation_id: conversationId,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        direction: 'outbound',
+        from_e164: to_e164,
+        to_e164: from_e164,
+        body: engineResponse.reply_text,
+        media_refs: [`voice:elevenlabs:${voiceId}`],
+        provider_sid: correlation_id,
+      });
+
+      await DbClient.recordVoiceDelivery({
+        system_id: binding.project_id,
+        project_id: binding.project_id,
+        tenant_id: binding.tenant_id,
+        conversation_id: conversationId,
+        message_id: messageId,
+        status: 'synthesized',
+        voice_id: voiceId,
+        model_id: project.elevenlabs_model_id,
+        character_count: synthResult.character_count,
+        audio_bytes: synthResult.audio_bytes,
+        mime_type: synthResult.mime_type,
+        correlation_id,
+        delivered_at: new Date().toISOString(),
+      });
+    } catch (persistenceErr: any) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: binding.tenant_id,
+        actor: speaker.customer_ref || maskPhone(from_e164),
+        role: speaker.role,
+        entry_point: 'api',
+        tool_or_route: 'VoiceInterface.processVoiceTurn',
+        outcome: 'error',
+        reason: `Voice turn persistence failed: ${persistenceErr.message}`,
+        correlation_id,
+      });
+      return {
+        status: 'failed',
+        reason: 'Voice response could not be persisted',
+        error: 'VOICE_PERSISTENCE_FAILED',
+        correlation_id,
+        conversation_id: conversationId,
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        httpStatus: 500,
+      };
     }
 
     Logger.audit({
@@ -970,7 +1048,7 @@ export class VoiceInterface {
 
     if (!voiceId) {
       const err = new Error(`No ElevenLabs voice_id configured for project ${req.project_id}`);
-      await DbClient.recordVoiceDelivery({
+      await recordVoiceDeliveryBestEffort({
         system_id: req.project_id,
         project_id: req.project_id,
         tenant_id: req.tenant_id,
@@ -985,33 +1063,59 @@ export class VoiceInterface {
       throw err;
     }
 
+    let result: { audioBase64: string; mimeType?: string };
     try {
       const synthesizer = this.mockSynthesizer || (VoiceLaneService as any).defaultSynthesizer || createElevenLabsAudioSynthesizer({
         defaultVoiceId: voiceId,
         modelId,
       });
 
-      const result = await synthesizer.synthesize({
+      result = await synthesizer.synthesize({
         text: req.text,
         voiceId,
         modelId,
         signal: req.signal,
       });
-
-      const audioBuffer = Buffer.from(result.audioBase64, 'base64');
-
-      // The response deadline may have fired while the synthesis was in
-      // flight. If it did, the audio is discarded and NOTHING is recorded:
-      // a 'synthesized' voice-delivery row would assert a turn that was
-      // never delivered to the caller.
-      if (req.signal?.aborted) {
-        const abortErr: any = new Error('Voice synthesis was abandoned: the response deadline expired.');
-        abortErr.name = 'AbortError';
-        abortErr.aborted = true;
-        throw abortErr;
+    } catch (err: any) {
+      // An abandoned deadline is not a provider delivery. Leave neither a
+      // synthesized nor failed turn that the caller never received.
+      if (!(err?.aborted || req.signal?.aborted || err?.name === 'AbortError')) {
+        await recordVoiceDeliveryBestEffort({
+          system_id: req.project_id,
+          project_id: req.project_id,
+          tenant_id: req.tenant_id,
+          conversation_id: req.conversation_id,
+          status: 'failed',
+          voice_id: voiceId,
+          model_id: modelId,
+          error_code: 'SYNTHESIS_FAILED',
+          error_message: err.message,
+          character_count: req.text.length,
+          audio_bytes: 0,
+          correlation_id: req.correlation_id,
+        });
       }
+      throw err;
+    }
 
-      // Record voice delivery for 24h health tracking
+    const audioBuffer = Buffer.from(result.audioBase64, 'base64');
+
+    // The response deadline may have fired while the synthesis was in
+    // flight. If it did, the audio is discarded and NOTHING is recorded:
+    // a 'synthesized' voice-delivery row would assert a turn that was
+    // never delivered to the caller.
+    if (req.signal?.aborted) {
+      const abortErr: any = new Error('Voice synthesis was abandoned: the response deadline expired.');
+      abortErr.name = 'AbortError';
+      abortErr.aborted = true;
+      throw abortErr;
+    }
+
+    const audioId = cacheSynthesizedAudio(result.audioBase64, result.mimeType || DEFAULT_MIME_TYPE);
+    if (req.record_delivery !== false) {
+      // Record voice delivery for 24h health tracking. A durable ledger failure
+      // is returned to the caller; it must not be reported as a completed audio
+      // delivery.
       await DbClient.recordVoiceDelivery({
         system_id: req.project_id,
         project_id: req.project_id,
@@ -1026,32 +1130,16 @@ export class VoiceInterface {
         correlation_id: req.correlation_id,
         delivered_at: new Date().toISOString(),
       });
-
-      return {
-        audio_buffer: audioBuffer,
-        mime_type: result.mimeType || DEFAULT_MIME_TYPE,
-        voice_id: voiceId,
-        character_count: req.text.length,
-        audio_bytes: audioBuffer.length,
-        audio_id: cacheSynthesizedAudio(result.audioBase64, result.mimeType || DEFAULT_MIME_TYPE),
-      };
-    } catch (err: any) {
-      await DbClient.recordVoiceDelivery({
-        system_id: req.project_id,
-        project_id: req.project_id,
-        tenant_id: req.tenant_id,
-        conversation_id: req.conversation_id,
-        status: 'failed',
-        voice_id: voiceId,
-        model_id: modelId,
-        error_code: 'SYNTHESIS_FAILED',
-        error_message: err.message,
-        character_count: req.text.length,
-        audio_bytes: 0,
-        correlation_id: req.correlation_id,
-      });
-      throw err;
     }
+
+    return {
+      audio_buffer: audioBuffer,
+      mime_type: result.mimeType || DEFAULT_MIME_TYPE,
+      voice_id: voiceId,
+      character_count: req.text.length,
+      audio_bytes: audioBuffer.length,
+      audio_id: audioId,
+    };
   }
 
   /**

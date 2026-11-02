@@ -1382,9 +1382,6 @@ function renderVfarmDashboard(data) {
   if (metricsGrid) {
     const healthScore = health.health_score ?? health.score ?? null;
     const healthStatus = health.status || 'unknown';
-    const onlineCount = health.online_count ?? null;
-    const offlineCount = health.offline_count ?? null;
-
     metricsGrid.innerHTML = `
       <article class="metric-card blue-card">
         <span class="metric-label">ACTIVE FARM</span>
@@ -1398,8 +1395,8 @@ function renderVfarmDashboard(data) {
       </article>
       <article class="metric-card purple-card">
         <span class="metric-label">FARM HEALTH</span>
-        <strong>${healthScore !== null ? healthScore + '%' : healthStatus}</strong>
-        <small>${onlineCount !== null ? `${onlineCount} online · ${offlineCount ?? 0} offline` : `Status: ${healthStatus}`}</small>
+        <strong>${healthStatus}</strong>
+        <small>${healthScore !== null ? `vFarm score: ${healthScore}% (diagnostic only)` : 'Authoritative vFarm status'}</small>
       </article>
       <article class="metric-card coral-card">
         <span class="metric-label">FARM ACTIVE</span>
@@ -1786,7 +1783,7 @@ async function runVfarmLiveSection(section) {
         vfarmLiveState.deviceId = deviceId;
       }
       // Latest readings across the whole farm (up to 5)
-      const latestFarm = await api(`/api/v1/admin/vfarm/readings/latest?farm_id=${encodeURIComponent(farmId)}&limit=5`);
+       const latestFarm = await api(`/api/v1/admin/vfarm/readings/farm?farm_id=${encodeURIComponent(farmId)}&limit=5`);
       const payload = { farm_latest: latestFarm };
       if (deviceId) {
         payload.sensor_id = deviceId;
@@ -2711,6 +2708,5 @@ $('#btn-vfarm-tab-refresh')?.addEventListener('click', () => guarded(loadVfarmUs
 if (localStorage.getItem('cst_admin_token')) {
   guarded(refreshAll);
 }
-
 
 
