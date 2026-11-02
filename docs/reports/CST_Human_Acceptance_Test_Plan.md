@@ -1,88 +1,79 @@
 # CST — Human Acceptance Test Plan (Browser Chat, Voice Call & Approved SMS)
 
-**Date:** 2026-11-02  
-**Target Environment:** `https://bha-cst-7u9e.onrender.com` (`bha-cst`, Deployment `dep-dbkgavp5efls73ag1olg`, SHA `fa701a3f7e2a4c642307d018f9a4a123cc6007d3`)  
+**Date:** 2026-11-02
+**Target Environment:** `https://bha-cst-7u9e.onrender.com` (`bha-cst`, Deployment `dep-dbkh3p6417fc73bffihg`, PR #23 Merge Commit `441d2b3f4a49c983f45131c229888a60116b9437`, live at `2026-11-02T22:43:32.077742Z`)
 **Decision Watch Reference:** `DW-1793626498819-PDQ2` (Requirements C, E, and F)
 
 ---
 
-## 1. Purpose & Operating Guardrails
+## 1. Purpose & Live Authorization Gate (Phases 6 & 7 Status: `BLOCKED`)
 
-Per strict operating constraints, automated agents **must not** initiate real outbound SMS messages, place live voice calls, or fabricate human acceptance sign-off.
+Per strict execution rules (Section 1.C — Live SMS and voice authorization), before initiating a real outbound SMS or a real voice call, all six prerequisites must be explicitly confirmed:
+1. Exact test destination (`phone_e164`).
+2. Confirmation that the destination is controlled by the user or an authorized test recipient.
+3. Confirmation of recipient consent (`sms_consents` `opted_in`).
+4. Approved message content or call script.
+5. Production credentials present on Render (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` — **all verified present on Render**).
+6. Confirmation that the test cannot trigger unintended customer workflows.
 
-This test plan provides the exact, step-by-step verification procedures for an **authorized human tester** (Jason or designated operator) to execute and record the remaining human acceptance proofs for:
-1. **Test Suite 1:** Authorized Browser Chat (`POST /api/v1/admin/chat` / Admin Console Live Chat UI) — Requirement C & E
-2. **Test Suite 2:** Live Voice Call (`+19715885823`) — Requirement C & E
-3. **Test Suite 3:** Single Approved SMS Turn & Delivery Callback Attribution — Requirement E & F
+Because no explicit test phone destination, recipient consent confirmation, or approved SMS message/call script was provided in the prompt, **live outbound SMS (Phase 6) and live voice call (Phase 7) were NOT initiated and are classified as `BLOCKED` awaiting explicit destination/consent/script authorization.**
+
+Note that **migrations `022_add_escalations_table.sql` and `023_reconcile_duplicate_003_and_schema_drift.sql` are now verified applied in production (`dpg-db8he2qvcj2c73ado3s0-a`)**, and **all 4 canonical vFarm sensors (`rack1_soil`, `rack1_ph`, `rack2_dht`, `rack1_mq7`) are now streaming fresh live telemetry** (`rack1_soil = 90.0%`, `rack1_ph = 5.06 pH`, `rack2_dht = 28.8 °C / 63% RH`, `rack1_mq7 = 0.76 ppm`), so human acceptance testing can proceed immediately upon destination authorization.
 
 ---
 
 ## 2. Test Suite 1 — Authorized Browser Chat Verification (Zero Telecom Cost)
 
 ### 2.1 Objective
-Verify conversational help copy, greeting, multi-turn context retention, sensor status inquiry (`rack1_soil`, `rack1_ph`, `rack2_dht`, `rack1_mq7`), escalation creation, and Engine Dashboard `cst.turn` publication.
+Verify conversational help copy, greeting, multi-turn context retention, live sensor status inquiry (`rack1_soil`, `rack1_ph`, `rack2_dht`, `rack1_mq7`), durable escalation creation into the production `escalations` table (`022`), and Engine Dashboard `cst.turn` publication (`020`).
 
 ### 2.2 Procedure
-1. Open the Admin Console at `https://bha-cst-7u9e.onrender.com/admin` and sign in using `ADMIN_API_KEY`.
-2. Navigate to the **Chat / Simulator** tab (or call `POST /api/v1/admin/chat` with `Authorization: Bearer $ADMIN_API_KEY`).
-3. **Turn 1 (Greeting):** Send `"Hi"`.
-   - **Expected Result:** Conversational greeting (`"Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?"`) — no bulleted menu dump or raw sensor IDs.
-4. **Turn 2 (Help):** Send `"help"`.
+1. Open the Admin Console at `https://bha-cst-7u9e.onrender.com/admin` or the Web Chat UI at `https://bha-cst-7u9e.onrender.com/web`.
+2. **Turn 1 (Greeting):** Send `"Hi"`.
+   - **Expected Result:** Conversational greeting (`"Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?"` — verified in production `systems.onboarding_reply` and `projects.onboarding_reply`) — no bulleted menu dump or raw sensor IDs.
+3. **Turn 2 (Help):** Send `"help"`.
    - **Expected Result:** Conversational help response (`"I can check your farm's temperature, humidity, soil moisture, pH, or air quality, review recent alerts, or connect you with a specialist. Just tell me what you'd like to check."`).
-5. **Turn 3 (Sensor Status):** Send `"How are the sensors on my cabinet doing?"`.
-   - **Expected Result:** Response summarizes `rack1_soil` (`0%`), `rack1_ph` (`25.19 pH` with calibration/range note), `rack2_dht` (`26.8 °C`), and `rack1_mq7` (`201 ppm`), explicitly noting that the readings are stale (`2026-10-30T19:33:27Z`).
-6. **Turn 4 (Escalation):** *(Run after `022_add_escalations_table.sql` is applied in production)* Send `"I need to speak with a human technician about the pH sensor."`.
-   - **Expected Result:** Creates an `OPEN` escalation row visible in `GET /api/v1/admin/escalations` and publishes a `cst.turn` event to the Engine Dashboard.
+4. **Turn 3 (Live Sensor Status):** Send `"How are the sensors on my cabinet doing?"`.
+   - **Expected Result:** Response summarizes the fresh live readings: `rack1_soil` (`~90.0%`), `rack1_ph` (`~5.06 pH`), `rack2_dht` (`~28.8 °C`, `~63% RH`), and `rack1_mq7` (`~0.76 ppm`).
+5. **Turn 4 (Escalation):** Send `"I need to speak with a human technician about my cabinet."`.
+   - **Expected Result:** Persists an escalation row in the production `escalations` table (verified applied in `022_add_escalations_table.sql`), posts a Slack notification (`SLACK_ESCALATION_WEBHOOK_URL`), and publishes a `cst.turn` event to `dashboard_publish_outcomes`.
 
 ### 2.3 Evidence to Record
-- Conversation ID (`conv_...`)
-- `GET /api/v1/admin/conversations/<conv_id>/messages` JSON output
-- `GET /api/v1/admin/dashboard-outcomes` showing `status: "ok"` and HTTP `200`/`202` from `ENGINE_DASHBOARD_URL`
+- `conversation_id` (`conv_...`) and `correlation_id`
+- `escalations` row in production PostgreSQL (`status: 'notified' | 'pending'`, `slack_notified: true`)
+- `dashboard_publish_outcomes` row (`event_type: 'cst.turn'`, `status: 'published'`)
 
 ---
 
-## 3. Test Suite 2 — Live Inbound Voice Call Acceptance (`+19715885823`)
+## 3. Test Suite 2 — Controlled Inbound/Outbound Voice Call Acceptance (`+19715885823`)
 
 ### 3.1 Objective
-Verify end-to-end Twilio Voice -> CST Voice Orchestrator -> ElevenLabs TTS (`voice_id: 7fF3B36kM9k8P1w5N2x4` / configured voice) -> conversational speech quality, barge-in handling, latency (`< 4,500ms` lane deadline), and `voice_deliveries` persistence.
+Verify end-to-end Twilio Voice -> CST Voice Orchestrator -> ElevenLabs TTS (`voice_id: Hmy97GCI840wuICQesiM`, `model_id: eleven_turbo_v2_5`) -> conversational speech quality, barge-in handling, latency (`< 4,500ms` lane deadline), and `voice_deliveries` + `dashboard_publish_outcomes` persistence.
+
+*(Note: Historical production database inspection verified 5 completed voice turns on `2026-10-30 19:17:25Z`–`19:18:14Z` for CallSid `CA00c75d6e31e3e604e542f4ef05efbeb8` with `voice_id = Hmy97GCI840wuICQesiM` and `model_id = eleven_turbo_v2_5`. A fresh post-PR #23 call will confirm the newly deployed conversational greeting and live sensor readings.)*
 
 ### 3.2 Procedure
-1. From a registered customer phone (e.g., `+19715550101` or authorized operator phone mapped to `tenant-vfarm-01` / `proj-vfarm-main`), dial **`+19715885823`**.
-2. **Verify Greeting:** Confirm the initial voice greeting plays clearly using the ElevenLabs voice without robotic menu numbering.
-3. **Ask a Status Question:** Speak: *"What is the current temperature and soil moisture?"*
-   - **Expected Result:** Natural spoken response reporting temperature (`26.8 degrees Celsius`) and soil moisture (`0 percent`), noting data staleness clearly.
+1. From an explicitly authorized and registered customer handset mapped to `tenant-vfarm-01` / `proj-vfarm-main`, dial **`+19715885823`**.
+2. **Verify Greeting:** Confirm the initial voice greeting (`"Hi, thanks for calling vFarm Support. I'm here to help. What would you like to check today?"`) plays clearly using the ElevenLabs voice (`Hmy97GCI840wuICQesiM`) without robotic menu numbering.
+3. **Ask a Status Question:** Speak: *"What is the current temperature, pH, and soil moisture?"*
+   - **Expected Result:** Natural spoken response reporting fresh temperature (`~28.8 °C`), pH (`~5.06`), and soil moisture (`~90%`).
 4. **Ask for Help:** Speak: *"What can you help me with?"*
    - **Expected Result:** Conversational spoken summary of capabilities.
 5. **Hang Up & Inspect Telemetry:**
-   - Query `GET /api/v1/admin/voice-calls?tenant_id=tenant-vfarm-01` and `GET /api/v1/admin/conversations?tenant_id=tenant-vfarm-01`.
-
-### 3.3 Evidence to Record
-- Twilio `CallSid` (`CA...`)
-- `voice_deliveries` row showing `tts_provider: "elevenlabs"`, latency metrics, and `status: "completed"`
-- Human tester sign-off note on audio clarity and naturalness
+   - Query `voice_deliveries` and `dashboard_publish_outcomes` for the new `CallSid` (`CA...`).
 
 ---
 
 ## 4. Test Suite 3 — Single Approved Real SMS & Delivery Attribution Proof
 
 ### 4.1 Objective
-Verify that a real SMS turn sent from/to an authorized handset transitions cleanly through:
-`queued` -> `sending` -> `sent` -> Twilio StatusCallback (`/webhooks/twilio/status`) -> `delivered` (or `undelivered` with `error_code` if carrier-blocked), and publishes the attributed outcome to the Engine Dashboard.
+Verify that a single authorized SMS turn transitions cleanly through:
+`queued` -> `sending` -> `sent` -> Twilio StatusCallback (`/webhooks/twilio/delivery-status`) -> `delivered`, and publishes both `cst.turn` and `cst.delivery` outcomes to `dashboard_publish_outcomes`.
 
-### 4.2 Procedure (Requires Explicit Jason Pre-Approval for 1 SMS)
-1. Confirm Twilio StatusCallback URL is configured to `https://bha-cst-7u9e.onrender.com/webhooks/twilio/status`.
-2. From an authorized handset registered to `tenant-vfarm-01` / `proj-vfarm-main`, send 1 inbound SMS `"status"` to `+19715885823`.
-3. Wait 10–15 seconds for the outbound reply to be dispatched by `OutboundWorker` and for Twilio to post the `MessageStatus` callback (`sent` -> `delivered`).
-4. Query the read-only admin endpoints to capture the durable attribution trail:
-   ```bash
-   curl -sS -H "Authorization: Bearer $ADMIN_API_KEY" \
-     "https://bha-cst-7u9e.onrender.com/api/v1/admin/outbound-queue?tenant_id=tenant-vfarm-01"
-   curl -sS -H "Authorization: Bearer $ADMIN_API_KEY" \
-     "https://bha-cst-7u9e.onrender.com/api/v1/admin/dashboard-outcomes?tenant_id=tenant-vfarm-01&limit=5"
-   ```
+*(Note: Historical production database inspection verified 2 `delivered` rows in `messages_out` with populated `provider_sid` and `turn_id` on `2026-10-30 16:31:33Z`, plus 12 `published` `cst.delivery` rows in `dashboard_publish_outcomes`. A fresh post-PR #23 SMS turn will provide current-deployment sign-off.)*
 
-### 4.3 Evidence to Record
-- Inbound Twilio `MessageSid` (`SM...`) and Outbound Twilio `provider_message_sid` (`SM...`)
-- `messages_out` / `outbound_delivery_attempts` record showing `provider_status: "delivered"`, `delivered_at` timestamp, and `error_code: null`
-- `dashboard_publish_outcomes` record confirming downstream Dashboard receipt
-
+### 4.2 Procedure (Upon Explicit Destination & Consent Confirmation)
+1. Confirm recipient phone is `opted_in` in `sms_consents` for `tenant-vfarm-01`.
+2. Send 1 inbound SMS `"status"` to `+19715885823` from the authorized handset.
+3. Wait 10–15 seconds for `OutboundWorker` dispatch and Twilio `/webhooks/twilio/delivery-status` callback (`sent` -> `delivered`).
+4. Record the `messages_out` row (`id`, `provider_sid`, `turn_id`, `status = 'delivered'`) and `dashboard_publish_outcomes` rows (`cst.turn` and `cst.delivery`).
