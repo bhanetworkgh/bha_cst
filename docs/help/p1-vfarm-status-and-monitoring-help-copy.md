@@ -51,3 +51,4 @@ Under the upstream vFarm presence contract, devices report heartbeats/readings p
 
 ### Sensor Telemetry & Missing Readings
 > "Telemetry readings are requested strictly from active sensor-type devices. When a sensor reading is missing or null, CST reports `telemetry_unavailable` rather than assuming normal operational values. If a required sensor is offline or stale, dependent systems are flagged as degraded."
+
