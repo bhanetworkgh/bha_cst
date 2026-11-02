@@ -441,24 +441,41 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
     // Fetch farm info, devices, and health in parallel for a composite view.
     // We never pass errors up raw — instead we degrade gracefully so the UI
-    // can still render whatever data is available.
+    // can still render whatever data is available, while recording *why* each
+    // upstream call failed so operators can distinguish vFarm degradation from
+    // CST issues.
     const adminToken = await this.ensureAdminToken();
-    const farmListPromise = this.liveClient.listFarms(adminToken || undefined)
-      .catch(() => ({ farms: [] as import('./schemas.js').FarmResponse[], total: 0 }));
 
-    const devicesPromise = targetFarmId
-      ? this.liveClient.listAllDevices(targetFarmId).catch(() => ({ devices: [], total: 0 }))
-      : Promise.resolve({ devices: [], total: 0 });
+    let farmList: any = { farms: [], total: 0 };
+    let farmListError: string | null = null;
+    try {
+      farmList = await this.liveClient.listFarms(adminToken || undefined);
+    } catch (err: any) {
+      farmListError = err?.message ?? String(err);
+      Logger.warn(`vFarm dashboard: listFarms failed: ${farmListError}`);
+    }
 
-    const healthPromise = targetFarmId
-      ? this.liveClient.getFarmHealth(targetFarmId).catch(() => ({ status: 'unknown', health_score: null }))
-      : Promise.resolve({ status: 'unknown', health_score: null });
+    let devicesRes: any = { devices: [], total: 0 };
+    let devicesError: string | null = null;
+    if (targetFarmId) {
+      try {
+        devicesRes = await this.liveClient.listAllDevices(targetFarmId);
+      } catch (err: any) {
+        devicesError = err?.message ?? String(err);
+        Logger.warn(`vFarm dashboard: listAllDevices failed for farm ${targetFarmId}: ${devicesError}`);
+      }
+    }
 
-    const [farmList, devicesRes, healthRes] = await Promise.all([
-      farmListPromise,
-      devicesPromise,
-      healthPromise,
-    ]);
+    let healthRes: any = { status: 'unknown', health_score: null };
+    let healthError: string | null = null;
+    if (targetFarmId) {
+      try {
+        healthRes = await this.liveClient.getFarmHealth(targetFarmId);
+      } catch (err: any) {
+        healthError = err?.message ?? String(err);
+        Logger.warn(`vFarm dashboard: getFarmHealth failed for farm ${targetFarmId}: ${healthError}`);
+      }
+    }
 
     // Find the specific farm object from the discovered list
     const farm = targetFarmId
@@ -468,12 +485,18 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     const devices: any[] = (devicesRes as any).devices ?? [];
     const deviceCount: number = (devicesRes as any).total ?? devices.length;
 
+    const diagnostics: Record<string, any> = {};
+    if (farmListError) diagnostics.farm_list = { error: farmListError };
+    if (devicesError) diagnostics.devices = { error: devicesError };
+    if (healthError) diagnostics.health = { error: healthError };
+
     return {
       farm_id: targetFarmId ?? (farm ? ((farm as any).farm_id || (farm as any).id) : null),
       farm,
       device_count: deviceCount,
       devices,
       health: healthRes,
+      diagnostics: Object.keys(diagnostics).length > 0 ? diagnostics : undefined,
     };
   }
 

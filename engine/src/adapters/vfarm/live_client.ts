@@ -409,6 +409,7 @@ export class VfarmLiveClient {
     path: string,
     parseSchema: { parse: (data: unknown) => T },
     extraHeaders?: Record<string, string>,
+    timeoutMs?: number,
   ): Promise<T> {
     if (!this.apiKey && !(extraHeaders && extraHeaders['Authorization'])) {
       throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
@@ -434,9 +435,10 @@ export class VfarmLiveClient {
     };
 
     let res: Response;
+    const budget = timeoutMs ?? this.timeoutMs;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      const timeoutId = setTimeout(() => controller.abort(), budget);
       try {
         res = await this.fetchFn(url, { headers, signal: controller.signal });
       } finally {
@@ -444,7 +446,7 @@ export class VfarmLiveClient {
       }
     } catch (err: any) {
       const msg = err?.name === 'AbortError'
-        ? `vFarm request timed out after ${this.timeoutMs}ms: ${path}`
+        ? `vFarm request timed out after ${budget}ms: ${path}`
         : `vFarm network error: ${err?.message ?? String(err)}`;
       Logger.warn(msg);
       throw new VfarmNetworkError(msg);

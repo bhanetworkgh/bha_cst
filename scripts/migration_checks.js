@@ -110,6 +110,19 @@ export const migrationEffectChecks = {
     );
     return r.rows.length > 0;
   },
+
+  '020_dashboard_publish_outcomes.sql': async (client) =>
+    await tableExists(client, 'dashboard_publish_outcomes'),
+
+  '021_repair_service_number_bindings.sql': async (client) => {
+    const r = await client.query(
+      `SELECT 1 FROM service_number_bindings WHERE phone_e164 = '+19715885823' AND capability = 'sms_voice'`
+    );
+    return r.rows.length > 0;
+  },
+
+  '022_add_escalations_table.sql': async (client) =>
+    await tableExists(client, 'escalations'),
 };
 
 /** Human-readable summary of which migrations in `files` lack an explicit check. */
