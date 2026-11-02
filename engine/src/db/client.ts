@@ -1806,11 +1806,11 @@ export class DbClient {
         const query = projectId
           ? `UPDATE customers SET speaker_cache_expires_at = $4, updated_at = CURRENT_TIMESTAMP
               WHERE (tenant_id = $1 OR organization_id = $1) AND project_id = $2 AND phone_e164 = $3`
-          : `UPDATE customers SET speaker_cache_expires_at = $4, updated_at = CURRENT_TIMESTAMP
-              WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $3`;
+          : `UPDATE customers SET speaker_cache_expires_at = $3, updated_at = CURRENT_TIMESTAMP
+              WHERE (tenant_id = $1 OR organization_id = $1) AND phone_e164 = $2`;
         const params = projectId
           ? [tenantId, projectId, cleanPhone, expiredAt]
-          : [tenantId, projectId, cleanPhone, expiredAt];
+          : [tenantId, cleanPhone, expiredAt];
         const res = await pool.query(query, params);
         expired = (res.rowCount ?? 0) > 0;
       } catch (err: any) {
