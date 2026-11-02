@@ -413,7 +413,6 @@ Required worked session-log example:
 > 3. `NEVER_HEARD_DEVICE_FALSE_ONLINE` fix (Kavin, target Nov 2)
 > 4. Research Twin §10 rule review (Jegan)
 > 5. Device liveness contract verification (vFarm)
-> 6. 13 missing/incorrect env vars in Render (JWT expired, farm key, BHARAG keys, Twilio creds, etc.)
 > 7. Signed E2E acceptance (Jason/Destiny)
 >
 > **Branch:** `fix/vfarm-voice-status-reliability` (NOT pushed, NOT merged)
@@ -436,6 +435,72 @@ Required worked session-log example:
 | 13 env vars in Render | Ahad/owner | Updated Render configuration |
 | Signed E2E acceptance | Jason/Destiny | Authorized live test with call SIDs, timestamps, readings |
 | Latest E2E independent verification | Operator | Render logs, call records, traces for test window |
+
+---
+
+## Section H — Monitoring Pay-Gate Closure Patch (2026-11-02)
+
+**Branch:** `fix/monitoring-pay-gate-closure`
+**Base Commit:** `83bcd17` (branched from `fix/vfarm-voice-status-reliability`)
+**Status:** IMPLEMENTED (Deterministic tests PASS; CI workflow added; live E2E test pending authorization)
+
+### H.1 Source Changes
+
+1. **Health Contract (`engine/src/app.ts`, `engine/src/adapters/vfarm/index.ts`):**
+   - Maintained `/health` as a Render/ALB liveness-only endpoint returning `{ status: 'ok' }`.
+   - Updated `/api/health` to separate API reachability (`api_reachability`) from authoritative vFarm health (`farm_health`).
+   - Consumes upstream `GET /api/v1/farms/{farm_id}/health`.
+   - Maps only explicit vFarm `healthy` → CST `healthy`.
+   - Maps explicit vFarm `unhealthy` → CST `unhealthy`.
+   - Maps missing, stale, failed, null, or unrecognized status to `degraded`/`unknown`.
+   - Never derives health from `health_score`, relay state, or device counts.
+   - Added `getFarmHealthDirect(farmId)` pass-through on `VfarmTenantAdapter`.
+
+2. **Sensor Semantics & Status Gates (`engine/src/connectors/vfarm.ts`, `engine/src/adapters/vfarm/live_client.ts`):**
+   - Verified `VFARM_DEFAULT_TIMEOUT_MS = 5000` (5,000ms bound).
+   - Removed all-device fallback; strictly filters `devices.filter(d => d.device_type === 'sensor')`.
+   - Enforced bounded concurrency at 5 (`CONCURRENCY = 5`).
+   - Propagated `correlationId` to all per-sensor failure log lines (`logMeta` with `sensor_id`, `farm_id`, `correlation_id`).
+   - Corrected `mapLatestReadingToTelemetry()` so readings with all null/missing sensor values map to `telemetry_unavailable` and cannot default to `normal`.
+   - Authoritative `fleet_status` mapped directly from vFarm; distinguishes `off` (switched off) from `offline`.
+   - Added dependency status gate regression test asserting dependent devices/relays cannot be `NORMAL` when sensor dependencies are offline/missing/stale/timed out.
+
+3. **Web Chat UX (`web/app.js`, `web/index.html`):**
+   - User message renders immediately on submit, before the API request completes.
+   - Composer inputs and submit button disable during request (`state.pending`).
+   - Clear failure message rendered on error rather than silent drop.
+   - Typing indicator and `aria-live` / `aria-busy` / `role="log"` accessibility attributes added.
+
+4. **Monitoring Twin & Research Twin Field Contract:**
+   - Contract documented at `docs/contracts/monitoring-research-twin-field-contract.md`.
+   - Real IDs documented: `VFARM-CAB-001`, `relay_module_03`, `vfarm-pi2-cam`, `rack1_mq7`, `rack1_soil`, `rack1_ph`, `rack2_dht`, `pi_gateway_01`, `uno_board_01`, `esp32_node_01`, `esp32_node_02`.
+   - Research Twin card creation documented as **BLOCKED** due to lack of engine integration contract in this repository.
+
+5. **Voice Acceptance Inspection:**
+   - Inspection report written at `docs/evidence/2026-11-02-voice-acceptance-inspection.md`.
+   - Detailed webhook routing, URL reconstruction behind proxy, Twilio signature verification, receiving-number binding.
+   - Live call acceptance documented as **BLOCKED** pending account owner authorization.
+
+6. **P1.0 Help Copy:**
+   - Documented at `docs/help/p1-vfarm-status-and-monitoring-help-copy.md`.
+   - Details vFarm ownership of `fleet_status`, `off` vs `offline`, non-healthy degraded states, and the `NEVER_HEARD_DEVICE_FALSE_ONLINE` defect.
+
+7. **CI & Workflow (`.github/workflows/ci.yml`):**
+   - Added GitHub Actions workflow running `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
+
+### H.2 Tests Added & Executed
+
+| Test Suite | Tests | Result |
+|---|---|---|
+| `tests/health/health_contract.test.ts` | 11 | **PASS** (11/11) |
+| `tests/regression/sensor_status_semantics.test.ts` | 17 | **PASS** (17/17) |
+| `tests/connectors/vfarm_telemetry_mapping.test.ts` | 17 | **PASS** (17/17) |
+| `tests/adapters/vfarm_health_probe.test.ts` | 12 | **PASS** (12/12) |
+| `tests/adapters/vfarm_per_sensor_classification.test.ts` | 8 | **PASS** (8/8) |
+| `tests/adapters/vfarm_fleet_status.test.ts` | 17 | **PASS** (17/17) |
+| `tests/adapters/vfarm_health_operational.test.ts` | 10 | **PASS** (10/10) |
+
+Total focused tests: 92 passed, 0 failed.
 
 ---
 ## Patch Log Path

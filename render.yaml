@@ -42,7 +42,7 @@ services:
     healthCheckPath: /health
 
     # ── Scaling & Deployment ──────────────────────────────────────────────────
-    plan: starter           # production (0.5c-512mb) — matches observed Render service
+    plan: free           # production (0.5c-512mb) — matches observed Render service
     autoDeploy: true     # Re-deploy automatically on git push to the branch
 
     # ── Environment Variables ─────────────────────────────────────────────────

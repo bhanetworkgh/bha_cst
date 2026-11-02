@@ -31,10 +31,9 @@ describe('BharagRagConnector Tests', () => {
     expect(capturedOptions.method).toBe('POST');
     expect(capturedOptions.headers['Content-Type']).toBe('application/json');
     expect(capturedOptions.headers['x-api-key']).toBe(env.BHARAG_CLUSTER_KEY);
+    // Request body is query-only per DW-1793623465895-F20Q; workspaceKey and workspace overrides removed
     expect(JSON.parse(capturedOptions.body)).toEqual({
       query: 'vFarm: What are the irrigation rules across our sites?',
-      workspaceKey: env.BHARAG_WORKSPACE_KEY,
-      workspace: 'vfarm',
     });
     // Verifies bracketed citations like [1] [2] are stripped for clean SMS delivery
     expect(result).toBe('Cluster RAG Answer: Irrigation rules are site-specific.');
@@ -117,7 +116,7 @@ describe('BharagRagConnector Tests', () => {
     expect(result).not.toContain('BHARAG Knowledge:');
   });
 
-  it('includes workspaceKey and workspace in cluster API payload, but NOT farm_id/unit_id (KMG9)', async () => {
+  it('sends query-only in cluster API payload, omitting workspace overrides and farm_id/unit_id (KMG9 & DW-1793623465895-F20Q)', async () => {
     let capturedOptions: any = null;
 
     globalThis.fetch = vi.fn().mockImplementation(async (_url: string | URL | Request, options?: RequestInit) => {
@@ -135,14 +134,14 @@ describe('BharagRagConnector Tests', () => {
     );
 
     // KMG9: farm_id and unit_id intentionally omitted — upstream must enforce
-    // workspace isolation via workspaceKey. CST cannot assume these fields
-    // filter results unless the BHARAG API contract explicitly confirms it.
+    // workspace isolation via credential identity cst-help-read bound to BHARAG_CLUSTER_KEY.
+    // DW-1793623465895-F20Q: workspaceKey and workspace overrides are omitted from request body.
     const payload = JSON.parse(capturedOptions.body);
     expect(payload).toEqual({
       query: 'vFarm: What are the optimal settings?',
-      workspaceKey: 'ws_key_test_123',
-      workspace: 'vfarm',
     });
+    expect(payload).not.toHaveProperty('workspaceKey');
+    expect(payload).not.toHaveProperty('workspace');
     expect(payload).not.toHaveProperty('farm_id');
     expect(payload).not.toHaveProperty('unit_id');
   });

@@ -66,12 +66,11 @@ export class BharagRagConnector {
 
       const payload: Record<string, unknown> = {
         query: framedQuery,
-        workspaceKey: wsKey,
-        workspace: 'vfarm',
       };
-      // KMG9: farm_id and unit_id intentionally omitted — upstream must enforce
-      // workspace isolation via workspaceKey. CST cannot assume these fields
-      // filter results unless the BHARAG API contract explicitly confirms it.
+      // BHARAG CST key boundary: per DW-1793623465895-F20Q, request body is query only.
+      // Credential identity cst-help-read bound to BHARAG_CLUSTER_KEY restricts search scope
+      // to cst-help-manuals upstream. workspaceKey and workspace overrides are omitted.
+      // Farm-specific identifiers (farm_id, unit_id) are strictly prohibited (KMG9).
 
       const response = await fetch(clusterUrl, {
         method: 'POST',

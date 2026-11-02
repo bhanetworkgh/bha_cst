@@ -108,14 +108,23 @@ function mapLatestReadingToTelemetry(
   const relay = parseNumericField(relayVal);
 
   // Status comes from vFarm's own status fields, not from locally invented
-  // thresholds. Fall back to a range check only when vFarm did not supply one.
-  let status: VfarmUnitStatus['status'] = 'normal';
+  // thresholds. A reading with ALL sensor values missing/null/undefined is
+  // `telemetry_unavailable` — it must NEVER default to `normal`.
+  const allValuesMissing =
+    temp == null && humidity == null && ph == null && co == null && soil == null && relay == null;
+
+  let status: VfarmUnitStatus['status'];
   if (hasError) {
     status = 'fault';
+  } else if (allValuesMissing) {
+    // No usable sensor data — do not claim normal.
+    status = 'telemetry_unavailable';
   } else if (reading.temperature_status === 'warning' || reading.humidity_status === 'warning') {
     status = 'warning';
   } else if (temp != null && (temp < 10 || temp > 35)) {
     status = 'warning';
+  } else {
+    status = 'normal';
   }
 
   return {

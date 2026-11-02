@@ -16,6 +16,7 @@ import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { VfarmTenantAdapter, VfarmAuthorizationError } from '../../engine/src/adapters/vfarm/index.js';
 import { InboundMessage, IdentityContext } from '../../engine/src/transport/twilio/types.js';
 import { seedTestCustomers } from '../helpers/seed_customers.js';
+import { getEnv } from '../../engine/src/config/env.js';
 
 describe('KMG9: Farm isolation and BHARAG fallback removal', () => {
   const fetchSpy = vi.fn();
@@ -221,8 +222,11 @@ describe('KMG9: Farm isolation and BHARAG fallback removal', () => {
       const payload = JSON.parse(capturedOptions.body);
       expect(payload).not.toHaveProperty('farm_id');
       expect(payload).not.toHaveProperty('unit_id');
-      expect(payload).toHaveProperty('workspaceKey');
-      expect(payload).toHaveProperty('workspace');
+      expect(payload).not.toHaveProperty('workspaceKey');
+      expect(payload).not.toHaveProperty('workspace');
+      expect(payload).toEqual({
+        query: 'vFarm: How to clean filter?',
+      });
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -266,5 +270,72 @@ describe('KMG9: Farm isolation and BHARAG fallback removal', () => {
       String(call[0]).includes('/api/v1/cluster/ask')
     );
     expect(clusterCalls.length).toBe(0);
+  });
+
+  it('asserts BHARAG response parsing verifies workspaces_queried and per_workspace_hits when provided', async () => {
+    let capturedHeaders: any = null;
+    let capturedBody: any = null;
+
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      capturedHeaders = options?.headers;
+      capturedBody = JSON.parse(options?.body);
+      return {
+        ok: true,
+        json: async () => ({
+          answer: 'Filter cleaning instructions: rinse mesh with warm water.',
+          has_context: true,
+          confidence: 0.95,
+          workspaces_queried: ['cst-help-manuals'],
+          per_workspace_hits: {
+            'cst-help-manuals': 3,
+          },
+        }),
+      } as Response;
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch as any;
+
+    try {
+      const result = await BharagRagConnector.askKnowledge('How to clean filter?');
+      expect(result).toBe('Filter cleaning instructions: rinse mesh with warm water.');
+      // Enforce auth header uses BHARAG_CLUSTER_KEY (credential identity cst-help-read)
+      expect(capturedHeaders['x-api-key']).toBe(getEnv().BHARAG_CLUSTER_KEY);
+      // Enforce payload contains only query
+      expect(capturedBody).toEqual({ query: 'vFarm: How to clean filter?' });
+      expect(capturedBody).not.toHaveProperty('workspaceKey');
+      expect(capturedBody).not.toHaveProperty('workspace');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('rejects cross-workspace retrieval if BHARAG returns workspaces outside cst-help-manuals with no context', async () => {
+    const mockFetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        json: async () => ({
+          answer: "I don't have enough information to answer this question based on the available documents.",
+          has_context: false,
+          confidence: 0.1,
+          workspaces_queried: ['cst-help-manuals'],
+          per_workspace_hits: {
+            'cst-help-manuals': 0,
+          },
+        }),
+      } as Response;
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch as any;
+
+    try {
+      const result = await BharagRagConnector.askKnowledge('Show telemetry for sensor rack1_ph');
+      // Must degrade to safe fallback without claiming to be verified BHARAG knowledge
+      expect(result).not.toContain('BHARAG Knowledge:');
+      expect(result).toContain('BHARAG knowledge base is unavailable');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });

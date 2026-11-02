@@ -240,7 +240,7 @@ See the single consolidated decision record: [`docs/release/cst-decision-record-
 2026-10-28T21:34:43.254Z WARN vFarm request timed out after 5000ms: /api/v1/readings/latest?sensor_id=rack1_soil
 ```
 
-These supplied lines do NOT contain correlation IDs. This is recorded honestly. No fresh Render logs were retrieved.
+These historical lines did NOT contain correlation IDs. As of the `fix/monitoring-pay-gate-closure` PR, `correlationId` has been added to all per-sensor failure logging calls in `live_client.ts`.
 
 ## Still Open
 
@@ -256,6 +256,14 @@ These supplied lines do NOT contain correlation IDs. This is recorded honestly. 
 
 ## Links
 
+- Monitoring Pay-Gate Closure PR: branch `fix/monitoring-pay-gate-closure`
+- Engine Surfacing patch log (Section H): `docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`
+- Monitoring & Research Twin contract: `docs/contracts/monitoring-research-twin-field-contract.md`
+- Voice Acceptance Report: `docs/evidence/2026-11-02-voice-acceptance-inspection.md`
+- Diagnostic evidence: `docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`
+- P1.0 Help Copy: `docs/help/p1-vfarm-status-and-monitoring-help-copy.md`
+- Health contract tests: `tests/health/health_contract.test.ts`
+- Sensor semantics regression tests: `tests/regression/sensor_status_semantics.test.ts`
 - Identity evidence: `docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`
 - Render live evidence: `docs/evidence/2026-10-29-render-live-evidence-entry-399.md`
 - Acceptance SOP: `docs/acceptance/cst-v1-acceptance-sop.md`

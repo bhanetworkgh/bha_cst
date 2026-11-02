@@ -857,37 +857,39 @@ export class VfarmLiveClient {
             return reading;
           } catch (err: any) {
             // Classify the per-sensor failure for observability.
+            // Propagate correlation ID to every per-sensor log line for tracing.
             const status = err?.status;
+            const logMeta = { sensor_id: sensorId, farm_id: farmId, correlation_id: correlationId };
             if (status === 404) {
               Logger.info(
                 `vFarm per-sensor: sensor ${sensorId} returned no readings (404)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'no_reading' },
+                { ...logMeta, category: 'no_reading' },
               );
             } else if (status === 401 || status === 403) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} unauthorized (auth/token issue)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'unauthorized', http_status: status },
+                { ...logMeta, category: 'unauthorized', http_status: status },
               );
             } else if (status === 422) {
               Logger.error(
                 `vFarm per-sensor: sensor ${sensorId} returned 422 (invalid request)`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'invalid_request', http_status: status },
+                { ...logMeta, category: 'invalid_request', http_status: status },
               );
             } else if (status !== undefined && status >= 500) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} upstream error (${status})`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error', http_status: status },
+                { ...logMeta, category: 'upstream_error', http_status: status },
               );
             } else if (err?.name === 'VfarmNetworkError' && /timed out/i.test(err?.message || '')) {
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} timed out after ${perDeviceTimeout}ms`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'timeout' },
+                { ...logMeta, category: 'timeout' },
               );
             } else {
               // Network error, unexpected status, or non-JSON body
               Logger.warn(
                 `vFarm per-sensor: sensor ${sensorId} failed (${err?.name || 'error'})`,
-                { sensor_id: sensorId, farm_id: farmId, category: 'upstream_error' },
+                { ...logMeta, category: 'upstream_error' },
               );
             }
             // No readings for this sensor — skip (return null)

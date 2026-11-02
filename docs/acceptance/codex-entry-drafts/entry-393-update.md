@@ -110,9 +110,13 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 
 ## Links
 
+- Monitoring Pay-Gate Closure PR: branch `fix/monitoring-pay-gate-closure`
 - Identity evidence: [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
-- Engine Surfacing patch log: [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
 - Decision record (399): [`docs/release/cst-decision-record-2026-10-30.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-decision-record-2026-10-30.md)
+- Monitoring & Research Twin contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/contracts/monitoring-research-twin-field-contract.md)
+- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-voice-acceptance-inspection.md)
+- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
 - Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
 - Consolidated acceptance: [`docs/acceptance/cst-jason-consolidated-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/cst-jason-consolidated-evidence.md)
 - KMG9 verification record: `docs/kmg9-verification-record.md`
@@ -125,6 +129,8 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 | `engine/src/adapters/vfarm/index.ts` | `assertSpeakerFarmAccess()` — farm grant verification |
 | `engine/src/interfaces/voice/index.ts` | Voice webhook handler — binding resolution, signature validation |
 | `engine/src/core/registry.ts` | `CoreRegistry.resolveSpeaker()` — identity orchestration |
+| `tests/health/health_contract.test.ts` | 11 tests — authoritative vFarm health mapping |
+| `tests/regression/sensor_status_semantics.test.ts` | 17 tests — sensor status gates & dependent device safety |
 | `tests/regression/kmg9_farm_isolation.test.ts` | 9 tests — cross-farm isolation |
 | `tests/tenancy/platform_tenancy.test.ts` | 8 tests — tenant boundary enforcement |
 | `tests/identity/identity_binding_restoration.test.ts` | 15 tests — identity binding |
