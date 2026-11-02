@@ -96,6 +96,15 @@ export const VFARM_DEFAULT_TIMEOUT_MS = 5000;
 export const VFARM_SYSTEM_STATS_TIMEOUT_MS = 60000;
 
 /**
+ * Per-endpoint override for GET /api/v1/readings/stats, which aggregates all
+ * readings for a sensor over a time window and is slow in production
+ * (>5000ms observed). It is an admin-only endpoint, not on the SMS/voice hot
+ * path, so a longer budget here does not weaken the default for callers that
+ * need low latency.
+ */
+export const VFARM_READINGS_STATS_TIMEOUT_MS = 30000;
+
+/**
  * Strict upper bound for the vFarm HEALTH PROBE.
  *
  * The probe is a liveness/readiness signal, not a data path. It runs on the
@@ -332,7 +341,7 @@ export class VfarmLiveClient {
    * Step 2: Dynamic Farm Discovery via GET /api/v1/farms.
    * Supports Bearer JWT token or current X-Farm-Key authentication.
    */
-  async listFarms(token?: string): Promise<FarmListResponse> {
+  async listFarms(token?: string, timeoutMs?: number): Promise<FarmListResponse> {
     const url = `${this.baseUrl}/api/v1/farms?limit=1000`;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
@@ -344,7 +353,8 @@ export class VfarmLiveClient {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const budget = timeoutMs ?? this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), budget);
     let res: Response;
     try {
       res = await this.fetchFn(url, { headers, signal: controller.signal });
@@ -657,9 +667,9 @@ export class VfarmLiveClient {
     return this.request(path, FarmResponseSchema);
   }
 
-  async getFarmHealth(farmId: string): Promise<FarmHealthResponse> {
+  async getFarmHealth(farmId: string, timeoutMs?: number): Promise<FarmHealthResponse> {
     const path = `/api/v1/farms/${encodeURIComponent(farmId)}/health`;
-    return this.request(path, FarmHealthResponseSchema);
+    return this.request(path, FarmHealthResponseSchema, undefined, timeoutMs);
   }
 
   async listDevices(farmId: string): Promise<DeviceListResponse> {
@@ -668,20 +678,31 @@ export class VfarmLiveClient {
   }
 
   /**
-   * GET /api/v1/readings/latest?sensor_id={sensor_id}
-   * Fetches the authoritative latest reading for a single sensor.
-   * Parses the response directly as a single reading object.
+   * Interim: GET /api/v1/readings?sensor_id=X&limit=1
+   *
+   * vFarm's /readings/latest?sensor_id=X endpoint is timing out in production
+   * (~29.6s per Jegan's measurements) because it orders by received_at without
+   * a supporting index. Until Jegan confirms the /latest query fix is deployed,
+   * CST uses the interim history endpoint (~271ms).
+   *
+   * We do NOT assume the first returned row is newest unless vFarm confirms the
+   * ordering contract for this endpoint. The row is preserved as-is.
+   *
+   * Returns null when the sensor has no readings (empty readings array).
    */
   async getLatestReading(sensorId: string): Promise<LatestReadingResponse | null> {
-    const path = `/api/v1/readings/latest?sensor_id=${encodeURIComponent(sensorId)}`;
-    const reading = await this.request(path, latestReadingResponseSchema);
-    if (!reading || typeof reading !== 'object') {
+    const response = await this.getReadings(sensorId, 1);
+    const readings = response.readings ?? response.items ?? [];
+    if (!readings || readings.length === 0) {
       return null;
     }
-    if (reading.sensor_id && reading.sensor_id !== sensorId) {
-      throw new VfarmNetworkError('vFarm readings response sensor_id mismatch');
-    }
-    return reading;
+    const first = readings[0] as any;
+    return {
+      sensor_id: first.sensor_id ?? sensorId,
+      reading_ts: first.reading_ts ?? undefined,
+      received_at: first.received_at ?? undefined,
+      values: first.values ?? {},
+    } as LatestReadingResponse;
   }
 
   async getSensorPlacement(farmId: string, sensorId: string): Promise<SensorPlacement | null> {
@@ -701,7 +722,7 @@ export class VfarmLiveClient {
   async getReadingStats(sensorId: string, window = '24h'): Promise<StatsResponse> {
     const path =
       `/api/v1/readings/stats?sensor_id=${encodeURIComponent(sensorId)}&window=${encodeURIComponent(window)}`;
-    return this.request(path, StatsResponseSchema);
+    return this.request(path, StatsResponseSchema, undefined, VFARM_READINGS_STATS_TIMEOUT_MS);
   }
 
   /**
@@ -824,10 +845,12 @@ export class VfarmLiveClient {
    * GET /api/v1/devices?farm_id={farm_id}&limit=500
    * All devices for a farm — full DeviceListResponse.
    */
-  async listAllDevices(farmId: string, limit = 500): Promise<DeviceListResponse> {
+  async listAllDevices(farmId: string, limit = 500, timeoutMs?: number): Promise<DeviceListResponse> {
     return this.request(
       `/api/v1/devices?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
       DeviceListResponseSchema,
+      undefined,
+      timeoutMs,
     );
   }
 

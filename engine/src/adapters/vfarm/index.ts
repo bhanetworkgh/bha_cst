@@ -449,7 +449,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     let farmList: any = { farms: [], total: 0 };
     let farmListError: string | null = null;
     try {
-      farmList = await this.liveClient.listFarms(adminToken || undefined);
+      farmList = await this.liveClient.listFarms(adminToken || undefined, 15000);
     } catch (err: any) {
       farmListError = err?.message ?? String(err);
       Logger.warn(`vFarm dashboard: listFarms failed: ${farmListError}`);
@@ -459,7 +459,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     let devicesError: string | null = null;
     if (targetFarmId) {
       try {
-        devicesRes = await this.liveClient.listAllDevices(targetFarmId);
+        devicesRes = await this.liveClient.listAllDevices(targetFarmId, 500, 10000);
       } catch (err: any) {
         devicesError = err?.message ?? String(err);
         Logger.warn(`vFarm dashboard: listAllDevices failed for farm ${targetFarmId}: ${devicesError}`);
@@ -470,7 +470,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     let healthError: string | null = null;
     if (targetFarmId) {
       try {
-        healthRes = await this.liveClient.getFarmHealth(targetFarmId);
+        healthRes = await this.liveClient.getFarmHealth(targetFarmId, 3000);
       } catch (err: any) {
         healthError = err?.message ?? String(err);
         Logger.warn(`vFarm dashboard: getFarmHealth failed for farm ${targetFarmId}: ${healthError}`);
