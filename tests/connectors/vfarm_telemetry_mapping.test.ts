@@ -309,6 +309,8 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
               sensor_id: 'unit_bay_04',
               reading_ts: '2026-10-27T10:00:00Z',
               received_at: '2026-10-27T10:00:01Z',
+              temperature_c: null,
+              humidity_rh: null,
               values: { temperature: { value: 28.3, unit: 'celsius', status: 'ok' } },
             }),
           } as Response;
@@ -321,6 +323,8 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
               sensor_id: 'unit_bay_05',
               reading_ts: '2026-10-27T10:00:00Z',
               received_at: '2026-10-27T10:00:01Z',
+              temperature_c: null,
+              humidity_rh: null,
               values: { temperature: { value: 26.1, unit: 'celsius', status: 'ok' } },
             }),
           } as Response;
