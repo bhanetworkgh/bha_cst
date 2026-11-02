@@ -55,6 +55,66 @@ logged and escalated — never silently swallowed or defaulted.
 |---|---|
 | Security-ledger persistence | `SecurityLedgerEvent` entries persisted per-request with actor, role, outcome. |
 
+### Correlation ID Propagation
+
+Every inbound request generates a correlation ID at the ingress lane and it is
+carried end-to-end through CST:
+
+- SMS ingress (`engine/src/transport/twilio/normalize.ts`):
+  `corr_${messageId}_${Date.now()}`.
+- Voice ingress (`engine/src/interfaces/voice/index.ts`):
+  `input.correlation_id || input.call_sid || voice_${randomUUID()}`.
+- The router, vFarm connector, escalation service, delivery publisher, and
+  security ledger all accept and forward `correlation_id`.
+- Persistence (`DbClient`): `messages_in`, `messages_out`, `voice_deliveries`,
+  `security_ledger`, and conversation/transcript rows all store `correlation_id`
+  so a single turn can be joined across ingress, engine, delivery, and audit.
+- Engine dashboard events carry `correlation_id` as the join key to `cst.turn`.
+
+A correlation ID is never derived from customer message content or phone
+numbers.
+
+### Tenant / System / Project Attribution
+
+- Tenant: `tenant_id` (e.g. `tenant-vfarm-01`), the vFarm tenancy boundary.
+- System: `bha-cst-engine` (the `SERVICE_NAME` / `service` field).
+- Project: `project_id`, scoped within a tenant via `CoreRegistry`.
+
+Every persisted event row carries `tenant_id` and `project_id`. vFarm calls are
+scoped to a single tenant (`VfarmTenantAdapter.tenantId`) and the active farm is
+resolved per-tenant (`getActiveFarmId`). Tenant isolation is enforced by
+`assertSpeakerFarmAccess` against the speaker's authoritative grant list; CST
+never synthesizes grants or farm scope.
+
+### Deduplication and Idempotency
+
+- Self-healing tracker (`engine/src/recovery/self_healing_tracker.ts`): each
+  (tenant, project, failure category) scope emits at most one deduplicated
+  operational incident (`incident_emitted` flag), then marks the capability
+  degraded and bounds rechecks (`SELF_HEALING_MAX_RECHECKS = 5` at 60s
+  intervals). Restart resets counts so transient outages do not persist.
+- Delivery publisher (`engine/src/publishers/delivery.ts`): monotonic status
+  rank per `provider_sid` — a status whose rank is `<=` the already-recorded
+  rank is silently dropped, so redelivered webhooks cannot regress a terminal
+  delivery state. `DbClient.updateDeliveryStatusByProviderSid` enforces the
+  same ordering at persistence.
+
+### Retry, Failure and Reconciliation Behavior
+
+- Token retry: `ensureAdminToken()` reuses a non-expired cached JWT, attempts
+  one `POST /api/v1/auth/login` re-auth when expired or missing, and falls back
+  to the static `VFARM_API_JWT`/`VFARM_JWT`; it never throws and lets the
+  upstream 401 remain authoritative.
+- Farm discovery retry: `listFarms()` on a 401/403 attempts one-shot re-login
+  and retries; without credentials it propagates the upstream 401.
+- Per-sensor readings failures are classified (404 `no_reading`, 401/403
+  `unauthorized`, 422 `invalid_request`, 5xx `upstream_error`, timeout
+  `timeout`, network `upstream_error`) and logged per-sensor with the
+  correlation ID; one sensor's failure never blocks another sensor.
+- Self-healing tracker: 3 failures in 10 minutes per (tenant, project,
+  category) degrades the capability; bounded rechecks (max 5, 60s) attempt
+  recovery only after successful authorized resolution and telemetry retrieval.
+
 ## Real Device IDs
 
 | Device ID | Type | Notes |

@@ -20,6 +20,25 @@ import { fileURLToPath } from 'node:url';
 
 import { CoreRegistry } from './core/registry.js';
 
+/**
+ * Map an authoritative vFarm farm-health status string onto CST's status.
+ *
+ * Only the two explicit vFarm states map to their CST equivalents. A missing
+ * status is `unknown`; anything else (stale, unrecognized, failed) is
+ * `degraded`. This is the single place the raw upstream status is interpreted,
+ * and it is used ONLY for `farm_health`. API reachability is never folded into
+ * this mapping.
+ *
+ * health_score, device counts, relay state and locally invented thresholds are
+ * never used to derive health status.
+ */
+export function mapFarmHealthStatus(raw: string | null | undefined): string {
+  if (raw === 'healthy') return 'healthy';
+  if (raw === 'unhealthy') return 'unhealthy';
+  if (raw === null || raw === undefined) return 'unknown';
+  return 'degraded'; // stale, unrecognized, or failed upstream status
+}
+
 export function createApp(): Express {
   const app = express();
 
@@ -167,37 +186,63 @@ export function createApp(): Express {
     //    `unhealthy` maps to `unhealthy`. Everything else is `degraded` or
     //    `unknown`. We NEVER derive health from health_score, relay state,
     //    device count or locally invented thresholds.
+    //
+    // The top-level `status` is derived from `farm_health` alone. API
+    // reachability remains a separate diagnostic field and is NEVER used to
+    // derive farm health, so a reachable API with unavailable farm health can
+    // never report `healthy`.
     const apiReachability = adapter ? await adapter.getHealth(tenantId) : null;
-    let farmHealth: { status: string; health_score?: number; raw_status?: string | null } | null = null;
+
+    let farmHealth: {
+      status: string;
+      health_score?: number | null;
+      raw_status?: string | null;
+      staleness_evaluation: string;
+    } | null = null;
+
     if (adapter && adapter.hasLiveClient()) {
-      try {
-        const farmId = process.env.VFARM_DEFAULT_FARM_ID || '';
-        if (farmId) {
+      // Resolve the farm ID from canonical configuration (VFARM_FARM_ID) and
+      // active farm discovery. Never invent a farm ID.
+      const farmId = adapter.getActiveFarmId();
+      if (farmId) {
+        try {
           const upstream = await adapter.getFarmHealthDirect(farmId);
-          const raw = upstream?.status ?? null;
-          let mapped: string;
-          if (raw === 'healthy') {
-            mapped = 'healthy';
-          } else if (raw === 'unhealthy') {
-            mapped = 'unhealthy';
-          } else if (raw === null || raw === undefined) {
-            mapped = 'unknown';
+          if (!upstream) {
+            // Missing health response from vFarm → unknown.
+            farmHealth = {
+              status: 'unknown',
+              raw_status: null,
+              health_score: null,
+              staleness_evaluation: 'unavailable_no_timestamp',
+            };
           } else {
-            // Unrecognized, stale, failed, or any other value → degraded
-            mapped = 'degraded';
+            const mapped = mapFarmHealthStatus(upstream.status);
+            farmHealth = {
+              status: mapped,
+              raw_status: upstream.status ?? null,
+              health_score: upstream.health_score ?? null,
+              // The vFarm farm-health contract (FarmHealthResponseSchema)
+              // supplies no timestamp field, so CST cannot evaluate freshness
+              // or detect stale health from this response. That is an explicit
+              // limitation, not an invented freshness rule.
+              staleness_evaluation: 'unavailable_no_timestamp',
+            };
           }
+        } catch {
+          // Upstream timeout/error → degraded.
           farmHealth = {
-            status: mapped,
-            raw_status: raw,
-            health_score: upstream?.health_score,
+            status: 'degraded',
+            raw_status: null,
+            health_score: null,
+            staleness_evaluation: 'unavailable_no_timestamp',
           };
         }
-      } catch {
-        farmHealth = { status: 'degraded', raw_status: null };
       }
+      // Missing farm ID → farmHealth stays null → top-level status unknown.
     }
+
     res.status(200).json({
-      status: farmHealth?.status || apiReachability?.status || 'unknown',
+      status: farmHealth?.status ?? 'unknown',
       service: process.env.SERVICE_NAME || 'bha-cst-engine',
       timestamp: new Date().toISOString(),
       api_reachability: apiReachability,
