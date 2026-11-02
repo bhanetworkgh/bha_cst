@@ -13,14 +13,7 @@
  * or locally invented thresholds.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// ── Inline health-status mapping (mirrors engine/src/app.ts /api/health) ────
-function mapFarmHealthStatus(raw: string | null | undefined): string {
-  if (raw === 'healthy') return 'healthy';
-  if (raw === 'unhealthy') return 'unhealthy';
-  if (raw === null || raw === undefined) return 'unknown';
-  return 'degraded'; // stale, failed, unrecognized
-}
+import { mapFarmHealthStatus } from '../../engine/src/app.js';
 
 describe('Health contract — authoritative farm health mapping', () => {
   it('maps explicit vFarm "healthy" to CST "healthy"', () => {
