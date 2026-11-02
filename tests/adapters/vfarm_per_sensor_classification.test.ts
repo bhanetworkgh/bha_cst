@@ -42,7 +42,13 @@ function readingRow(sensorId: string, values: Record<string, unknown>) {
 }
 
 function readingsBody(sensorId: string, values: Record<string, unknown>) {
-  return readingRow(sensorId, values);
+  return {
+    sensor_id: sensorId,
+    from: '2026-10-26T10:00:00Z',
+    to: '2026-10-27T10:00:00Z',
+    count: 1,
+    readings: [readingRow(sensorId, values)],
+  };
 }
 
 function mockFetchForDevicesAndReadings(
