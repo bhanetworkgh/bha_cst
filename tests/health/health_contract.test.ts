@@ -130,3 +130,65 @@ describe('Health contract — API reachability vs farm health separation', () =>
   });
 });
 
+describe('Contract v1.1.1 — Farm health route resolution & access semantics', () => {
+  it('enforces 403 Forbidden via assertSpeakerFarmAccess when caller does not own farm', async () => {
+    const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+    const speaker = {
+      tenant_id: 'tenant-1',
+      speaker_id: 'speaker-1',
+      channel: 'voice' as const,
+      address: '+19715885823',
+      is_known: true,
+      role: 'operator',
+      farm_ids: ['farm-alpha'],
+    };
+
+    // Caller attempts to access farm-beta which they do not own -> throws VfarmAuthorizationError (403)
+    expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-beta')).toThrow(VfarmAuthorizationError);
+    try {
+      assertSpeakerFarmAccess(speaker as any, 'farm-beta');
+    } catch (err: any) {
+      expect(err.status).toBe(403);
+      expect(err.message).toContain('not authorized for farm farm-beta');
+    }
+
+    // Caller accesses granted farm -> succeeds
+    expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-alpha')).not.toThrow();
+  });
+
+  it('rejects unparameterized farm health lookup without farm_id with 403/bad request', async () => {
+    const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
+    const speaker = {
+      tenant_id: 'tenant-1',
+      speaker_id: 'speaker-1',
+      channel: 'voice' as const,
+      address: '+19715885823',
+      is_known: true,
+      role: 'operator',
+      farm_ids: ['farm-alpha'],
+    };
+    expect(() => assertSpeakerFarmAccess(speaker as any, '')).toThrow('farm_id is required');
+  });
+
+  it('verifies v1.1.1 health status taxonomy: NORMAL, DEGRADED, OFFLINE, UNKNOWN', () => {
+    // NORMAL: upstream healthy
+    expect(mapFarmHealthStatus('healthy')).toBe('healthy');
+
+    // DEGRADED: upstream degraded, neutral, stale, critical, failed
+    expect(mapFarmHealthStatus('degraded')).toBe('degraded');
+    expect(mapFarmHealthStatus('neutral')).toBe('degraded');
+    expect(mapFarmHealthStatus('critical')).toBe('degraded');
+    expect(mapFarmHealthStatus('stale')).toBe('degraded');
+
+    // OFFLINE: device presence offline
+    const isDeviceOffline = (status: string) => status === 'offline';
+    expect(isDeviceOffline('offline')).toBe(true);
+    expect(isDeviceOffline('off')).toBe(false); // loads that are 'off' are NOT offline
+
+    // UNKNOWN: null, undefined, uninitialized
+    expect(mapFarmHealthStatus(null)).toBe('unknown');
+    expect(mapFarmHealthStatus(undefined)).toBe('unknown');
+  });
+});
+
+

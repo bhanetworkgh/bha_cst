@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-11-03T00:16:18.046Z",
+  "sms": {
+    "provider_sid": null,
+    "status": "not_tested",
+    "price": "N/A",
+    "error_code": null,
+    "error_message": null
+  },
+  "voice": {
+    "call_sid": "NONE_DRY_RUN",
+    "status": "dry_run",
+    "duration_seconds": null,
+    "price": "N/A",
+    "answered": false
+  }
+}

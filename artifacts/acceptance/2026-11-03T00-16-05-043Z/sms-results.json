@@ -1,0 +1,19 @@
+{
+  "run_id": "CST-LIVE-SMS-1793664968349-2e3570da",
+  "utc_request_timestamp": "2026-11-03T00:16:08.349Z",
+  "destination_masked": "+9230***3844",
+  "sender_number": "+19715885823",
+  "cst_message_id": "msg_CST-LIVE-SMS-1793664968349-2e3570da",
+  "twilio_message_sid": "NONE_DRY_RUN",
+  "twilio_api_response_status": "dry_run",
+  "initial_message_status": "dry_run",
+  "delivery_callback_received": false,
+  "final_twilio_delivery_status": "not_sent",
+  "cst_callback_processing_result": "dry_run_no_op",
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "project_id": "proj-vfarm-main",
+  "correlation_id": "corr_CST-LIVE-SMS-1793664968349-2e3570da",
+  "error_code": null,
+  "sanitized_error_message": null,
+  "verdict": "NOT_TESTED"
+}

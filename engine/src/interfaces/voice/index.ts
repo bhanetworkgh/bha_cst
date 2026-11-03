@@ -1043,7 +1043,7 @@ export class VoiceInterface {
     audio_id: string;
   }> {
     const project = CoreRegistry.getProject(req.project_id);
-    const voiceId = req.voice_id || project?.elevenlabs_voice_id;
+    const voiceId = req.voice_id || project?.elevenlabs_voice_id || process.env.ELEVENLABS_VOICE_ID || process.env.VFARM_ELEVENLABS_VOICE_ID;
     const modelId = req.model_id || project?.elevenlabs_model_id || process.env.ELEVENLABS_MODEL_ID;
 
     if (!voiceId) {

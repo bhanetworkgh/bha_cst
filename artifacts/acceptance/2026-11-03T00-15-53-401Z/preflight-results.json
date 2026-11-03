@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-11-03T00:15:56.518Z",
+  "verdict": "PASS",
+  "service_url": "https://bha-cst-7u9e.onrender.com",
+  "destination_checked": "+9230***3844",
+  "sender_number_checked": "+19715885823",
+  "checks": {
+    "service_reachability": {
+      "status": "PASS",
+      "latency_ms": 461,
+      "details": "HTTP 200 OK ({\"status\":\"ok\",\"service\":\"bha-cst-engine\"})"
+    },
+    "service_health": {
+      "status": "PASS",
+      "details": "HTTP 200 OK ({\"status\":\"ok\",\"service\":\"bha-cst-engine\"})"
+    },
+    "voice_health": {
+      "status": "PASS",
+      "details": "Voice lane ready, clone configured: Hmy9...esiM",
+      "can_route_voice": true
+    },
+    "twilio_credentials_present": {
+      "status": "PASS",
+      "account_sid_masked": "ACd2...0353"
+    },
+    "twilio_api_validation": {
+      "status": "PASS",
+      "account_status": "active",
+      "details": "Twilio Account Active: \"Bays Horizon Network\" (Type: Full)"
+    },
+    "sender_number_validation": {
+      "status": "PASS",
+      "details": "Owned Number: +19715885823 (Voice: true, SMS: true)"
+    },
+    "destination_validation": {
+      "status": "PASS",
+      "destination_masked": "+9230***3844",
+      "details": "Authorized recipient verified: +9230***3844 (E.164 Pakistan +92)"
+    },
+    "database_connectivity": {
+      "status": "PASS",
+      "details": "Admin verification healthy: 1 bound numbers, transport: healthy"
+    },
+    "callback_endpoints_registered": {
+      "status": "PASS",
+      "details": "SMS delivery status: https://bha-cst-7u9e.onrender.com/webhooks/twilio/delivery-status | Voice status: https://bha-cst-7u9e.onrender.com/webhooks/twilio/voice/status (Twilio HMAC signature verification enforced)"
+    },
+    "known_limitations_and_tariffs": {
+      "status": "INFO",
+      "details": "Destination is Pakistan (+92). Standard Twilio international SMS rates apply (~$0.04-$0.09/msg). Voice outbound requires Twilio Geo-Permissions enabled for Pakistan (+92); error code 21215 will be caught and reported if geo-permissions are restricted."
+    }
+  },
+  "errors": []
+}
