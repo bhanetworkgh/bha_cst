@@ -37,6 +37,65 @@ function renderMessage(message, options = {}) {
   time.className = 'message-time';
   time.textContent = new Date(message.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   body.appendChild(time);
+
+  if (message.role === 'assistant' && !options.pending && message.text) {
+    const voiceBtn = document.createElement('button');
+    voiceBtn.className = 'voice-button';
+    voiceBtn.type = 'button';
+    voiceBtn.title = 'Listen to ElevenLabs voice';
+    voiceBtn.innerHTML = '🔊 <span>Listen</span>';
+    voiceBtn.addEventListener('click', async () => {
+      if (voiceBtn.dataset.playing === 'true') {
+        if (window._currentAudio) {
+          window._currentAudio.pause();
+          window._currentAudio = null;
+        }
+        voiceBtn.dataset.playing = 'false';
+        voiceBtn.innerHTML = '🔊 <span>Listen</span>';
+        return;
+      }
+      voiceBtn.innerHTML = '⏳ <span>Synthesizing...</span>';
+      try {
+        let audioUrl = message.audio_url;
+        if (!audioUrl) {
+          const res = await api('/api/v1/web/speak', {
+            method: 'POST',
+            body: JSON.stringify({ text: message.text }),
+          });
+          audioUrl = res.audio_url;
+          message.audio_url = audioUrl;
+        }
+        if (typeof Audio !== 'undefined') {
+          if (window._currentAudio) {
+            window._currentAudio.pause();
+            window._currentAudio = null;
+          }
+          const audio = new Audio(audioUrl);
+          window._currentAudio = audio;
+          voiceBtn.dataset.playing = 'true';
+          voiceBtn.innerHTML = '⏹ <span>Stop</span>';
+          audio.onended = () => {
+            voiceBtn.dataset.playing = 'false';
+            voiceBtn.innerHTML = '🔊 <span>Listen</span>';
+            window._currentAudio = null;
+          };
+          audio.onerror = () => {
+            voiceBtn.dataset.playing = 'false';
+            voiceBtn.innerHTML = '🔊 <span>Listen</span>';
+            setMessageStatus('Voice playback error.');
+            window._currentAudio = null;
+          };
+          await audio.play();
+        }
+      } catch (err) {
+        voiceBtn.dataset.playing = 'false';
+        voiceBtn.innerHTML = '🔊 <span>Listen</span>';
+        setMessageStatus(`Voice error: ${err.message}`);
+      }
+    });
+    body.appendChild(voiceBtn);
+  }
+
   article.append(avatar, body);
   list.appendChild(article);
   return article;
@@ -66,8 +125,8 @@ function setComposerPending(pending) {
 
 function setSession(session) {
   state.session = session;
-  $('#tenant-name').textContent = session.tenant.name;
-  $('#project-name').textContent = session.project.name;
+  $('#tenant-name').textContent = session.tenant?.name || 'vFarm Global';
+  $('#project-name').textContent = session.project?.name || 'Project';
   $('#user-name').textContent = session.user.name;
   $('#user-role').textContent = session.user.role;
   $('#user-initials').textContent = session.user.name.split(' ').map((part) => part[0]).join('').slice(0, 2);
@@ -75,7 +134,15 @@ function setSession(session) {
   $('#welcome-name').textContent = session.user.name.toUpperCase();
   $('#farm-count').textContent = session.farm_count;
   $('#farm-count-badge').textContent = session.farm_count;
-  $('#farm-list').replaceChildren(...(session.farms || []).map((farmId) => { const item = document.createElement('div'); item.className = 'farm-row'; item.innerHTML = `<span class="farm-icon">⌁</span><span><strong>${farmId.replaceAll('_', ' ')}</strong><small>Verified resource scope</small></span><span class="farm-status">Active</span>`; return item; }));
+  $('#farm-list').replaceChildren(...(session.farms || []).map((farmId) => {
+    const detail = (session.farm_details || []).find((f) => (f.farm_id === farmId || f.id === farmId));
+    const title = detail?.farm_name ? detail.farm_name : farmId.replaceAll('_', ' ');
+    const subtitle = detail?.farm_code ? `${detail.farm_code} · ${farmId.slice(0, 8)}...` : 'Verified resource scope';
+    const item = document.createElement('div');
+    item.className = 'farm-row';
+    item.innerHTML = `<span class="farm-icon">⌁</span><span><strong>${title}</strong><small>${subtitle}</small></span><span class="farm-status">Active</span>`;
+    return item;
+  }));
   loginView.classList.add('hidden');
   chatView.classList.remove('hidden');
 }
@@ -104,8 +171,36 @@ function renderActivity() {
 async function openWorkspace(event) {
   event.preventDefault();
   $('#login-error').textContent = '';
-  try { setSession(await api('/api/v1/web/session', { method: 'POST', body: JSON.stringify({ user: $('#user-select').value, project_id: $('#project-select').value }) })); await loadHistory(); } catch (error) { $('#login-error').textContent = error.message; }
-  try { showView('overview'); } catch (error) { $('#login-error').textContent = error.message; }
+  const email = $('#email-input')?.value?.trim();
+  const password = $('#password-input')?.value;
+  const user = $('#user-select')?.value;
+  const projectId = $('#project-select')?.value;
+
+  try {
+    const payload = {};
+    if (email && password) {
+      payload.email = email;
+      payload.password = password;
+    } else if (user) {
+      payload.user = user;
+    }
+    if (projectId) payload.project_id = projectId;
+
+    const adminToken = typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
+      ? localStorage.getItem('cst_admin_token')
+      : null;
+    const headers = adminToken ? { 'X-Admin-Token': adminToken } : {};
+
+    setSession(await api('/api/v1/web/session', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    }));
+    await loadHistory();
+    showView('overview');
+  } catch (error) {
+    $('#login-error').textContent = error.message;
+  }
 }
 
 async function loadHistory() {
@@ -136,9 +231,10 @@ async function sendMessage(event) {
   const timeoutId = setTimeout(() => controller.abort(), WEB_MESSAGE_TIMEOUT_MS);
 
   try {
+    const autoPlayVoice = $('#auto-play-voice')?.checked;
     const response = await api('/api/v1/web/message', {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, voice: autoPlayVoice }),
       signal: controller.signal,
     });
     setMessageStatus('CST is responding.');
@@ -151,8 +247,17 @@ async function sendMessage(event) {
       role: 'assistant',
       text: response.reply_text,
       media: response.media_url ? [response.media_url] : [],
+      audio_url: response.audio_url,
       created_at: Date.now(),
     });
+    if (autoPlayVoice && response.audio_url && typeof Audio !== 'undefined') {
+      try {
+        if (window._currentAudio) { window._currentAudio.pause(); window._currentAudio = null; }
+        const autoAudio = new Audio(response.audio_url);
+        window._currentAudio = autoAudio;
+        autoAudio.play().catch(() => {});
+      } catch {}
+    }
     list.scrollTop = list.scrollHeight;
     setMessageStatus('Response delivered.');
   } catch (error) {
@@ -176,7 +281,22 @@ async function sendMessage(event) {
 }
 
 async function init() {
-  try { setSession(await api('/api/v1/web/session')); await loadHistory(); showView('overview'); } catch { const projects = await api('/api/v1/web/projects'); $('#project-select').replaceChildren(...projects.map((project) => new Option(project.name, project.project_id))); }
+  const adminToken = typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
+    ? localStorage.getItem('cst_admin_token')
+    : null;
+  const headers = adminToken ? { 'X-Admin-Token': adminToken } : {};
+  try {
+    setSession(await api('/api/v1/web/session', { headers }));
+    await loadHistory();
+    showView('overview');
+  } catch {
+    try {
+      const projects = await api('/api/v1/web/projects');
+      $('#project-select').replaceChildren(...projects.map((project) => new Option(project.name, project.project_id)));
+    } catch {
+      // Fallback if projects request fails
+    }
+  }
 }
 
 $('#login-form').addEventListener('submit', openWorkspace);
@@ -189,4 +309,54 @@ $('#chat-nav').addEventListener('click', () => showView('chat'));
 $('#activity-nav').addEventListener('click', () => showView('activity'));
 $('#overview-chat-button').addEventListener('click', () => showView('chat'));
 document.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => { input.value = button.dataset.prompt; showView('chat'); input.focus(); }));
+
+// Speech-to-text mic integration
+const micButton = $('#mic-button');
+if (micButton && typeof window !== 'undefined') {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    let recognizing = false;
+
+    micButton.addEventListener('click', () => {
+      if (recognizing) {
+        recognition.stop();
+        return;
+      }
+      try {
+        recognition.start();
+      } catch {}
+    });
+
+    recognition.onstart = () => {
+      recognizing = true;
+      micButton.classList.add('recording');
+      micButton.title = 'Listening... Click to stop';
+      setMessageStatus('Listening to your voice...');
+    };
+    recognition.onresult = (e) => {
+      const transcript = e.results?.[0]?.[0]?.transcript;
+      if (transcript) {
+        input.value = transcript;
+        setMessageStatus('Voice captured. Sending...');
+        $('#message-form').requestSubmit();
+      }
+    };
+    recognition.onerror = (e) => {
+      recognizing = false;
+      micButton.classList.remove('recording');
+      setMessageStatus(`Mic error: ${e.error || 'speech recognition failed'}`);
+    };
+    recognition.onend = () => {
+      recognizing = false;
+      micButton.classList.remove('recording');
+    };
+  } else {
+    micButton.style.display = 'none';
+  }
+}
+
 init();

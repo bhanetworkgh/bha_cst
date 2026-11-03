@@ -122,7 +122,8 @@ test.describe('CST web chat — pending-feedback UX', () => {
 
   test('server error renders error message and restores composer', async ({ page }, testInfo) => {
     // Intercept the message API to return a 500 error.
-    await page.route('/api/v1/web/message', (route) => {
+    await page.route('/api/v1/web/message', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
       route.fulfill({ status: 500, body: JSON.stringify({ error: 'SERVER_ERROR', message: 'Upstream failure' }) });
     });
 

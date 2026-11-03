@@ -169,20 +169,20 @@ These historical lines **did not contain correlation IDs**. As of the `fix/monit
 ### Evidence Links (relevant to this section)
 
 - Monitoring Pay-Gate Closure PR branch: `fix/monitoring-pay-gate-closure`
-- Entry 399 draft: [`docs/acceptance/codex-entry-drafts/entry-399-update.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/codex-entry-drafts/entry-399-update.md)
-- Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
-- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
-- Monitoring & Research Twin Contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/contracts/monitoring-research-twin-field-contract.md)
-- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-voice-acceptance-inspection.md)
-- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
-- P1.0 Help Copy: [`docs/help/p1-vfarm-status-and-monitoring-help-copy.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/help/p1-vfarm-status-and-monitoring-help-copy.md)
+- Entry 399 draft: [`docs/acceptance/codex-entry-drafts/entry-399-update.md`](../acceptance/codex-entry-drafts/entry-399-update.md)
+- Render live evidence: [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](../evidence/2026-10-29-render-live-evidence-entry-399.md)
+- Engine Surfacing patch log (Section H): [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](../evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- Monitoring & Research Twin Contract: [`docs/contracts/monitoring-research-twin-field-contract.md`](../contracts/monitoring-research-twin-field-contract.md)
+- Voice Acceptance Report: [`docs/evidence/2026-11-02-voice-acceptance-inspection.md`](../evidence/2026-11-02-voice-acceptance-inspection.md)
+- Diagnostic evidence: [`docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`](../evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md)
+- P1.0 Help Copy: [`docs/help/p1-vfarm-status-and-monitoring-help-copy.md`](../help/p1-vfarm-status-and-monitoring-help-copy.md)
 
 ---
 
 
 ## 4. Continuity, backup and upgrade decision
 
-**Link:** [`docs/release/cst-database-continuity-plan.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-database-continuity-plan.md)
+**Link:** [`docs/release/cst-database-continuity-plan.md`](cst-database-continuity-plan.md)
 
 **Status: COMPLETE — Database upgrade already completed by account owner.** No upgrades, migrations, recreations, or replacements should be performed. This decision is not reopened.
 
@@ -204,7 +204,7 @@ These historical lines **did not contain correlation IDs**. As of the `fix/monit
 - Migration count reconciliation (see Section 1) — authorized read-only query required
 
 ### Evidence Links
-- Database continuity plan: [`docs/release/cst-database-continuity-plan.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-database-continuity-plan.md)
+- Database continuity plan: [`docs/release/cst-database-continuity-plan.md`](cst-database-continuity-plan.md)
 - Backup verification script: `scripts/verify_cst_postgres_backups.sh`
 - Backup script (fixed): `scripts/backup_bha_cst_postgres.sh` (hardcoded PGPASSWORD removed)
 

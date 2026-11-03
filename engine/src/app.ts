@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CoreRegistry } from './core/registry.js';
 import { getResearchTwinConfigStatus } from './research_twin/config.js';
+import { researchTwinWebhookRouter } from './research_twin/webhook.js';
 import {
   normalizeFarmHealth,
   type NormalizedFarmHealth,
@@ -93,6 +94,7 @@ export function createApp(): Express {
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);
+  app.use('/webhooks/research-twin', researchTwinWebhookRouter);
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/admin', requireAdminAuth, adminRouter);
   app.use(voiceRouter);

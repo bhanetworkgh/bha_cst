@@ -1,0 +1,9 @@
+{
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "project_id": "proj-vfarm-main",
+  "service_number": "+19715885823",
+  "recipient_masked": "+9230***3844",
+  "sms_correlation_id": "preflight",
+  "voice_correlation_id": "preflight",
+  "attribution_scope": "strictly_scoped_project_and_tenant"
+}

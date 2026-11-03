@@ -18,13 +18,19 @@
       </div>
       <form id="login-form" class="login-card">
         <div class="brand-mark">CST<span>•</span></div>
-        <p class="eyebrow">Development workspace</p>
+        <p class="eyebrow">Customer Support Workspace</p>
         <h2 id="login-title">Enter your support desk</h2>
-        <p class="muted">Production authentication is not configured yet. Use a seeded development identity.</p>
-        <label for="user-select">Identity</label>
-        <select id="user-select"><option value="demo-owner">Test Owner</option><option value="demo-manager">John Doe</option></select>
+        <p class="muted">Sign in with your verified credentials to access your farm workspace.</p>
+        <label for="email-input">Email Address</label>
+        <input id="email-input" type="email" placeholder="user@vfarm.co" autocomplete="email" style="width:100%;padding:13px;border:1px solid var(--line);color:var(--ink);background:#fbfcfd;margin-bottom:12px;border-radius:2px;font:inherit;">
+        <label for="password-input">Password</label>
+        <input id="password-input" type="password" placeholder="••••••••" autocomplete="current-password" style="width:100%;padding:13px;border:1px solid var(--line);color:var(--ink);background:#fbfcfd;margin-bottom:12px;border-radius:2px;font:inherit;">
         <label for="project-select">Project</label>
         <select id="project-select"></select>
+        <div id="dev-user-row" style="margin-top:0.5rem;margin-bottom:0.75rem;">
+          <label for="user-select" style="font-size:0.8rem;color:#829ab1;">Development Identity (optional override)</label>
+          <select id="user-select"><option value="demo-owner">Test Owner</option><option value="demo-manager">John Doe</option></select>
+        </div>
         <button class="primary-button" type="submit">Open workspace <span aria-hidden="true">↗</span></button>
         <p id="login-error" class="form-error" role="alert"></p>
       </form>
@@ -38,14 +44,14 @@
         <div class="sidebar-footer"><div class="user-badge"><div id="user-initials" class="avatar">TO</div><div><strong id="user-name">Test Owner</strong><small id="user-role">Owner</small></div></div></div>
       </aside>
       <section class="conversation-panel">
-        <header class="conversation-header"><div><p class="eyebrow">PROJECT WORKSPACE / <span id="scope-label">1 farm in scope</span></p><h1 id="page-title">Project overview</h1></div><div class="header-actions"><span class="secure-pill">⌁ Scoped session</span><button id="mobile-menu" class="icon-button" title="Open navigation" aria-label="Open navigation">☰</button></div></header>
+        <header class="conversation-header"><div><p class="eyebrow">PROJECT WORKSPACE / <span id="scope-label">1 farm in scope</span></p><h1 id="page-title">Project overview</h1></div><div class="header-actions"><label class="voice-toggle" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:'DM Mono',monospace;color:#102a43;background:#e2ecf4;padding:6px 10px;border-radius:2px;cursor:pointer;" title="Toggle ElevenLabs voice playback"><input type="checkbox" id="auto-play-voice" style="cursor:pointer;"> <span>ElevenLabs Voice</span></label><span class="secure-pill">⌁ Scoped session</span><button id="mobile-menu" class="icon-button" title="Open navigation" aria-label="Open navigation">☰</button></div></header>
         <section id="overview-view" class="workspace-view">
           <div class="welcome-row"><div><p class="eyebrow">GOOD MORNING, <span id="welcome-name">OWNER</span></p><h2>Your project, at a glance.</h2><p class="muted">A live view of the support context available to your authenticated session.</p></div><button id="overview-chat-button" class="primary-button compact-button">Ask CST <span>↗</span></button></div>
           <div class="metric-grid"><article class="metric-card"><span class="metric-label">FARMS IN SCOPE</span><strong id="farm-count">1</strong><small>Verified for this session</small></article><article class="metric-card mint-card"><span class="metric-label">SESSION STATUS</span><strong>Active</strong><small>Identity and project verified</small></article><article class="metric-card coral-card"><span class="metric-label">SUPPORT CHANNEL</span><strong>Web chat</strong><small>Responses stay project-scoped</small></article></div>
           <div class="overview-grid"><section class="panel-block"><div class="panel-heading"><div><span class="section-label">RESOURCE SCOPE</span><h3>Accessible farms</h3></div><span class="count-badge" id="farm-count-badge">1</span></div><div id="farm-list" class="farm-list"></div></section><section class="panel-block"><div class="panel-heading"><div><span class="section-label">QUICK START</span><h3>Common requests</h3></div></div><div class="quick-actions"><button data-prompt="What is the status of my farm?">Farm status <span>↗</span></button><button data-prompt="How do I clean the filter?">Maintenance guidance <span>↗</span></button><button data-prompt="I need help with an issue">Report an issue <span>↗</span></button></div></section></div>
         </section>
         <section id="activity-view" class="workspace-view hidden"><div class="welcome-row"><div><p class="eyebrow">SESSION ACTIVITY</p><h2>Recent requests.</h2><p class="muted">The current conversation is retained inside this authenticated project context.</p></div></div><section class="panel-block activity-block"><div id="activity-list" class="activity-list"></div></section></section>
-         <section id="chat-view-panel" class="chat-panel hidden"><div id="message-list" class="message-list" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat messages"></div><div id="typing-state" class="typing-state hidden" role="status" aria-live="assertive" aria-atomic="true"><span></span><span></span><span></span> CST is thinking</div><p id="message-status" class="composer-note" role="status" aria-live="polite">Ready.</p><form id="message-form" class="composer" aria-label="Message composer"><textarea id="message-input" rows="1" placeholder="Ask about your farm operations..." aria-label="Message" autocomplete="off"></textarea><button id="send-button" class="send-button" type="submit" title="Send message" aria-label="Send message" aria-disabled="false">↑</button><p class="composer-note">Responses stay inside your authenticated project and farm scope.</p></form></section>
+         <section id="chat-view-panel" class="chat-panel hidden"><div id="message-list" class="message-list" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat messages"></div><div id="typing-state" class="typing-state hidden" role="status" aria-live="assertive" aria-atomic="true"><span></span><span></span><span></span> CST is thinking</div><p id="message-status" class="composer-note" role="status" aria-live="polite">Ready.</p><form id="message-form" class="composer" aria-label="Message composer"><textarea id="message-input" rows="1" placeholder="Ask about your farm operations..." aria-label="Message" autocomplete="off"></textarea><button id="mic-button" class="mic-button" type="button" title="Speak to CST" aria-label="Speak">🎙</button><button id="send-button" class="send-button" type="submit" title="Send message" aria-label="Send message" aria-disabled="false">↑</button><p class="composer-note">Responses stay inside your authenticated project and farm scope.</p></form></section>
       </section>
     </section>
   </main>

@@ -21,6 +21,7 @@ import {
   VfarmLiveClient,
   VFARM_DEFAULT_TIMEOUT_MS,
   VFARM_SYSTEM_STATS_TIMEOUT_MS,
+  VFARM_READINGS_STATS_TIMEOUT_MS,
 } from '../../engine/src/adapters/vfarm/live_client.js';
 import { layoutResponseSchema, zoneResponseSchema } from '../../engine/src/adapters/vfarm/schemas.js';
 
@@ -341,5 +342,39 @@ describe('LOOP-1790985133889-8D7U — getSystemStats() gets its own request budg
     });
     // An explicit VFARM_API_TIMEOUT_MS still governs the non-stats endpoints.
     await expect(client.getDashboardSummary()).resolves.toMatchObject({ farms: { total: 2 } });
+  });
+});
+
+describe('vFarm timeout contracts — readings stats timeout override', () => {
+  it('configures VFARM_READINGS_STATS_TIMEOUT_MS to 30000ms', () => {
+    expect(VFARM_READINGS_STATS_TIMEOUT_MS).toBe(30000);
+    expect(VFARM_READINGS_STATS_TIMEOUT_MS).toBeGreaterThan(VFARM_DEFAULT_TIMEOUT_MS);
+  });
+
+  it('passes VFARM_READINGS_STATS_TIMEOUT_MS when getReadingStats() calls request()', async () => {
+    const fetchFn = vi.fn(async () =>
+      jsonResponse(200, {
+        sensor_id: 'rack1_soil',
+        window: '24h',
+        count: 10,
+        min: 10,
+        max: 95,
+        avg: 55,
+        latest: { value: 90, unit: '%', reading_ts: '2026-11-02T22:00:00Z' },
+      }),
+    );
+    const client = new VfarmLiveClient({
+      baseUrl: 'https://mock.vfarm.test',
+      apiKey: 'farm-key',
+      fetchFn: fetchFn as any,
+    });
+    const requestSpy = vi.spyOn(client as any, 'request');
+    await client.getReadingStats('rack1_soil', '24h');
+    expect(requestSpy).toHaveBeenCalledWith(
+      '/api/v1/readings/stats?sensor_id=rack1_soil&window=24h',
+      expect.anything(),
+      undefined,
+      30000,
+    );
   });
 });

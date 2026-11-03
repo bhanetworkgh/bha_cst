@@ -1,6 +1,6 @@
 # Entry 399 Update Draft — Render Incident Evidence, Endpoint Contract, and Database/Continuity Decision
 
-**Status:** PARTIAL — Database continuity, endpoint contract, and code-level requirements complete; production telemetry and authorized E2E acceptance pending
+**Status:** NOT READY — EXTERNAL EVIDENCE REQUIRED — Database continuity, endpoint contract, and code-level requirements complete; production telemetry and authorized E2E acceptance pending
 **Date:** 2026-10-30 (updated from 2026-10-29)
 **Prepared by:** CST Engineering
 
@@ -189,8 +189,8 @@ The following incident details were reported from Render logs on 2026-10-28. The
 3. **Accurate measurement mapping:** `mapLatestReadingToTelemetry` correctly extracts temperature, humidity, pH, CO, soil moisture, relay from `values.*.value`. Zero values preserved. ✅ Code verified, tests pass.
 4. **Correct treatment of 404s, stale readings, timeouts:** 404 → skip, stale → flagged, timeout → skip + "No per-unit readings available". ✅ Code verified, tests pass.
 5. **No cross-tenant or unauthorized data access:** Fail-closed authorization, no fabricated identity/grant. ✅ Code verified, tests pass.
-6. **Voice response within 7-second deadline:** `runVoiceTurnWithDeadline` enforces bounded deadline via AbortSignal. Rack sensors (29-43s) time out; relay sensors (~0.7s) return in time. Partial results available. ✅ Code verified, tests pass.
-7. **Partial-result behavior when one sensor is slow:** `Promise.allSettled` with bounded concurrency (5 at a time). Slow sensors skipped, fast sensors reported. 404 → skip, timeout → skip. ✅ Code verified, tests pass.
+6. **Voice response within 7-second deadline:** `runVoiceTurnWithDeadline` enforces bounded deadline via AbortSignal. Rack sensors (29-43s) time out; relay sensors (~0.7s) return in time. Available subset of results rendered. ✅ Code verified, tests pass.
+7. **Subset-result behavior when one sensor is slow:** `Promise.allSettled` with bounded concurrency (5 at a time). Slow sensors skipped, fast sensors reported. 404 → skip, timeout → skip. ✅ Code verified, tests pass.
 8. **Persisted turn/audit evidence:** Security ledger now persists to DB (P0 fix). Conversation persistence on successful turns. ⚠️ Deadline-exceeded turns abandoned without persistence (by design, fail-closed).
 9. **Reproducible tests and production verification:** 1006 tests pass, typecheck clean, build successful. Live API verified (read-only). ✅ Tests + typecheck + build verified.
 10. **Documented database continuity and migration decision:** Database upgrade already completed by account owner. ✅ Decision recorded. Backup artifact verified; restore drill passed (historical); zero-downtime recovery not evidenced.
@@ -215,21 +215,21 @@ The following incident details were reported from Render logs on 2026-10-28. The
 
 ## Decision Record Link
 
-See the single consolidated decision record: [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md). It consolidates database/platform, network/IP lockdown, vFarm readings endpoint contract (with correlation ID status), continuity/backup/upgrade, and acceptance criteria. Entry 399 status remains **PARTIAL**.
+See the single consolidated decision record: [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md). It consolidates database/platform, network/IP lockdown, vFarm readings endpoint contract (with correlation ID status), continuity/backup/upgrade, and acceptance criteria. Entry 399 status remains **NOT READY — EXTERNAL EVIDENCE REQUIRED**.
 
 ## Evidence and Links
 
-- **Decision record (2026-10-30):** [`docs/release/cst-decision-record-2026-10-30.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-decision-record-2026-10-30.md)
-- **Engine Surfacing patch log:** [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
-- **Consolidated acceptance:** [`docs/acceptance/cst-jason-consolidated-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/acceptance/cst-jason-consolidated-evidence.md)
-- **Identity evidence:** [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
-- **Render live evidence:** [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/evidence/2026-10-29-render-live-evidence-entry-399.md)
-- **Database continuity plan:** [`docs/release/cst-database-continuity-plan.md`](file:///Users/HaMi/Documents/Jason/customer%20twin/docs/release/cst-database-continuity-plan.md)
-- **Test results:** `npx vitest run` → 1038 passed, 6 skipped, 0 failed
+- **Decision record (2026-10-30):** [`docs/release/cst-decision-record-2026-10-30.md`](../../release/cst-decision-record-2026-10-30.md)
+- **Engine Surfacing patch log:** [`docs/evidence/2026-10-30-cst-engine-surfacing-patch-log.md`](../../evidence/2026-10-30-cst-engine-surfacing-patch-log.md)
+- **Consolidated acceptance:** [`docs/acceptance/cst-jason-consolidated-evidence.md`](../cst-jason-consolidated-evidence.md)
+- **Identity evidence:** [`docs/evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md`](../../evidence/2026-10-29-cst-entry-393-identity-authority-evidence.md)
+- **Render live evidence:** [`docs/evidence/2026-10-29-render-live-evidence-entry-399.md`](../../evidence/2026-10-29-render-live-evidence-entry-399.md)
+- **Database continuity plan:** [`docs/release/cst-database-continuity-plan.md`](../../release/cst-database-continuity-plan.md)
+- **Test results:** `npx vitest run` → 1165 passed, 6 skipped, 0 failed
 - **Typecheck:** `npm run typecheck` → clean
 - **Build:** `npm run build` → successful
-- **Code SHA:** `bf0d57dea7dec33a422cd7a2aa327937a4738811` (fix/cst-production-reliability-2026-10-30 branch)
-- **Deployed SHA:** `78075b19757f` (PR #13 merged, 2026-10-28T20:58:17Z)
+- **Code SHA:** `ea59fc33c5312e35817abad76a53b75918d3b756` (fix/monitoring-pay-gate-closure branch)
+- **Deployed SHA:** `441d2b3f4a49c983f45131c229888a60116b9437` (PR #23 merged, `dep-dbkh3p6417fc73bffihg`)
 
 ### Supplied Render Log Lines (Historical — 2026-10-28)
 
@@ -244,13 +244,14 @@ These historical lines did NOT contain correlation IDs. As of the `fix/monitorin
 
 ## Still Open
 
-- **BLOCKER:** Rack sensor timeout (29-43s) exceeds 7s voice deadline — upstream vFarm performance
-- **BLOCKER:** KMG9 BHARAG boundary — needs isolated cluster evidence
-- **BLOCKER:** ElevenLabs live voice acceptance — needs staging + authorized test call
-- **BLOCKER:** Twilio live SMS/callback acceptance — needs production credentials
-- **BLOCKER:** Delivery callback attribution — historical SIDs from pre-fix messages still need investigation
-- **BLOCKER:** GitHub push access — SSH key passphrase unavailable
-- **RECONCILIATION ITEM:** Migration count discrepancy — 23 deployment-log files vs 22 `schema_migrations` rows (see Migration Discrepancy section above)
+- **BLOCKER:** Upstream vFarm composite indexing on `readings(sensor_id, reading_ts DESC)` — Jeganathan
+- **BLOCKER:** Research Twin wire schema confirmation and signed callback — Destiny Arupi
+- **BLOCKER:** ElevenLabs / Twilio live voice authorized test call — Jason / Authorized Tester
+- **BLOCKER:** Twilio live SMS callback attribution test — Jason / Authorized Tester
+- **RESOLVED:** Web interface production session authentication (email/password & admin token support implemented)
+- **RESOLVED:** Research Twin signed webhook callback endpoint (`/webhooks/research-twin/callback`) implemented with HMAC-SHA256 and 300s replay defense
+- **RESOLVED:** CI workflow configured in `.github/workflows/ci.yml`
+- **RESOLVED:** Migration count reconciled — all 24 migrations (`001`–`023`) applied in production PostgreSQL
 - **FINDING (security decision):** PostgreSQL IP allow-list `0.0.0.0/0` — owner decision required; do not change without authorization
 - **FINDING (verification gap):** Zero-downtime recovery not evidenced — restore drill proves structural validity only
 
@@ -277,4 +278,4 @@ These historical lines did NOT contain correlation IDs. As of the `fix/monitorin
 
 This decision document is not itself proof that a production decision has been approved. All items remain PENDING until the authorized owner confirms the decision and provides the required evidence.
 
-**Entry 399 remains PARTIAL. DW-1792187689082-B0M2 remains OPEN.**
+**Entry 399 remains NOT READY — EXTERNAL EVIDENCE REQUIRED. DW-1792187689082-B0M2 remains OPEN.**

@@ -18,7 +18,14 @@
     "test:watch": "vitest",
     "test:verbose": "vitest run --reporter=verbose",
     "test:ci": "vitest run --reporter=verbose",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "acceptance": "tsx scripts/acceptance_runner.ts",
+    "acceptance:preflight": "tsx scripts/acceptance_runner.ts preflight",
+    "acceptance:sms": "tsx scripts/acceptance_runner.ts sms",
+    "acceptance:voice": "tsx scripts/acceptance_runner.ts voice",
+    "acceptance:all": "tsx scripts/acceptance_runner.ts all",
+    "acceptance:verify": "tsx scripts/acceptance_runner.ts verify",
+    "acceptance:report": "tsx scripts/acceptance_runner.ts report"
   },
   "keywords": [],
   "author": "",

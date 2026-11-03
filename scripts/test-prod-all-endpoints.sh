@@ -105,6 +105,7 @@ run_request() {
   local header1="${3:-}"
   local header2="${4:-}"
   local body="${5:-}"
+  local req_timeout_sec="${6:-12}"
 
   local body_file
   body_file=$(mktemp)
@@ -112,7 +113,7 @@ run_request() {
   local start_ms
   start_ms=$(python3 -c 'import time; print(int(time.time() * 1000))')
 
-  local curl_cmd=(curl -s -o "$body_file" -w "%{http_code}" -X "$method" "$url" -m 12)
+  local curl_cmd=(curl -s -o "$body_file" -w "%{http_code}" -X "$method" "$url" -m "$req_timeout_sec")
   if [ -n "$header1" ]; then curl_cmd+=(-H "$header1"); fi
   if [ -n "$header2" ]; then curl_cmd+=(-H "$header2"); fi
   if [ -n "$body" ]; then curl_cmd+=(-d "$body"); fi
@@ -387,14 +388,16 @@ for s in "${SENSORS[@]}"; do
     fi
   fi
 
-  # 3. Reading stats endpoint (upstream vFarm /readings/stats times out > 5000ms)
+  # 3. Reading stats endpoint (CST VFARM_READINGS_STATS_TIMEOUT_MS = 30000; allow 35s curl budget)
   ep_stats="/api/v1/admin/vfarm/readings/stats?sensor_id=$s&window=24h"
   if [ -n "$ADMIN_TOKEN" ]; then
-    run_request "GET" "$BASE_URL$ep_stats" "x-admin-token: $ADMIN_TOKEN"
+    run_request "GET" "$BASE_URL$ep_stats" "x-admin-token: $ADMIN_TOKEN" "" "" 35
     if [ "$CUR_STATUS" = "200" ]; then
       record_result "GET" "$ep_stats" "x-admin-token" "200" "$CUR_STATUS" "$CUR_LATENCY" "PASS" "$CUR_BODY" "Reading stats computed"
     elif [ "$CUR_STATUS" = "502" ] || [ "$CUR_STATUS" = "504" ]; then
-      record_result "GET" "$ep_stats" "x-admin-token" "200" "$CUR_STATUS" "$CUR_LATENCY" "DEGRADED" "$CUR_BODY" "Upstream vFarm stats timeout > 5000ms"
+      record_result "GET" "$ep_stats" "x-admin-token" "200" "$CUR_STATUS" "$CUR_LATENCY" "DEGRADED" "$CUR_BODY" "Upstream vFarm stats timeout > 30000ms"
+    elif [ "$CUR_STATUS" = "000" ]; then
+      record_result "GET" "$ep_stats" "x-admin-token" "200" "$CUR_STATUS" "$CUR_LATENCY" "FAIL" "$CUR_BODY" "Client curl timeout at 35s (exceeded CST 30s budget)"
     else
       record_result "GET" "$ep_stats" "x-admin-token" "200" "$CUR_STATUS" "$CUR_LATENCY" "FAIL" "$CUR_BODY" "Reading stats failed with $CUR_STATUS"
     fi
