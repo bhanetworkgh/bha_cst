@@ -1,7 +1,13 @@
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import { z, ZodError, ZodIssue } from 'zod';
 
 dotenv.config();
+// Fall back to .env.example if .env is missing (e.g. in fresh CI runs or headless tests)
+if (!process.env.VFARM_SYSTEM_ID && fs.existsSync(path.resolve(process.cwd(), '.env.example'))) {
+  dotenv.config({ path: path.resolve(process.cwd(), '.env.example') });
+}
 
 // Treat `KEY=` (empty) in a .env file as "not set" for optional variables.
 const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);

@@ -1,6 +1,6 @@
 # Entry 393 Update Draft — CST ↔ vFarm Identity and Authorization
 
-**Status:** PARTIAL — Code-level verified; production identity/authorization proof pending
+**Status:** NOT READY — PENDING EXTERNAL EVIDENCE — Code-level verified; production identity/authorization proof pending
 **Date:** 2026-10-30 (updated from 2026-10-29)
 **Prepared by:** CST Engineering
 
@@ -145,4 +145,4 @@ Without authoritative identity resolution, CST cannot safely disclose farm data 
 
 > KMG9 boundary proof and upstream identity binding are NOT complete. No supporting evidence exists for either. They remain BLOCKED pending external evidence.
 
-**Entry 393 remains PARTIAL. DW-1792187689082-B0M2 remains OPEN.**
+**Entry 393 remains NOT READY — PENDING EXTERNAL EVIDENCE. DW-1792187689082-B0M2 remains OPEN.**

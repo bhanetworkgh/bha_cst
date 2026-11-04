@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-11-03T15:08:50.417Z",
+  "artifacts_dir": "/Users/HaMi/Documents/Jason/customer twin/artifacts/acceptance/2026-11-03T15-08-47-065Z",
+  "local_sha": "52a4a4877fda5a12f3a32f46ee4f6669f1595a83",
+  "deployed_sha": "441d2b3f4a49c983f45131c229888a60116b9437",
+  "preflight_verdict": "PASS",
+  "sms_verdict": "NOT_TESTED",
+  "voice_verdict": "NOT_TESTED",
+  "destination_masked": "+9230***3844",
+  "sender_number": "+19715885823"
+}

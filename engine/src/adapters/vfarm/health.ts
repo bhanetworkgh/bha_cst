@@ -11,21 +11,22 @@ export type FarmHealthStaleness =
 export interface FarmHealthInput {
   status?: unknown;
   health_score?: unknown;
+  calculated_at?: unknown;
 }
 
 export interface NormalizeFarmHealthOptions {
   /** The upstream request failed; this is distinct from a missing health value. */
   upstreamError?: boolean;
   /**
-   * Optional contract-supplied source timestamp. The live vFarm contract does
-   * not currently identify one, so production callers must not invent it.
+   * Optional contract-supplied source timestamp. When omitted, candidate timestamp
+   * is resolved from upstream.calculated_at.
    */
   sourceTimestamp?: string | null;
   /** Evaluation clock, injectable for deterministic contract tests. */
   nowMs?: number;
   /**
-   * Explicit freshness budget supplied by an approved contract. No default is
-   * assumed: the five-minute device-presence rule is not a farm-health rule.
+   * Explicit freshness budget supplied by an approved contract.
+   * Defaults to 3,600,000ms (1 hour) per Contract v1.1.1 (Section 5).
    */
   maxAgeMs?: number;
 }
@@ -34,6 +35,7 @@ export interface NormalizedFarmHealth {
   status: FarmHealthStatus;
   raw_status: string | null;
   health_score: number | null;
+  calculated_at: string | null;
   staleness_evaluation: FarmHealthStaleness;
   reason:
     | 'upstream_healthy'
@@ -92,10 +94,16 @@ export function normalizeFarmHealth(
         : 'unrecognized_status';
   }
 
+  // Resolve source timestamp from options or upstream.calculated_at
+  const candidateTimestamp = options.sourceTimestamp !== undefined
+    ? options.sourceTimestamp
+    : (typeof (upstream as any)?.calculated_at === 'string' ? (upstream as any).calculated_at : null);
+
   let staleness: FarmHealthStaleness = 'unavailable_no_timestamp';
-  if (options.sourceTimestamp !== undefined && options.sourceTimestamp !== null) {
-    const sourceMs = Date.parse(options.sourceTimestamp);
+  if (candidateTimestamp !== undefined && candidateTimestamp !== null) {
+    const sourceMs = Date.parse(candidateTimestamp);
     const nowMs = options.nowMs ?? Date.now();
+    const maxAgeMs = options.maxAgeMs ?? 3_600_000; // 1 hour per Contract v1.1.1
     if (!Number.isFinite(sourceMs)) {
       staleness = 'invalid_timestamp';
       status = 'degraded';
@@ -104,14 +112,23 @@ export function normalizeFarmHealth(
       staleness = 'future_timestamp';
       status = 'degraded';
       reason = 'future_timestamp';
-    } else if (options.maxAgeMs === undefined) {
+    } else if (options.maxAgeMs === undefined && options.sourceTimestamp !== undefined) {
       staleness = 'unavailable_no_threshold';
-    } else if (nowMs - sourceMs > options.maxAgeMs) {
+    } else if (nowMs - sourceMs > maxAgeMs) {
       staleness = 'stale';
       status = 'degraded';
       reason = 'stale';
     } else {
       staleness = 'fresh';
+    }
+  } else {
+    // Missing freshness evidence: per Contract v1.1.1 (Section 4.1), missing or null
+    // calculated_at triggers staleness_evaluation: "unavailable_no_timestamp" and cannot
+    // be represented as confirmed healthy.
+    staleness = 'unavailable_no_timestamp';
+    if (status === 'healthy') {
+      status = 'degraded';
+      reason = 'unrecognized_status';
     }
   }
 
@@ -119,6 +136,7 @@ export function normalizeFarmHealth(
     status,
     raw_status: rawStatus,
     health_score: healthScore,
+    calculated_at: candidateTimestamp ?? null,
     staleness_evaluation: staleness,
     reason,
   };

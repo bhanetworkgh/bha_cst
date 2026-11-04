@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Setup Environment Configuration
+        run: cp .env.example .env
+
       - name: TypeScript Compilation Check
         run: npm run typecheck
 

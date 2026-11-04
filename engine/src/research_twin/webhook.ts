@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Logger } from '../config/logger.js';
+import { ResearchTwinInboundCallbackSchema } from './schemas.js';
 
 export const researchTwinWebhookRouter = Router();
 
@@ -55,8 +56,8 @@ researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
     return;
   }
 
-  const payload = req.body || {};
-  const timestamp = payload.timestamp || payload.occurred_at;
+  const rawPayload = req.body || {};
+  const timestamp = rawPayload.timestamp || rawPayload.occurred_at || rawPayload.observed_at;
   if (timestamp) {
     const eventTime = Date.parse(timestamp);
     if (!isNaN(eventTime)) {
@@ -73,8 +74,10 @@ researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
     }
   }
 
-  const investigationId = payload.investigation_id || payload.id || 'unknown';
-  const status = payload.status || 'updated';
+  const parsed = ResearchTwinInboundCallbackSchema.safeParse(rawPayload);
+  const callbackData = parsed.success ? parsed.data : rawPayload;
+  const investigationId = callbackData.investigation_id || callbackData.id || 'unknown';
+  const status = callbackData.lifecycle_status || callbackData.status || 'updated';
 
   Logger.info(`Research Twin callback verified: investigation ${investigationId} status ${status}`);
 

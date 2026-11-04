@@ -87,7 +87,11 @@ afterEach(() => {
 describe('GET /api/health — authoritative farm health mapping', () => {
   it('maps explicit vFarm "healthy" to CST "healthy"', async () => {
     registerMockAdapter({
-      getFarmHealthDirect: vi.fn().mockResolvedValue({ status: 'healthy', health_score: 92 }),
+      getFarmHealthDirect: vi.fn().mockResolvedValue({
+        status: 'healthy',
+        health_score: 92,
+        calculated_at: new Date().toISOString(),
+      }),
       getHealth: vi.fn().mockResolvedValue({ status: 'healthy', latency_ms: 40 }),
     });
 
@@ -283,7 +287,7 @@ describe('GET /api/health — authoritative farm health mapping', () => {
     expect(res.body.farm_health.raw_status).toBeNull();
   });
 
-  it('preserves authoritative health while marking freshness unavailable when no timestamp exists', async () => {
+  it('maps healthy to degraded while marking freshness unavailable when no timestamp exists', async () => {
     registerMockAdapter({
       getFarmHealthDirect: vi.fn().mockResolvedValue({ status: 'healthy', health_score: 99 }),
       getHealth: vi.fn().mockResolvedValue({ status: 'healthy', latency_ms: 40 }),
@@ -291,9 +295,11 @@ describe('GET /api/health — authoritative farm health mapping', () => {
 
     const res = await request(app).get('/api/health');
 
-    // vFarm says healthy, but without a source timestamp CST cannot evaluate
-    // freshness — staleness is explicitly unavailable, not inferred healthy.
+    // Per Contract v1.1.1: vFarm says healthy, but without calculated_at freshness
+    // cannot be proven, so status cannot be confirmed healthy and maps to degraded.
     expect(res.body.farm_health.staleness_evaluation).toBe('unavailable_no_timestamp');
-    expect(res.body.farm_health.status).toBe('healthy');
+    expect(res.body.farm_health.raw_status).toBe('healthy');
+    expect(res.body.farm_health.status).toBe('degraded');
+    expect(res.body.status).toBe('degraded');
   });
 });

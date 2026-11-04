@@ -75,6 +75,7 @@ describe('vFarm health normalization reaches text/voice output', () => {
     const { status, rendered } = await renderFarmHealth(async () => ({
       status: raw,
       health_score: 99,
+      calculated_at: new Date().toISOString(),
     }));
     expect(status?.status.toUpperCase()).toBe(expected);
     expect(status?.health_score).toBe(99);
@@ -83,6 +84,16 @@ describe('vFarm health normalization reaches text/voice output', () => {
     expect(rendered.telemetry?.status).toBe(
       raw === 'healthy' ? 'normal' : raw === 'unhealthy' ? 'fault' : 'telemetry_unavailable',
     );
+  });
+
+  it('renders a healthy farm with missing calculated_at as degraded per Contract v1.1.1', async () => {
+    const { status, rendered } = await renderFarmHealth(async () => ({
+      status: 'healthy',
+      health_score: 95,
+      // no calculated_at
+    }));
+    expect(status?.status).toBe('degraded');
+    expect(rendered.text).toContain('vFarm farm health: DEGRADED.');
   });
 
   it('renders a failed health request as degraded when device inventory remains available', async () => {
