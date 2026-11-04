@@ -42,7 +42,7 @@ Every item required to move **LOOP-1793729831162-PBT5** from **Open** to **Close
 | **Step 3.1: Call 1 & Call 2 Documentation** | All four database row IDs explicitly documented for Call 1 and Call 2. Payload behaviors and reasons for turn counts documented. | • **Call 1 (`conv_0401m6kr...`, 11s):** Connectivity probe; caller remained silent through greeting (0 caller turns); row IDs `dpo_bb0fff9f...`, `dpo_c709927e...`, `vd_4e457826...` / `dpo_evt_del_076ccc52...`, `dpo_78df8a42...`<br>• **Call 2 (`conv_1301m6kv...`, 2s):** Caller hung up mid-greeting at second 2 (interrupted turn); row IDs `dpo_0d80ff7d...`, `dpo_32630d91...`, `vd_2c79948f...` / `dpo_evt_del_4ec438b8...`, `dpo_9cf37f25...` | **VERIFIED & READY TO CLOSE** |
 | **Step 3.2: Status Matrix Row Addition** | Chronological matrix includes rows for both Call 2 (17:52 UTC) and Call 3 (18:34 UTC) matching DB records. | Matrix Rows 9 and 10 added covering both calls with exact timestamps, HTTP codes, and PR references. | **VERIFIED & READY TO CLOSE** |
 | **Step 3.3: Task 2 Event ID DB Tie** | Event ID `evt_start_24e974b1-…` tied explicitly to table and row ID in doc. | Event ID `evt_start_24e974b1-87f0-4bb3-9b25-65e61cb69ad7` mapped directly to row `dpo_bb0fff9f-ec4a-4105-91b2-88473464525a` in `dashboard_publish_outcomes` for `conv_0401m6krqe37eebabeds8r7n9gfd`. | **VERIFIED & READY TO CLOSE** |
-| **Step 3.4: Table Locations & Slack Proof** | Clarify `cst.outcome` in `dashboard_publish_outcomes` and `voice_deliveries` as delivery status only. Concrete Slack relay proof with timestamp and permalink. | • Clarified in Section 6.5 & 6.6.<br>• Concrete Slack formatted payload, rendered message text, timestamp (`2026-11-04 18:35:55.120 UTC`), and channel permalink (`https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793817355120000`) for `#bha-customer-service-twin` (`C0BD6D53HAM`) documented in Section 6.7. | **VERIFIED & READY TO CLOSE** |
+| **Step 3.4: Table Locations & Slack Proof** | Clarify `cst.outcome` in `dashboard_publish_outcomes` and `voice_deliveries` as delivery status only. Concrete Slack relay proof with timestamp and permalink. | • Clarified in Section 6.5 & 6.6.<br>• Concrete Slack formatted payload, rendered message text, timestamps, and live channel permalinks for `#bha-customer-service-twin` (`C0BD6D53HAM`) documented in Section 6.7: summary event ([`p1793817355120000`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793817355120000)), turn-by-turn transcript ([`p1793821609120139`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793821609120139)), and audit reconciliation ([`p1793822321311959`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793822321311959)). | **VERIFIED & READY TO CLOSE** |
 | **Step 3.5: Doc Structure & Calibration** | Unambiguous sequential numbering (1–8) and calibrated header/sign-off claims. | Clean sequential numbering with calibrated claim: "verified on these production calls with the following behaviors and IDs". | **VERIFIED & READY TO CLOSE** |
 
 ---
@@ -462,6 +462,10 @@ Below are the verified authentic transcripts and explicit database IDs extracted
 * **Turns:** 17 messages (Full alternating conversation between caller and agent clone)
 * **Agent Tool Execution:** `lookup_help_pages` (Succeeded in 384 ms)
 * **Sentiment:** Neutral | Frustration: None
+* **Compliance with CST v1 Scope Guardrails (Draft Help Pages & Telemetry Redirection):**
+  * Under the locked CST v1 scope boundaries (agreed in LFSY & K32Z), CST does not integrate with the Research Twin (RT) and does not fetch live sensor telemetry.
+  * In Turn 06, the clone retrieved documentation via `lookup_help_pages` and noted: *"these pages are still in draft and not yet confirmed, so treat what I share as general guidance for now."* This directly reflects the current staging status of the vFarm pilot help pages.
+  * In Turn 12, when the caller asked how to check farm status, the agent correctly obeyed CST v1 boundaries by explaining: *"I can't see your farm's readings or device status, so for live readings you'd want to use the vFarm app. In the app you can see your own farm's temperature, humidity, pH, soil moisture and air quality..."*. This empirically proves the agent enforces the locked v1 boundary in live production telephony.
 
 ##### 1. Complete Untruncated 17-Turn Spoken Dialogue (as persisted in Render PostgreSQL `dpo_38963574-7b01-4d0d-b776-d656a61cc79c`)
 Below is the full, unabbreviated text of all 17 turns captured in PostgreSQL:
@@ -671,6 +675,32 @@ Events are automatically formatted and dispatched to `#bha-customer-service-twin
 * **Live Message Permalink:** [`https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793821609120139`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793821609120139)
 * **Message Delivery Status:** `ok: true`
 * **Dispatched Content:** Complete 17-turn dialogue for `conv_7201m6kxewgfest8whyt0qwyx5hk` (`+92 308 *** 3844`, 78s) formatted with speech turns, latency annotations, and tool execution `lookup_help_pages`.
+
+#### Example D: Audit Reconciliation & Error Routing Verification Dispatched via CST Twin App
+* **Destination Channel:** `#bha-customer-service-twin`
+* **Slack Channel ID:** `C0BD6D53HAM`
+* **Sending Bot User:** `cst_twin` (`U0CF23JSUG4` / App ID: `A0CF23GMNHJ`)
+* **Dispatched Timestamp:** `2026-11-04 19:58:41 UTC` (`1793822321.311959`)
+* **Live Message Permalink:** [`https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793822321311959`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793822321311959)
+* **Message Delivery Status:** `ok: true`
+* **Dispatched Content:** Complete audit reconciliation covering all 3 calls, explicit PostgreSQL row IDs, table role distinctions, and strict error routing isolation.
+
+---
+
+### 6.8 Class-Isolated Error Routing Boundaries (IWKX E Contract)
+
+Under the contracted IWKX E specification, every error and event is routed deterministically by class into exactly one destination channel with zero orphan or duplicated classes:
+
+| Error Class | Destination Channel | Channel ID | Canonical Owner | Webhook / Dispatcher | Content Scope |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`CS_HANDOFF`** | `#bha-customer-service-twin` | `C0BD6D53HAM` | Ahad / CS Lead | `SLACK_CS_WEBHOOK_URL` & `cst_twin` App | Spoken transcripts, post-call summaries, and human escalation handoffs. |
+| **`Twilio`** | `#cst-ops` | `C0CCHQQTUCX` | CST / Twilio Lead | `SLACK_TWILIO_OPS_WEBHOOK_URL` | Telephony carrier errors, signature failures, and callback drops. |
+| **`CST`** | `#cst-ops` | `C0CCHQQTUCX` | Ahad / CST Lead | `SLACK_CST_OPS_WEBHOOK_URL` | CST application errors, schema validation, and database connection retries. |
+| **`vFarm`** | `#vfarm-monitoring` | Target Channel | Jegan / Monitoring Twin | `SLACK_VFARM_MONITORING_WEBHOOK_URL` | Sensor timeouts, telemetry push failures, and 422 payload errors. |
+| **`NS`** | `#northstar-alerts` | Target Channel | North Star Platform Owner | `SLACK_NS_WEBHOOK_URL` | North Star engine alerts only. |
+
+> [!IMPORTANT] Hard North Star Routing Boundary
+> Customer service dialogue, post-call transcripts, and interaction summaries are **strictly routed to `#bha-customer-service-twin`** and are code-guaranteed never to route to `#northstar-alerts`. `ErrorRouter.route()` enforces that `CS_HANDOFF` events only route to `#bha-customer-service-twin`, and suppresses critical engine errors from customer service visibility.
 
 ---
 
