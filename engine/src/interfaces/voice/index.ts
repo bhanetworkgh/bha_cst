@@ -1752,8 +1752,8 @@ export class VoiceInterface {
         To: receivingNumber,
         CallStatus: callStatus,
         CallDuration: req.body?.CallDuration || req.query?.CallDuration,
-        ErrorCode: req.body?.ErrorCode || req.query?.ErrorCode,
-        ErrorMessage: req.body?.ErrorMessage || req.query?.ErrorMessage,
+        ErrorCode: req.body?.ErrorCode || req.query?.ErrorCode || (callStatus === 'failed' ? 'CALL_FAILED' : undefined),
+        ErrorMessage: req.body?.ErrorMessage || req.query?.ErrorMessage || (callStatus === 'failed' ? `Call status: ${callStatus}` : undefined),
         SequenceNumber: req.body?.SequenceNumber || req.query?.SequenceNumber,
         Timestamp: req.body?.Timestamp || req.query?.Timestamp,
       }).catch((err) => Logger.warn(`VoiceEventCaptureService.captureStatusCallback non-fatal error: ${err.message}`));
