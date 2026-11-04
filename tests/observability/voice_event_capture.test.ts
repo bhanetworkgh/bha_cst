@@ -575,5 +575,38 @@ describe('Voice Observability & Event Capture (PBT5 / LOOP-1793729831162-PBT5)',
       expect(res.body.results[0].call_sid).toBe('CA_eventstream_001');
       expect(res.body.results[0].call_status).toBe('completed');
     });
+
+    it('4.3 Processes single CloudEvent object with batch_events: false (Voice.WebhookEvent schema)', async () => {
+      const singleWebhookEvent = {
+        specversion: '1.0',
+        type: 'com.twilio.voice.webhook.status-callback.call.completed',
+        source: 'ACd2e42fdd546d411bc100642e84b00353',
+        id: 'EV_webhook_002',
+        time: new Date().toISOString(),
+        data: {
+          sid: 'CA_single_event_002',
+          request: {
+            parameters: {
+              CallSid: 'CA_single_event_002',
+              From: '+923082113844',
+              To: '+19715885823',
+              CallStatus: 'completed',
+              CallDuration: '49',
+            },
+          },
+        },
+      };
+
+      const res = await request(app)
+        .post('/webhooks/voice/status')
+        .set('x-test-bypass-signature', 'true')
+        .send(singleWebhookEvent);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.processed_events).toBe(1);
+      expect(res.body.results[0].call_sid).toBe('CA_single_event_002');
+      expect(res.body.results[0].call_status).toBe('completed');
+    });
   });
 });

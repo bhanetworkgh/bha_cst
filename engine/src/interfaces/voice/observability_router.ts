@@ -200,30 +200,42 @@ statusPaths.forEach((path) => {
         return;
       }
 
-      // 2. Twilio Event Streams CloudEvents array
-      if (Array.isArray(req.body)) {
+      // 2. Twilio Event Streams (Single CloudEvent object or Array of CloudEvents)
+      const isCloudEvent = Array.isArray(req.body) || (typeof req.body === 'object' && req.body !== null && typeof req.body.type === 'string' && req.body.type.startsWith('com.twilio.'));
+
+      if (isCloudEvent) {
+        const events = Array.isArray(req.body) ? req.body : [req.body];
         const results = [];
-        for (const event of req.body) {
+        for (const event of events) {
           const eventType = event.type || '';
           if (eventType.includes('voice') || eventType.includes('call')) {
             const data = event.data || {};
-            const fromNumber = typeof data.from === 'object' ? data.from.caller || data.from.from : data.from || data.From;
-            const toNumber = typeof data.to === 'object' ? data.to.callee || data.to.to : data.to || data.To;
-            const rawStatus = (data.call_state || data.call_status || data.CallStatus || 'completed').toLowerCase();
+            // Supports both Voice.WebhookEvent (request.parameters) and VoiceInsights.CallSummary
+            const params = data.request?.parameters || data.parameters || {};
 
-            const normalizedStatusPayload = {
-              CallSid: data.call_sid || data.CallSid,
-              From: fromNumber,
-              To: toNumber,
-              CallStatus: rawStatus,
-              CallDuration: data.duration || data.connect_duration || data.CallDuration,
-              ErrorCode: data.error_code || data.ErrorCode,
-              ErrorMessage: data.error_message || data.ErrorMessage,
-              SequenceNumber: data.sequence_number || data.SequenceNumber,
-              Timestamp: event.time || new Date().toISOString(),
-            };
+            const callSid = params.CallSid || data.call_sid || data.sid || data.CallSid;
+            const fromNumber = params.From || (typeof data.from === 'object' ? data.from.caller || data.from.from : data.from) || data.From;
+            const toNumber = params.To || (typeof data.to === 'object' ? data.to.callee || data.to.to : data.to) || data.To;
+            const rawStatus = (params.CallStatus || data.call_state || data.call_status || data.CallStatus || 'completed').toLowerCase();
+            const duration = params.CallDuration || data.duration || data.connect_duration || data.CallDuration;
+            const errorCode = params.ErrorCode || data.error_code || data.ErrorCode;
+            const errorMessage = params.ErrorMessage || data.error_message || data.ErrorMessage;
+            const sequenceNumber = params.SequenceNumber || data.sequence_number || data.SequenceNumber;
+            const timestamp = event.time || data.timestamp || new Date().toISOString();
 
-            if (normalizedStatusPayload.CallSid) {
+            if (callSid) {
+              const normalizedStatusPayload = {
+                CallSid: callSid,
+                From: fromNumber,
+                To: toNumber,
+                CallStatus: rawStatus,
+                CallDuration: duration,
+                ErrorCode: errorCode,
+                ErrorMessage: errorMessage,
+                SequenceNumber: sequenceNumber,
+                Timestamp: timestamp,
+              };
+
               const r = await VoiceEventCaptureService.captureStatusCallback(normalizedStatusPayload);
               results.push(r);
             }
