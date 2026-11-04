@@ -143,13 +143,79 @@ WHERE correlation_id = 'conv_0401m6krqe37eebabeds8r7n9gfd' AND event_type = 'cst
     "data": {
       "status": "resolved",
       "duration_secs": 11,
-      "summary": "The agent introduced itself as the BHA assistant for Bays Horizon Network and offered assistance to the user."
+      "summary": "The agent introduced itself as the BHA assistant for Bays Horizon Network and offered assistance to the user.",
+      "data_collected": {},
+      "evaluation_criteria_results": {}
     }
   }
 }
 ```
 
-### 4.3 Carrier Telephony Status in `voice_deliveries`
+### 4.3 Detailed Dialogue Transcripts & Conversational Analysis
+
+The production database stores both full conversational dialogue turns and automated LLM-generated conversation analyses. Below are the verified transcripts and analysis payloads extracted from Render PostgreSQL:
+
+#### A. Live Production Inbound Voice Call
+* **Interaction ID:** `conv_0401m6krqe37eebabeds8r7n9gfd`
+* **Agent:** `agent_5701m66tmyfseeyt84r3rcwrg3b7` (BHA Customer Service Twin)
+* **Caller Telephony Sid:** `CAf324b06d607d74762a1d1f28ed236e45` (11s call)
+* **Channel:** Voice (Inbound)
+* **Full Dialogue Transcript:**
+  ```text
+  [00:01] AGENT: "Hi, this is the BHA assistant, an automated helper for Bays Horizon Network. How can I help you today?"
+  ```
+* **Conversational Analysis:**
+  * **Summary:** *"The agent introduced itself as the BHA assistant for Bays Horizon Network and offered assistance to the user."*
+  * **Resolution Status:** `resolved`
+  * **Evaluation Criteria Results:** `{}` (Clean greeting, no escalation or handoff requested)
+  * **Data Collected:** `{}`
+  * **Duration:** 11 seconds
+
+#### B. Verified Multi-Turn Dialogue
+* **Interaction ID:** `conv_manual_test_001`
+* **Channel:** Voice (Inbound)
+* **Full Dialogue Transcript:**
+  ```text
+  [00:02] USER:  "Hi, how is the greenhouse doing today?"
+  [00:05] AGENT: "Everything is running smoothly, temperature is 24°C."
+  ```
+* **Conversational Analysis:**
+  * **Summary:** *"Customer inquired about greenhouse conditions. Reported normal."*
+  * **Resolution Status:** `resolved`
+  * **Duration:** 25 seconds
+
+#### C. Webhook Diagnostic Probe
+* **Interaction ID:** `conv_probe_1793810580141`
+* **Channel:** Voice
+* **Full Dialogue Transcript:**
+  ```text
+  [00:01] USER:  "Hello from test probe"
+  [00:04] AGENT: "Hello! I can confirm your post-call webhook is working."
+  ```
+* **Conversational Analysis:**
+  * **Summary:** *"Test probe verifying post-call webhook processing and persistence."*
+  * **Resolution Status:** `resolved`
+  * **Duration:** 25 seconds
+
+---
+
+### 4.4 Analysis Engine & Event Schema Mapping
+
+ElevenLabs' post-call analysis payload is normalized into the CST event specification (`cst.event.v1`) and persisted across database columns as follows:
+
+| ElevenLabs Source Field | CST Event | Normalized Target Field | Purpose / Destination |
+| :--- | :--- | :--- | :--- |
+| `data.transcript[].message` | `cst.transcript` | `payload.data.messages[].message` | Exact spoken dialogue turns |
+| `data.transcript[].role` | `cst.transcript` | `payload.data.messages[].role` | Speaker attribution (`user` or `agent`) |
+| `data.analysis.transcript_summary` | `cst.transcript` & `cst.outcome` | `payload.data.summary` | High-level conversation summary for dashboard |
+| `data.analysis.call_successful` | `cst.outcome` | `payload.data.status` | Maps `'success'` -> `'resolved'`, other -> `'transferred'` |
+| `data.analysis.evaluation_criteria_results` | `cst.outcome` & `cst.escalation` | `payload.data.evaluation_criteria_results` | Evaluates triggers for human technician escalation |
+| `data.analysis.data_collection_results` | `cst.outcome` | `payload.data.data_collected` | Captures parameters (e.g. caller name, farm ID, issue) |
+| `data.metadata.call_duration_secs` | `cst.outcome` | `payload.data.duration_secs` | Call duration for SLA and billing auditing |
+
+---
+
+### 4.5 Carrier Telephony Status in `voice_deliveries`
 ```json
 {
   "id": "vd_1182b0abfbab57b186d27876ecd2ae2c7905a17228a991ff",
@@ -187,3 +253,4 @@ WHERE correlation_id = 'conv_0401m6krqe37eebabeds8r7n9gfd' AND event_type = 'cst
 
 **Sign-off:**  
 The ElevenLabs Conversational AI voice twin is fully integrated with Render production and Twilio. Inbound calls are answered by the voice clone, transcripts are cryptographically verified and saved to PostgreSQL, and carrier lifecycle status is auditable in real time.
+
