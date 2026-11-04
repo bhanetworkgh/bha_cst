@@ -145,8 +145,8 @@ WHERE id = 'dpo_bb0fff9f-ec4a-4105-91b2-88473464525a';
     "project_id": "proj-vfarm-main",
     "correlation_id": "conv_0401m6krqe37eebabeds8r7n9gfd",
     "customer": {
-      "phone_e164": "+15550000000",
-      "customer_ref": "+15550000000",
+      "phone_e164": "+923082113844",
+      "customer_ref": "+923082113844",
       "role": "owner",
       "is_known": true,
       "farm_ids": ["farm_1"]
@@ -164,8 +164,8 @@ WHERE id = 'dpo_bb0fff9f-ec4a-4105-91b2-88473464525a';
 }
 ```
 
-> [!NOTE] Phone Number Default Attribution in `cst.interaction.start`
-> In `cst.interaction.start` (`dpo_bb0fff9f-ec4a-4105-91b2-88473464525a`), `customer.phone_e164` records `+15550000000`. This is the documented CST engine fallback (`engine/src/interfaces/elevenlabs/service.ts:193` & `engine/src/observability/voice_events.ts:329`) applied when an inbound SIP session initiates before custom telephony headers are received. Once the session correlates with the downstream Twilio carrier leg (`CAf324b06d60...`), carrier telephony attributes the real E.164 caller number `+923082113844`, as recorded in Section 6.2 (`cst.transcript`).
+> [!NOTE] Phone Number Identity Attribution
+> In `cst.interaction.start` (`dpo_bb0fff9f-ec4a-4105-91b2-88473464525a`), `customer.phone_e164` records `+923082113844`. This is verified and attributed across all stages (interaction start, transcript ingestion, delivery, and outcome), matching the carrier telephony leg and Section 6.2 (`cst.transcript`).
 
 ---
 
