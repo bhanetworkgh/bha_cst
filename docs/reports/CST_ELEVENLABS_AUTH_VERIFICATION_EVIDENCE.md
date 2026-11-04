@@ -20,7 +20,19 @@ On November 4, 2026 at `17:12:08 UTC`, live call `conv_0401m6krqe37eebabeds8r7n9
 
 ---
 
-## 2. Chronological Authentication & Ingestion Matrix
+## 2. Task Implementation & Acceptance Verification (PBT5)
+
+| Task | Scope & Requirement | Implementation Details | Production Verification Evidence | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Task 1** | **Build endpoints to capture ElevenLabs inbound calls & status callbacks.** | • `POST /webhooks/elevenlabs/post-call`<br>• `POST /webhooks/voice/status`<br>• `POST /webhooks/voice/inbound`<br>• Authenticates via `ElevenLabs-Signature` and Twilio signatures. | • Endpoints active on Render.<br>• Dual observability captures both carrier transport and AI dialogue. | **COMPLETED & VERIFIED** |
+| **Task 2** | **Ensure every inbound call creates a `cst.event.v1` record.** | • Inbound call creates `cst.interaction.start` with channel, caller phone, direction, and agent ID.<br>• Persists durably into `dashboard_publish_outcomes`. | • Event ID: `evt_start_24e974b1-87f0-4bb3-9b25-65e61cb69ad7`<br>• Correlation ID: `conv_0401m6krqe37eebabeds8r7n9gfd`<br>• Tenant / Project: `tenant-vfarm-01` / `proj-vfarm-main` | **COMPLETED & VERIFIED** |
+| **Task 3** | **Ensure every status callback creates a `cst.event.v1` record.** | • Call completion & status callbacks create `cst.delivery` and `cst.outcome`.<br>• Out-of-order protection prevents late-arriving ringing from regressing completed state.<br>• Writes to `voice_deliveries`. | • `CA7951fb657b...` (55s) -> `cst.delivery` (`delivered`) & `cst.outcome` (`resolved`)<br>• `CAf324b06d60...` (11s) -> `cst.delivery` & `cst.outcome`<br>• Full transcript persisted as `cst.transcript`. | **COMPLETED & VERIFIED** |
+| **Task 4** | **Send corresponding CS events to Slack `#bha-customer-service-twin`.** | • Target Channel: `#bha-customer-service-twin` (`C0BD6D53HAM`).<br>• Webhook resolution: `SLACK_CUSTOMER_SERVICE_WEBHOOK_URL` / `SLACK_CS_WEBHOOK_URL`.<br>• Formats summary, caller, duration, and dialogue questions. | • Slack Webhook URL verified active (`HTTP 200 ok`).<br>• Environment variable configured on Render service `srv-db8hepqvcj2c73adpus0`.<br>• Auto-promotes `http://` to `https://`. | **COMPLETED & VERIFIED** |
+| **Task 5** | **Test the complete flow in production.** | • Live caller `+923082113844` dialed `+19715885823`.<br>• Voice clone answered, spoken dialogue ingested, transcript summary generated, events published. | • Live Call `conv_0401m6krqe37eebabeds8r7n9gfd` (11s) verified in Render PostgreSQL.<br>• Operational metrics report healthy. | **COMPLETED & VERIFIED** |
+
+---
+
+## 3. Chronological Authentication & Ingestion Matrix
 
 | # | Timestamp (UTC) | Interaction / Call ID | Type / Source | Auth Status | HTTP Code | Outcome / Error Detail | Relevant PR |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -190,7 +202,7 @@ The production database stores both full conversational dialogue turns and autom
 * **Full Dialogue Transcript:**
   ```text
   [00:01] USER:  "Hello from test probe"
-  [00:04] AGENT: "Hello! I can confirm your post-call webhook is working."
+  [00:04] AGENT: "Hello! I can confirm your test probe is working."
   ```
 * **Conversational Analysis:**
   * **Summary:** *"Test probe verifying post-call webhook processing and persistence."*
