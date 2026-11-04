@@ -54,7 +54,17 @@ export class ElevenLabsWebhookService {
     const sigHeader = (req.header('elevenlabs-signature') || req.header('x-elevenlabs-signature') || '').trim();
     if (sigHeader && secret) {
       try {
-        const bodyToVerify = rawBody || (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+        const bodyCandidates = Array.from(new Set([
+          (req as any).rawBody,
+          rawBody,
+          typeof req.body === 'string' ? req.body : undefined,
+          req.body ? JSON.stringify(req.body) : undefined,
+        ].filter((c): c is string => typeof c === 'string' && c.length > 0)));
+
+        const secretsToTry = [secret];
+        if (secret.startsWith('wsec_')) {
+          secretsToTry.push(secret.slice(5));
+        }
 
         // Case A: Official ElevenLabs format: "t=<timestamp>,v0=<hex_hmac>"
         if (sigHeader.includes('v0=')) {
@@ -68,13 +78,17 @@ export class ElevenLabsWebhookService {
             const currentTimestamp = Math.floor(Date.now() / 1000);
             const eventTimestamp = parseInt(timestamp, 10);
             if (!isNaN(eventTimestamp) && Math.abs(currentTimestamp - eventTimestamp) <= toleranceSecs) {
-              const signedPayload = `${timestamp}.${bodyToVerify}`;
-              const expectedHmac = createHmac('sha256', secret).update(signedPayload).digest('hex');
-              if (signature.length === expectedHmac.length) {
-                const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
-                if (match) {
-                  FailureDetector.recordWebhookAuthSuccess();
-                  return true;
+              for (const sec of secretsToTry) {
+                for (const bodyCandidate of bodyCandidates) {
+                  const signedPayload = `${timestamp}.${bodyCandidate}`;
+                  const expectedHmac = createHmac('sha256', sec).update(signedPayload).digest('hex');
+                  if (signature.length === expectedHmac.length) {
+                    const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
+                    if (match) {
+                      FailureDetector.recordWebhookAuthSuccess();
+                      return true;
+                    }
+                  }
                 }
               }
             }
@@ -83,12 +97,16 @@ export class ElevenLabsWebhookService {
 
         // Case B: Direct HMAC or "sha256=<hex>" format (used in tests and fallback)
         const signature = sigHeader.startsWith('sha256=') ? sigHeader.slice(7) : sigHeader;
-        const expectedHmac = createHmac('sha256', secret).update(bodyToVerify).digest('hex');
-        if (signature.length === expectedHmac.length) {
-          const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
-          if (match) {
-            FailureDetector.recordWebhookAuthSuccess();
-            return true;
+        for (const sec of secretsToTry) {
+          for (const bodyCandidate of bodyCandidates) {
+            const expectedHmac = createHmac('sha256', sec).update(bodyCandidate).digest('hex');
+            if (signature.length === expectedHmac.length) {
+              const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
+              if (match) {
+                FailureDetector.recordWebhookAuthSuccess();
+                return true;
+              }
+            }
           }
         }
       } catch (err: any) {
