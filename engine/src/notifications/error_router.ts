@@ -254,10 +254,16 @@ export class ErrorRouter {
       }
     }
 
-    // Resolve webhook URL: target env var first, fall back to SLACK_ERROR_WEBHOOK_URL or SLACK_WEBHOOK_URL
-    const targetUrl = process.env[classified.webhook_env_var] ||
+    // Resolve webhook URL: target env var first, fall back to SLACK_CUSTOMER_SERVICE_WEBHOOK_URL, SLACK_ERROR_WEBHOOK_URL or SLACK_WEBHOOK_URL
+    let targetUrl = process.env[classified.webhook_env_var] ||
+      process.env.SLACK_CUSTOMER_SERVICE_WEBHOOK_URL ||
+      process.env.SLACK_CS_WEBHOOK_URL ||
       process.env.SLACK_ERROR_WEBHOOK_URL ||
       process.env.SLACK_WEBHOOK_URL;
+
+    if (targetUrl && targetUrl.startsWith('http://')) {
+      targetUrl = 'https://' + targetUrl.slice(7);
+    }
 
     if (!targetUrl) {
       return {

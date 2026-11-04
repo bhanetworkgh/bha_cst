@@ -385,7 +385,7 @@ export class ElevenLabsWebhookService {
       // 6. Slack Event Delivery to Customer Service Channel (#bha-customer-service-twin)
       let slackDelivered = false;
       const firstQuestion = transcriptList.find((m) => m.role === 'user')?.message || 'N/A';
-      const summaryText = payload.analysis?.transcript_summary || 'Completed voice interaction';
+      const summaryText = summary || payload.analysis?.transcript_summary || 'Completed voice interaction';
 
       const slackResult = await ErrorRouter.route({
         service: 'CS_HANDOFF',
@@ -407,7 +407,7 @@ export class ElevenLabsWebhookService {
           customer_question: firstQuestion,
           escalation_id: escalationId,
           escalation_created: escalationCreated,
-          duration_secs: payload.call_duration_secs || 0,
+          duration_secs: durationSecs,
         },
       });
 

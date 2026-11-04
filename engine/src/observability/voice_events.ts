@@ -831,9 +831,15 @@ export class VoiceEventCaptureService {
     }
 
     // Resolve webhook URL
-    const webhookUrl =
+    let webhookUrl =
       process.env.SLACK_CUSTOMER_SERVICE_WEBHOOK_URL ||
+      process.env.SLACK_CS_WEBHOOK_URL ||
+      process.env.SLACK_ERROR_WEBHOOK_URL ||
       process.env.SLACK_WEBHOOK_URL;
+
+    if (webhookUrl && webhookUrl.startsWith('http://')) {
+      webhookUrl = 'https://' + webhookUrl.slice(7);
+    }
 
     if (!webhookUrl) {
       FailureDetector.recordSlackDeferred(this.TARGET_SLACK_CHANNEL);
