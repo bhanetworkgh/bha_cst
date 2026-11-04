@@ -113,7 +113,7 @@ WHERE correlation_id = 'conv_0401m6krqe37eebabeds8r7n9gfd' AND event_type = 'cst
     "project_id": "proj-vfarm-main",
     "correlation_id": "conv_0401m6krqe37eebabeds8r7n9gfd",
     "customer": {
-      "phone_e164": "+15550000000",
+      "phone_e164": "+923082113844",
       "customer_ref": "+15550000000",
       "role": "owner",
       "is_known": true,
@@ -163,51 +163,42 @@ WHERE correlation_id = 'conv_0401m6krqe37eebabeds8r7n9gfd' AND event_type = 'cst
 }
 ```
 
-### 4.3 Detailed Dialogue Transcripts & Conversational Analysis
+### 4.3 Detailed Dialogue Transcripts & Conversational Analysis (Authentic Production Calls)
 
-The production database stores both full conversational dialogue turns and automated LLM-generated conversation analyses. Below are the verified transcripts and analysis payloads extracted from Render PostgreSQL:
+The production database stores both full conversational dialogue turns and automated LLM-generated conversation analyses directly received from ElevenLabs Conversational AI. Below are the verified authentic transcripts and analysis payloads extracted from Render PostgreSQL:
 
-#### A. Live Production Inbound Voice Call
+#### A. Live Production Voice Call 1
 * **Interaction ID:** `conv_0401m6krqe37eebabeds8r7n9gfd`
-* **Agent:** `agent_5701m66tmyfseeyt84r3rcwrg3b7` (BHA Customer Service Twin)
+* **Agent ID:** `agent_5701m66tmyfseeyt84r3rcwrg3b7` (BHA Customer Service Twin)
 * **Caller Telephony Sid:** `CAf324b06d607d74762a1d1f28ed236e45` (11s call)
+* **Delivered At:** `2026-11-04T17:12:08.225Z`
 * **Channel:** Voice (Inbound)
-* **Full Dialogue Transcript:**
+* **Full Dialogue Transcript from ElevenLabs:**
   ```text
   [00:01] AGENT: "Hi, this is the BHA assistant, an automated helper for Bays Horizon Network. How can I help you today?"
   ```
-* **Conversational Analysis:**
+* **Conversational Analysis from ElevenLabs:**
   * **Summary:** *"The agent introduced itself as the BHA assistant for Bays Horizon Network and offered assistance to the user."*
   * **Resolution Status:** `resolved`
   * **Evaluation Criteria Results:** `{}` (Clean greeting, no escalation or handoff requested)
   * **Data Collected:** `{}`
   * **Duration:** 11 seconds
 
-#### B. Verified Multi-Turn Dialogue
-* **Interaction ID:** `conv_manual_test_001`
+#### B. Live Production Voice Call 2
+* **Interaction ID:** `conv_1301m6kv1hbsf1wv6yrehwgjbjyv`
+* **Agent ID:** `agent_5701m66tmyfseeyt84r3rcwrg3b7` (BHA Customer Service Twin)
+* **Delivered At:** `2026-11-04T17:52:27.110Z`
 * **Channel:** Voice (Inbound)
-* **Full Dialogue Transcript:**
+* **Full Dialogue Transcript from ElevenLabs:**
   ```text
-  [00:02] USER:  "Hi, how is the greenhouse doing today?"
-  [00:05] AGENT: "Everything is running smoothly, temperature is 24°C."
+  [00:00] AGENT: "Hi, this is the BHA..."
   ```
-* **Conversational Analysis:**
-  * **Summary:** *"Customer inquired about greenhouse conditions. Reported normal."*
+* **Conversational Analysis from ElevenLabs:**
+  * **Summary:** *"The conversation begins with the agent introducing itself as \"the BHA\"."*
   * **Resolution Status:** `resolved`
-  * **Duration:** 25 seconds
-
-#### C. Webhook Diagnostic Probe
-* **Interaction ID:** `conv_probe_1793810580141`
-* **Channel:** Voice
-* **Full Dialogue Transcript:**
-  ```text
-  [00:01] USER:  "Hello from test probe"
-  [00:04] AGENT: "Hello! I can confirm your test probe is working."
-  ```
-* **Conversational Analysis:**
-  * **Summary:** *"Test probe verifying post-call webhook processing and persistence."*
-  * **Resolution Status:** `resolved`
-  * **Duration:** 25 seconds
+  * **Evaluation Criteria Results:** `{}` (Clean greeting, no escalation requested)
+  * **Data Collected:** `{}`
+  * **Duration:** 2 seconds
 
 ---
 
