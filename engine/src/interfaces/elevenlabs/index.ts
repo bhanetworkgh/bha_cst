@@ -11,7 +11,7 @@ export const elevenlabsWebhookRouter = Router();
  */
 elevenlabsWebhookRouter.post('/post-call', async (req: Request, res: Response): Promise<void> => {
   // 1. Authenticate webhook
-  const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
   const isAuthenticated = ElevenLabsWebhookService.authenticate(req, rawBody);
   if (!isAuthenticated) {
     res.status(401).json({
