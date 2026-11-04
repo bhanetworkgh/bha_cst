@@ -261,4 +261,41 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     // ErrorRouter tracks failed delivery for retry
     expect(ErrorRouter.getFailedDeliveries().length).toBeGreaterThan(0);
   });
+
+  it('8. Successfully authenticates using official ElevenLabs-Signature format (t=<timestamp>,v0=<hex_hmac>)', async () => {
+    const payload = { ...validPayload, call_id: 'conv_official_sig_001', conversation_id: 'conv_official_sig_001' };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signedPayload = `${timestamp}.${rawBody}`;
+    const hmacHex = createHmac('sha256', testSecret).update(signedPayload).digest('hex');
+    const headerValue = `t=${timestamp},v0=${hmacHex}`;
+
+    const res = await request(app)
+      .post('/webhooks/elevenlabs/post-call')
+      .set('ElevenLabs-Signature', headerValue)
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('processed');
+    expect(res.body.conversation_id).toBe('conv_official_sig_001');
+  });
+
+  it('9. Rejects expired ElevenLabs-Signature where timestamp is older than tolerance', async () => {
+    const payload = { ...validPayload, call_id: 'conv_expired_sig_002', conversation_id: 'conv_expired_sig_002' };
+    const rawBody = JSON.stringify(payload);
+    const expiredTimestamp = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago (exceeds 30 min tolerance)
+    const signedPayload = `${expiredTimestamp}.${rawBody}`;
+    const hmacHex = createHmac('sha256', testSecret).update(signedPayload).digest('hex');
+    const headerValue = `t=${expiredTimestamp},v0=${hmacHex}`;
+
+    const res = await request(app)
+      .post('/webhooks/elevenlabs/post-call')
+      .set('ElevenLabs-Signature', headerValue)
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('UNAUTHORIZED');
+  });
 });
