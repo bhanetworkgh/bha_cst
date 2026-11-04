@@ -54,9 +54,36 @@ export class ElevenLabsWebhookService {
     const sigHeader = (req.header('elevenlabs-signature') || req.header('x-elevenlabs-signature') || '').trim();
     if (sigHeader && secret) {
       try {
-        const bodyToVerify = rawBody || JSON.stringify(req.body);
-        const expectedHmac = createHmac('sha256', secret).update(bodyToVerify).digest('hex');
+        const bodyToVerify = rawBody || (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+
+        // Case A: Official ElevenLabs format: "t=<timestamp>,v0=<hex_hmac>"
+        if (sigHeader.includes('v0=')) {
+          const parts = sigHeader.split(',');
+          const timestamp = parts.find((p) => p.trim().startsWith('t='))?.trim().slice(2);
+          const signature = parts.find((p) => p.trim().startsWith('v0='))?.trim().slice(3);
+
+          if (timestamp && signature) {
+            // Check timestamp tolerance (30 minutes)
+            const toleranceSecs = 30 * 60;
+            const currentTimestamp = Math.floor(Date.now() / 1000);
+            const eventTimestamp = parseInt(timestamp, 10);
+            if (!isNaN(eventTimestamp) && Math.abs(currentTimestamp - eventTimestamp) <= toleranceSecs) {
+              const signedPayload = `${timestamp}.${bodyToVerify}`;
+              const expectedHmac = createHmac('sha256', secret).update(signedPayload).digest('hex');
+              if (signature.length === expectedHmac.length) {
+                const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
+                if (match) {
+                  FailureDetector.recordWebhookAuthSuccess();
+                  return true;
+                }
+              }
+            }
+          }
+        }
+
+        // Case B: Direct HMAC or "sha256=<hex>" format (used in tests and fallback)
         const signature = sigHeader.startsWith('sha256=') ? sigHeader.slice(7) : sigHeader;
+        const expectedHmac = createHmac('sha256', secret).update(bodyToVerify).digest('hex');
         if (signature.length === expectedHmac.length) {
           const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
           if (match) {
