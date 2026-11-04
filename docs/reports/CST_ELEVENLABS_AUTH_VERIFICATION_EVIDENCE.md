@@ -663,6 +663,15 @@ Events are automatically formatted and dispatched to `#bha-customer-service-twin
   }
   ```
 
+#### Example C: Turn-by-Turn Spoken Transcript Dispatched via CST Twin App
+* **Destination Channel:** `#bha-customer-service-twin`
+* **Slack Channel ID:** `C0BD6D53HAM`
+* **Sending Bot User:** `cst_twin` (`U0CF23JSUG4` / App ID: `A0CF23GMNHJ`)
+* **Dispatched Timestamp:** `2026-11-04 19:46:49 UTC` (`1793821609.120139`)
+* **Live Message Permalink:** [`https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793821609120139`](https://bayshorizonnetwork.slack.com/archives/C0BD6D53HAM/p1793821609120139)
+* **Message Delivery Status:** `ok: true`
+* **Dispatched Content:** Complete 17-turn dialogue for `conv_7201m6kxewgfest8whyt0qwyx5hk` (`+92 308 *** 3844`, 78s) formatted with speech turns, latency annotations, and tool execution `lookup_help_pages`.
+
 ---
 
 ## 7. Linked GitHub Pull Requests & Deployments
