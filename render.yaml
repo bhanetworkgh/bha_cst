@@ -31,12 +31,12 @@ services:
     region: oregon
 
     # ── Build ─────────────────────────────────────────────────────────────────
-    buildCommand: npm ci --include=dev && npm run build
+    buildCommand: npm ci --include=dev && cd cst-twin && npm ci && cd .. && npm run build
 
     # ── Database Migrations & Start ───────────────────────────────────────────
     # On free tier, preDeployCommand is not supported by Render, so database
     # migrations run right before the server starts in startCommand.
-    startCommand: node scripts/migrate.js && npm start
+    startCommand: node scripts/migrate.js && (cd cst-twin && npm start &) && npm start
 
     # ── Health Check ─────────────────────────────────────────────────────────
     healthCheckPath: /health
@@ -228,8 +228,23 @@ services:
       - key: RT_CALLBACK_SIGNING_SECRET
         sync: false
 
-      # --- Slack Error Alerting ---
+      # --- Slack Alerting & CST Twin App (A0CF23GMNHJ) ---
       - key: SLACK_WEBHOOK_URL
+        sync: false
+
+      - key: SLACK_BOT_TOKEN
+        sync: false
+
+      - key: SLACK_APP_TOKEN
+        sync: false
+
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+
+      - key: SLACK_CUSTOMER_SERVICE_WEBHOOK_URL
+        sync: false
+
+      - key: SLACK_CST_OPS_WEBHOOK_URL
         sync: false
 
       # --- CST Admin Panel (In-Memory Auth Fallback) ---
