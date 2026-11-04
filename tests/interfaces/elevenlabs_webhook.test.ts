@@ -298,4 +298,63 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     expect(res.status).toBe(401);
     expect(res.body.error).toBe('UNAUTHORIZED');
   });
+
+  it('10. Processes real nested data schema sent by ElevenLabs post_call_transcription webhook', async () => {
+    const nestedPayload = {
+      type: 'post_call_transcription',
+      event_timestamp: Math.floor(Date.now() / 1000),
+      data: {
+        agent_id: 'agent_5701m66tmyfseeyt84r3crwrg3b7',
+        conversation_id: 'conv_nested_real_001',
+        status: 'done',
+        transcript: [
+          { role: 'agent', message: 'Hello, welcome to Bays Horizon Farm. How can I help?', time_in_call_secs: 1 },
+          { role: 'user', message: 'Hi, what is the temperature in Greenhouse 2?', time_in_call_secs: 4 },
+          { role: 'agent', message: 'Greenhouse 2 temperature is currently 22.4 degrees Celsius and optimal.', time_in_call_secs: 7 },
+        ],
+        metadata: {
+          call_duration_secs: 64,
+          cost: 110,
+          authorization_method: 'xi-api-key',
+        },
+        analysis: {
+          transcript_summary: 'Customer checked Greenhouse 2 temperature. Agent verified normal at 22.4C.',
+          call_successful: 'success',
+          evaluation_criteria_results: {
+            escalation_requested: false,
+          },
+          data_collection_results: {
+            customer_query: 'Greenhouse 2 temperature',
+          },
+        },
+      },
+    };
+
+    const rawBody = JSON.stringify(nestedPayload);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signedPayload = `${timestamp}.${rawBody}`;
+    const hmacHex = createHmac('sha256', testSecret).update(signedPayload).digest('hex');
+    const headerValue = `t=${timestamp},v0=${hmacHex}`;
+
+    const res = await request(app)
+      .post('/webhooks/elevenlabs/post-call')
+      .set('ElevenLabs-Signature', headerValue)
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('processed');
+    expect(res.body.conversation_id).toBe('conv_nested_real_001');
+
+    const persisted = ElevenLabsWebhookService.getPersistedEvents();
+    const transcriptEvt = persisted.find((e) => e.correlation_id === 'conv_nested_real_001' && e.type === 'cst.transcript');
+    expect(transcriptEvt).toBeDefined();
+    expect((transcriptEvt as any).data.messages).toHaveLength(3);
+    expect((transcriptEvt as any).data.summary).toContain('Greenhouse 2');
+
+    const outcomeEvt = persisted.find((e) => e.correlation_id === 'conv_nested_real_001' && e.type === 'cst.outcome');
+    expect(outcomeEvt).toBeDefined();
+    expect((outcomeEvt as any).data.status).toBe('resolved');
+    expect((outcomeEvt as any).data.duration_secs).toBe(64);
+  });
 });

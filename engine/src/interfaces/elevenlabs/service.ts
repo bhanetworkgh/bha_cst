@@ -150,7 +150,8 @@ export class ElevenLabsWebhookService {
   ): Promise<WebhookProcessResult> {
     FailureDetector.recordWebhookReceived();
 
-    const conversationId = String(payload.conversation_id || payload.call_id);
+    const d = payload.data;
+    const conversationId = String(payload.conversation_id || payload.call_id || d?.conversation_id || d?.call_id);
     const idempotencyKey = `elevenlabs:${conversationId}:post_call`;
 
     // 1. Idempotency Check
@@ -168,7 +169,7 @@ export class ElevenLabsWebhookService {
     }
 
     // 2. Forward-Only Cut-Over Check
-    const startUnix = payload.start_time_unix_secs || Math.floor(Date.now() / 1000);
+    const startUnix = payload.start_time_unix_secs || d?.start_time_unix_secs || payload.event_timestamp || Math.floor(Date.now() / 1000);
     const eligibility = CutOverManager.isEventEligible(startUnix, conversationId);
     if (!eligibility.eligible) {
       Logger.info(`ElevenLabsWebhookService: event ${conversationId} ignored by forward-only cutover policy (${eligibility.reason})`);
@@ -183,16 +184,22 @@ export class ElevenLabsWebhookService {
     }
 
     // 3. Extract Context and Tenant Attribution
-    const customVars = payload.metadata?.custom_variables || {};
+    const agentId = payload.agent_id || d?.agent_id;
+    const metadata = (d?.metadata || payload.metadata || {}) as Record<string, any>;
+    const analysis = (d?.analysis || payload.analysis || {}) as Record<string, any>;
+    const customVars = (metadata.custom_variables || {}) as Record<string, any>;
     const tenantId = String(customVars.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01');
     const projectId = String(customVars.project_id || 'proj-vfarm-main');
-    const callerPhone = String(customVars.caller_phone || payload.metadata?.caller_id || '+15550000000');
+    const callerPhone = String(customVars.caller_phone || metadata.caller_id || '+15550000000');
     const rawChannel = String(customVars.channel || 'voice').toLowerCase();
     const channel: AllowedChannel = rawChannel === 'whatsapp' ? 'whatsapp' : 'voice';
 
-    const transcriptList = payload.transcript || payload.message_history || [];
-    const customerName = payload.analysis?.data_collection_results?.customer_name as string | undefined;
-    const customerEmail = payload.analysis?.data_collection_results?.customer_email as string | undefined;
+    const transcriptList = (payload.transcript || payload.message_history || d?.transcript || d?.message_history || []) as ElevenLabsTranscriptMessage[];
+    const dataCollection = (analysis.data_collection_results || {}) as Record<string, any>;
+    const customerName = (typeof dataCollection.customer_name === 'object' ? dataCollection.customer_name?.value : dataCollection.customer_name) as string | undefined;
+    const customerEmail = (typeof dataCollection.customer_email === 'object' ? dataCollection.customer_email?.value : dataCollection.customer_email) as string | undefined;
+    const durationSecs = Number(payload.call_duration_secs ?? d?.call_duration_secs ?? metadata.call_duration_secs ?? 0);
+    const summary = typeof analysis.transcript_summary === 'string' ? analysis.transcript_summary : undefined;
 
     const customerPayload: CustomerPayload = {
       phone_e164: callerPhone,
@@ -210,8 +217,8 @@ export class ElevenLabsWebhookService {
 
     try {
       // 4A. Normalize Interaction Start Event
-      if (payload.start_time_unix_secs) {
-        const startIso = new Date(payload.start_time_unix_secs * 1000).toISOString();
+      if (startUnix) {
+        const startIso = new Date(startUnix * 1000).toISOString();
         const startEventId = `evt_start_${randomUUID()}`;
         const startEvent = createCstInteractionStartEventV1({
           id: startEventId,
@@ -227,7 +234,7 @@ export class ElevenLabsWebhookService {
             channel,
             direction: 'inbound',
             started_at: startIso,
-            metadata: { agent_id: payload.agent_id },
+            metadata: { agent_id: agentId },
           },
         });
         generatedEvents.push(startEvent);
@@ -255,17 +262,17 @@ export class ElevenLabsWebhookService {
         transcript: {
           interaction_id: conversationId,
           channel,
-          duration_secs: payload.call_duration_secs || 0,
+          duration_secs: durationSecs,
           messages: transcriptMessages,
-          summary: payload.analysis?.transcript_summary,
-          metadata: { agent_id: payload.agent_id },
+          summary: summary,
+          metadata: { agent_id: agentId },
         },
       });
       generatedEvents.push(transcriptEvent);
       eventIds.push(transcriptEventId);
 
       // 4C. Normalize Outcome Event
-      const isCallSuccess = payload.analysis?.call_successful === true || payload.analysis?.call_successful === 'success';
+      const isCallSuccess = analysis.call_successful === true || analysis.call_successful === 'success';
       const outcomeEventId = `evt_outc_${randomUUID()}`;
       const outcomeEvent = createCstOutcomeEventV1({
         id: outcomeEventId,
@@ -279,17 +286,17 @@ export class ElevenLabsWebhookService {
         outcome: {
           interaction_id: conversationId,
           status: isCallSuccess ? 'resolved' : 'transferred',
-          summary: payload.analysis?.transcript_summary || 'Call completed',
-          duration_secs: payload.call_duration_secs || 0,
-          evaluation_criteria_results: payload.analysis?.evaluation_criteria_results,
-          data_collected: payload.analysis?.data_collection_results,
+          summary: summary || 'Call completed',
+          duration_secs: durationSecs,
+          evaluation_criteria_results: analysis.evaluation_criteria_results as Record<string, unknown> | undefined,
+          data_collected: analysis.data_collection_results as Record<string, unknown> | undefined,
         },
       });
       generatedEvents.push(outcomeEvent);
       eventIds.push(outcomeEventId);
 
       // 4D. Detect Escalation & Normalize Escalation Event
-      const evalResults = payload.analysis?.evaluation_criteria_results || {};
+      const evalResults = (analysis.evaluation_criteria_results || {}) as Record<string, any>;
       const escalationRequested =
         evalResults.escalation_requested === true ||
         evalResults.human_handoff === true ||
@@ -316,7 +323,7 @@ export class ElevenLabsWebhookService {
           escalation: {
             escalation_id: escalationId,
             interaction_id: conversationId,
-            reason: payload.analysis?.transcript_summary || 'Customer requested human follow-up',
+            reason: summary || 'Customer requested human follow-up',
             urgency: 'high',
             customer_contact: {
               name: customerName,
@@ -340,7 +347,7 @@ export class ElevenLabsWebhookService {
             conversation_id: conversationId,
             correlation_id: conversationId,
             caller_email: customerEmail,
-            reason: payload.analysis?.transcript_summary || 'Customer requested human follow-up',
+            reason: summary || 'Customer requested human follow-up',
             transcript: transcriptMessages.map((m) => `${m.role}: ${m.message}`),
             status: 'pending',
           });
