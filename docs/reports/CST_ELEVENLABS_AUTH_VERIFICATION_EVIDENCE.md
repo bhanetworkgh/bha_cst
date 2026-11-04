@@ -312,26 +312,63 @@ Below are the verified authentic transcripts and explicit database IDs extracted
 * **Turns:** 17 messages (Full alternating conversation between caller and agent clone)
 * **Agent Tool Execution:** `lookup_help_pages` (Succeeded in 384 ms)
 * **Sentiment:** Neutral | Frustration: None
-* **Complete Verbatim Spoken Dialogue Transcript:**
+* **Complete ElevenLabs Console Telemetric Transcript (Verbatim with Latencies):**
   ```text
-  [00:00] AGENT: "Hi, this is the BHA assistant, an automated helper for Bays Horizon Network. How can I help you today?"
-  [00:06] CALLER: "Hey, how are you?"
-  [00:09] AGENT: "[happy] I'm doing well, thank you!"
-  [00:09] CALLER: "Uh, tell me about the services you have."
-  [00:11] AGENT: "Let me pull up our help pages so I give you the right details."
-  [00:12] AGENT (TOOL): lookup_help_pages -> Succeeded (Tool: 384 ms, LLM: 889 ms)
-  [00:13] AGENT: "[happy] Happy to help. Bays Horizon Network runs vFarm, a vertical farm rack for homes and businesses, and I can talk you through the pilot, caring for the rack, and how to reach the team. Just so you know, these pages are still in draft and not yet confirmed, so treat what I share as general guidance for now. What would you like to know more about?"
-  [00:31] CALLER: "Okay."
-  [00:32] AGENT: "[happy] No problem. Was there something specific you wanted to check?"
-  [00:33] CALLER: "Okay."
-  [00:35] AGENT: "[calm] I'm still here. Is there a question I can help with, or would you like me to pass something to a person on the team?"
-  [00:35] CALLER: "So, okay, so tell me about, uh, how to check my phone status."
-  [00:43] AGENT: "I can't see your farm's readings or device status, so for live readings you'd want to use the vFarm app. In the app you can see your own farm's temperature, humidity, pH, soil moisture and air quality, plus which parts of the rack are reporting and which are not. Just so you know, that page is still in draft and not yet confirmed. Would you like me to pass anything to a person on the team?"
-  [01:06] CALLER: "Okay."
-  [01:07] AGENT: "[calm] I'm still here. Is there anything else you'd like to check?"
-  [01:08] CALLER: "Uh, no. Thank you."
-  [01:10] AGENT: "[happy] You're welcome. If anything comes up, just give me a call back. Take care."
-  [01:18] CALLER: "You too."
+  [Agent] (0:00 | TTS 74 ms)
+  Hi, this is the BHA assistant, an automated helper for Bays Horizon Network. How can I help you today?
+
+  [User: +923082113844] (0:06 | ASR 59 ms)
+  Hey, how are you?
+
+  [Agent] (0:09 | LLM 975 ms, TTS 96 ms)
+  [happy] I'm ...
+
+  [User: +923082113844] (0:09 | ASR 67 ms)
+  Uh, tell me about the services you have.
+
+  [Agent] (0:11 | LLM 104 ms, TTS 92 ms)
+  Let me pull up our help pages so I give you the right details.
+
+  [Agent Tool] (0:12 | Tool 384 ms, LLM 889 ms)
+  lookup_help_pages -> Succeeded
+
+  [Agent] (0:13 | LLM 309 ms, TTS 144 ms)
+  [happy] Happy to help. Bays Horizon Network runs vFarm, a vertical farm rack for homes and businesses, and I can talk you through the pilot, caring for the rack, and how to reach the team.
+  Just so you know, these pages are still in draft and not yet confirmed, so treat what I share as general guidance for now. What would you like to know more about?...
+
+  [User: +923082113844] (0:31 | ASR 68 ms)
+  Okay.
+
+  [Agent] (0:32 | LLM 279 ms, TTS 97 ms)
+  [happy] No problem. Was there something specific you...
+
+  [User: +923082113844] (0:33 | ASR 57 ms)
+  Okay.
+
+  [Agent] (0:35 | LLM 144 ms, TTS 100 ms)
+  [calm] I'm still here. Is there a question I can help with, or would you like me to pass something to a person on the...
+
+  [User: +923082113844] (0:35 | ASR 85 ms)
+  So, okay, so tell me about, uh, how to check my phone status.
+
+  [Agent] (0:43 | LLM 470 ms, TTS 92 ms)
+  I can't see your farm's readings or device status, so for live readings you'd want to use the vFarm app. In the app you can see your own farm's temperature, humidity, pH, soil moisture and air quality, plus which parts of the rack are reporting and which are not.
+  Just so you know, that page is still in draft and not yet confirmed. Would you like me to pass anything to a person on the team?
+
+  [User: +923082113844] (1:06 | ASR 62 ms)
+  Okay.
+
+  [Agent] (1:07 | LLM 119 ms, TTS 97 ms)
+  [calm] I'm still here. Is there anything else you'd ...
+
+  [User: +923082113844] (1:08 | ASR 59 ms)
+  Uh, no. Thank you.
+
+  [Agent] (1:10 | LLM 151 ms, TTS 85 ms)
+  [happy] You're welcome. If anything comes up, just give me a call back. Take care.
+
+  [User: +923082113844] (1:18)
+  You too.
   ```
 * **Explicit Database IDs:**
   1. `cst.interaction.start`: `dpo_7e36a42b-65e1-433e-aab6-9262a46239c9` (Event ID: `evt_start_75cead4f-5ca4-45f4-8516-35e1cff9d7c8` in `dashboard_publish_outcomes`)
