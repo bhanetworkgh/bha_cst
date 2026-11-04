@@ -39,10 +39,21 @@ export function createApp(): Express {
   app.set('trust proxy', true);
 
   // ── Body Parsing ────────────────────────────────────────────────────────────
-  // Twilio sends application/x-www-form-urlencoded webhooks.
-  // Limit body size to 100kb to prevent payload floods.
-  app.use(express.urlencoded({ extended: true, limit: '100kb' }));
-  app.use(express.json({ limit: '100kb' }));
+  // Twilio sends application/x-www-form-urlencoded webhooks or JSON CloudEvents.
+  // Limit body size to 100kb to prevent payload floods, and preserve rawBody for signature verification.
+  app.use(express.urlencoded({
+    extended: true,
+    limit: '100kb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }));
+  app.use(express.json({
+    limit: '100kb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }));
 
   // ── Security Headers ────────────────────────────────────────────────────────
   app.use((_req: Request, res: Response, next: NextFunction) => {

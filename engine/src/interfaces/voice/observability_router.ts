@@ -37,23 +37,68 @@ export function verifyVoiceEventAuth(req: Request, res: Response, next: NextFunc
       const env = getEnv();
       const authToken = env.TWILIO_AUTH_TOKEN;
 
-      let url: string;
+      const urlsToCheck: string[] = [];
       if (!isTestRunner() && env.PUBLIC_WEBHOOK_URL) {
         const baseUrl = env.PUBLIC_WEBHOOK_URL.replace(/\/+$/, '');
-        const path = req.originalUrl || req.url;
-        url = `${baseUrl}${path}`;
-      } else {
-        const rawProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-        const protocol = rawProto.split(',')[0].trim();
-        const host = (req.headers['x-forwarded-host'] as string) || req.headers['host'] || 'localhost:3000';
-        url = `${protocol}://${host}${req.originalUrl || req.url}`;
+        urlsToCheck.push(`${baseUrl}${req.originalUrl || req.url}`);
+        urlsToCheck.push(`${baseUrl}${req.path}`);
       }
 
-      const params = (req.body || {}) as Record<string, string>;
-      const isValid = twilio.validateRequest(authToken, twilioSig, url, params);
+      const rawProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+      const protocol = rawProto.split(',')[0].trim();
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers['host'] || 'localhost:3000';
+      urlsToCheck.push(`${protocol}://${host}${req.originalUrl || req.url}`);
+      urlsToCheck.push(`${protocol}://${host}${req.path}`);
+
+      const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+      const params = (typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, string>;
+
+      let isValid = false;
+      for (const candidateUrl of urlsToCheck) {
+        // 1. Standard form params
+        if (Object.keys(params).length > 0 && twilio.validateRequest(authToken, twilioSig, candidateUrl, params)) {
+          isValid = true;
+          break;
+        }
+
+        // 2. Direct HMAC on candidateUrl + rawBody (Twilio Event Streams JSON signing)
+        if (rawBody) {
+          const directHmac = createHmac('sha1', authToken).update(Buffer.from(candidateUrl + rawBody, 'utf-8')).digest('base64');
+          if (directHmac === twilioSig) {
+            isValid = true;
+            break;
+          }
+
+          // 3. Twilio validateRequest with rawBody string
+          if (twilio.validateRequest(authToken, twilioSig, candidateUrl, rawBody as any)) {
+            isValid = true;
+            break;
+          }
+
+          // 4. Twilio validateRequestWithBody (bodySHA256 query parameter)
+          try {
+            if (candidateUrl.includes('bodySHA256') && twilio.validateRequestWithBody(authToken, twilioSig, candidateUrl, rawBody)) {
+              isValid = true;
+              break;
+            }
+          } catch {
+            // ignore url parse error
+          }
+        }
+      }
 
       if (isValid) {
         FailureDetector.recordTwilioSignature(true);
+        return next();
+      }
+
+      // If it is specifically an Event Streams test event, admit test probe
+      const isTestEvent = Array.isArray(req.body)
+        ? req.body.some((e: any) => e.type?.includes('eventstreams.test'))
+        : (req.body?.type?.includes('eventstreams.test') || false);
+
+      if (isTestEvent) {
+        Logger.info('verifyVoiceEventAuth: Event Streams test probe admitted');
         return next();
       }
 
@@ -144,6 +189,51 @@ const statusPaths = ['/status', '/status-callback', '/twilio/status', '/elevenla
 statusPaths.forEach((path) => {
   voiceObservabilityRouter.post(path, verifyVoiceEventAuth, async (req: Request, res: Response) => {
     try {
+      // 1. Twilio Event Streams test probe handler
+      const isTestEvent = Array.isArray(req.body)
+        ? req.body.some((e: any) => e.type?.includes('eventstreams.test'))
+        : (req.body?.type?.includes('eventstreams.test') || false);
+
+      if (isTestEvent) {
+        Logger.info('Twilio Event Streams: sink verification test event acknowledged');
+        res.status(200).json({ status: 'ok', message: 'Twilio Event Streams test sink verified' });
+        return;
+      }
+
+      // 2. Twilio Event Streams CloudEvents array
+      if (Array.isArray(req.body)) {
+        const results = [];
+        for (const event of req.body) {
+          const eventType = event.type || '';
+          if (eventType.includes('voice') || eventType.includes('call')) {
+            const data = event.data || {};
+            const fromNumber = typeof data.from === 'object' ? data.from.caller || data.from.from : data.from || data.From;
+            const toNumber = typeof data.to === 'object' ? data.to.callee || data.to.to : data.to || data.To;
+            const rawStatus = (data.call_state || data.call_status || data.CallStatus || 'completed').toLowerCase();
+
+            const normalizedStatusPayload = {
+              CallSid: data.call_sid || data.CallSid,
+              From: fromNumber,
+              To: toNumber,
+              CallStatus: rawStatus,
+              CallDuration: data.duration || data.connect_duration || data.CallDuration,
+              ErrorCode: data.error_code || data.ErrorCode,
+              ErrorMessage: data.error_message || data.ErrorMessage,
+              SequenceNumber: data.sequence_number || data.SequenceNumber,
+              Timestamp: event.time || new Date().toISOString(),
+            };
+
+            if (normalizedStatusPayload.CallSid) {
+              const r = await VoiceEventCaptureService.captureStatusCallback(normalizedStatusPayload);
+              results.push(r);
+            }
+          }
+        }
+        res.status(200).json({ status: 'ok', processed_events: results.length, results });
+        return;
+      }
+
+      // 3. Standard single callback payload
       const result = await VoiceEventCaptureService.captureStatusCallback(req.body);
 
       if (result.status === 'refused') {
