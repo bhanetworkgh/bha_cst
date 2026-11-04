@@ -523,4 +523,57 @@ describe('Voice Observability & Event Capture (PBT5 / LOOP-1793729831162-PBT5)',
       expect(dispatchedNotification!.text).toContain('+9230****3844');
     });
   });
+
+  describe('4. Twilio Event Streams CloudEvents & Test Probe Support', () => {
+    it('4.1 Acknowledges Twilio Event Streams test probe with HTTP 200 OK', async () => {
+      const testEventPayload = [
+        {
+          specversion: '1.0',
+          type: 'com.twilio.eventstreams.test-event',
+          source: 'Sink',
+          id: 'AC11111111111111111111111111111111',
+          data: { test_id: 'probe_test_001' },
+        },
+      ];
+
+      const res = await request(app)
+        .post('/webhooks/voice/status')
+        .set('x-test-bypass-signature', 'true')
+        .send(testEventPayload);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.message).toContain('Twilio Event Streams test sink verified');
+    });
+
+    it('4.2 Processes Twilio Event Streams CloudEvents array of voice events', async () => {
+      const cloudEventsPayload = [
+        {
+          specversion: '1.0',
+          type: 'com.twilio.voice.insights.call-summary.complete',
+          source: '/v1/Voice/CA_eventstream_001/Summary',
+          id: 'EV_001',
+          time: new Date().toISOString(),
+          data: {
+            call_sid: 'CA_eventstream_001',
+            call_state: 'completed',
+            from: { caller: '+923082113844' },
+            to: { callee: '+19715885823' },
+            duration: 65,
+          },
+        },
+      ];
+
+      const res = await request(app)
+        .post('/webhooks/voice/status')
+        .set('x-test-bypass-signature', 'true')
+        .send(cloudEventsPayload);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.processed_events).toBe(1);
+      expect(res.body.results[0].call_sid).toBe('CA_eventstream_001');
+      expect(res.body.results[0].call_status).toBe('completed');
+    });
+  });
 });
