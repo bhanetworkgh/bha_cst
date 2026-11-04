@@ -300,14 +300,14 @@ export class InMemoryResearchTwinInvestigationStore implements ResearchTwinInves
   private readonly eventIds = new Map<string, string[]>();
 
   private scope(tenantId: string, projectId: string): string {
-    return `${tenantId} ${projectId}`;
+    return `${tenantId}::${projectId}`;
   }
 
   async reserve(
     request: ResearchTwinInvestigationRequest,
     record: ResearchTwinInvestigationRecord,
   ): Promise<{ record: ResearchTwinInvestigationRecord; created: boolean }> {
-    const key = `${this.scope(request.tenant_id, request.project_id)} ${request.idempotency_key}`;
+    const key = `${this.scope(request.tenant_id, request.project_id)}::${request.idempotency_key}`;
     const existingId = this.idempotency.get(key);
     if (existingId) {
       return { record: cloneRecord(this.records.get(existingId)!), created: false };
@@ -342,7 +342,7 @@ export class InMemoryResearchTwinInvestigationStore implements ResearchTwinInves
   ): Promise<ResearchTwinInvestigationRecord> {
     const record = this.records.get(internalInvestigationId);
     if (!record) throw new ResearchTwinLifecycleError('unknown_investigation');
-    const externalKey = `${this.scope(record.tenant_id, record.project_id)} ${researchTwinInvestigationId}`;
+    const externalKey = `${this.scope(record.tenant_id, record.project_id)}::${researchTwinInvestigationId}`;
     const existingInternalId = this.externalIds.get(externalKey);
     if (existingInternalId && existingInternalId !== internalInvestigationId) {
       throw new ResearchTwinTransportError('duplicate_external_investigation_id', false);
@@ -375,17 +375,17 @@ export class InMemoryResearchTwinInvestigationStore implements ResearchTwinInves
     event: ResearchTwinLifecycleEvent,
   ): Promise<{ record: ResearchTwinInvestigationRecord; duplicate: boolean }> {
     const scope = this.scope(event.tenant_id, event.project_id);
-    const internalId = this.externalIds.get(`${scope} ${event.research_twin_investigation_id}`);
+    const internalId = this.externalIds.get(`${scope}::${event.research_twin_investigation_id}`);
     if (!internalId) throw new ResearchTwinLifecycleError('unknown_investigation');
     const record = this.records.get(internalId)!;
-    const eventKey = `${scope} ${event.research_twin_investigation_id} ${event.external_event_id}`;
+    const eventKey = `${scope}::${event.research_twin_investigation_id}::${event.external_event_id}`;
     if (this.events.has(eventKey)) {
       return { record: cloneRecord(record), duplicate: true };
     }
 
     const storedEvent = { ...event };
     this.events.set(eventKey, storedEvent);
-    const investigationKey = `${scope}\u0000${event.research_twin_investigation_id}`;
+    const investigationKey = `${scope}::${event.research_twin_investigation_id}`;
     const eventIds = this.eventIds.get(investigationKey) ?? [];
     eventIds.push(event.external_event_id);
     this.eventIds.set(investigationKey, eventIds);
@@ -404,11 +404,11 @@ export class InMemoryResearchTwinInvestigationStore implements ResearchTwinInves
     researchTwinInvestigationId: string,
   ): Promise<ResearchTwinLifecycleEvent[]> {
     const scope = this.scope(tenantId, projectId);
-    const internalId = this.externalIds.get(`${scope} ${researchTwinInvestigationId}`);
+    const internalId = this.externalIds.get(`${scope}::${researchTwinInvestigationId}`);
     if (!internalId) throw new ResearchTwinLifecycleError('unknown_investigation');
     const record = this.records.get(internalId)!;
-    const investigationKey = `${scope} ${record.research_twin_investigation_id}`;
+    const investigationKey = `${scope}::${record.research_twin_investigation_id}`;
     const ids = this.eventIds.get(investigationKey) ?? [];
-    return ids.map((id) => ({ ...this.events.get(`${investigationKey} ${id}`)! }));
+    return ids.map((id) => ({ ...this.events.get(`${investigationKey}::${id}`)! }));
   }
 }

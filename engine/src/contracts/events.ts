@@ -365,6 +365,67 @@ export const CstDeliverySchema = z.object({
 export type CstDelivery = z.infer<typeof CstDeliverySchema>;
 
 // ============================================================================
+// 7. Interaction Lifecycle & Escalation Schemas
+// ============================================================================
+
+export const CstInteractionStartSchema = z.object({
+  interaction_id: z.string().min(1),
+  session_id: z.string().optional(),
+  channel: CstChannelSchema,
+  direction: z.enum(['inbound', 'outbound']),
+  started_at: z.string().datetime({ offset: true }),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CstInteractionStart = z.infer<typeof CstInteractionStartSchema>;
+
+export const CstTranscriptMessageSchema = z.object({
+  role: z.enum(['user', 'agent', 'system']),
+  message: z.string(),
+  time_in_call_secs: z.number().optional(),
+  timestamp: z.string().datetime({ offset: true }).optional(),
+});
+export type CstTranscriptMessage = z.infer<typeof CstTranscriptMessageSchema>;
+
+export const CstTranscriptSchema = z.object({
+  interaction_id: z.string().min(1),
+  channel: CstChannelSchema,
+  duration_secs: z.number().nonnegative().optional(),
+  messages: z.array(CstTranscriptMessageSchema),
+  summary: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CstTranscript = z.infer<typeof CstTranscriptSchema>;
+
+export const CstOutcomeSchema = z.object({
+  interaction_id: z.string().min(1),
+  status: z.enum(['resolved', 'escalated', 'abandoned', 'failed', 'transferred']),
+  resolution_type: z.string().optional(),
+  summary: z.string().optional(),
+  duration_secs: z.number().nonnegative().optional(),
+  evaluation_criteria_results: z.record(z.string(), z.unknown()).optional(),
+  data_collected: z.record(z.string(), z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CstOutcome = z.infer<typeof CstOutcomeSchema>;
+
+export const CstEscalationEventDataSchema = z.object({
+  escalation_id: z.string().min(1),
+  interaction_id: z.string().min(1),
+  reason: z.string(),
+  urgency: z.enum(['low', 'medium', 'high', 'critical']).default('high'),
+  customer_contact: z.object({
+    name: z.string().optional(),
+    email: z.string().optional(),
+    phone_masked: z.string().optional(),
+  }).optional(),
+  customer_question: z.string().optional(),
+  arrival_time: z.string().datetime({ offset: true }),
+  channel: CstChannelSchema,
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CstEscalationEventData = z.infer<typeof CstEscalationEventDataSchema>;
+
+// ============================================================================
 // 8. Event Envelope & Specification (cst.event.v1)
 // ============================================================================
 
@@ -396,9 +457,37 @@ export const CstDeliveryEventV1Schema = BaseEventEnvelopeSchema.extend({
 });
 export type CstDeliveryEventV1 = z.infer<typeof CstDeliveryEventV1Schema>;
 
+export const CstInteractionStartEventV1Schema = BaseEventEnvelopeSchema.extend({
+  type: z.literal('cst.interaction.start'),
+  data: CstInteractionStartSchema,
+});
+export type CstInteractionStartEventV1 = z.infer<typeof CstInteractionStartEventV1Schema>;
+
+export const CstTranscriptEventV1Schema = BaseEventEnvelopeSchema.extend({
+  type: z.literal('cst.transcript'),
+  data: CstTranscriptSchema,
+});
+export type CstTranscriptEventV1 = z.infer<typeof CstTranscriptEventV1Schema>;
+
+export const CstOutcomeEventV1Schema = BaseEventEnvelopeSchema.extend({
+  type: z.literal('cst.outcome'),
+  data: CstOutcomeSchema,
+});
+export type CstOutcomeEventV1 = z.infer<typeof CstOutcomeEventV1Schema>;
+
+export const CstEscalationEventV1Schema = BaseEventEnvelopeSchema.extend({
+  type: z.literal('cst.escalation'),
+  data: CstEscalationEventDataSchema,
+});
+export type CstEscalationEventV1 = z.infer<typeof CstEscalationEventV1Schema>;
+
 export const CstEventV1Schema = z.discriminatedUnion('type', [
   CstTurnEventV1Schema,
   CstDeliveryEventV1Schema,
+  CstInteractionStartEventV1Schema,
+  CstTranscriptEventV1Schema,
+  CstOutcomeEventV1Schema,
+  CstEscalationEventV1Schema,
 ]);
 export type CstEventV1 = z.infer<typeof CstEventV1Schema>;
 
@@ -466,6 +555,118 @@ export function createCstDeliveryEventV1(params: {
     customer: params.customer,
     type: 'cst.delivery',
     data: params.delivery,
+    metadata: params.metadata,
+  });
+}
+
+export function createCstInteractionStartEventV1(params: {
+  id: string;
+  source?: string;
+  time?: string;
+  tenant_id: string;
+  project_id: string;
+  correlation_id: string;
+  channel: AllowedChannel;
+  customer: CustomerPayload;
+  start: CstInteractionStart;
+  metadata?: Record<string, unknown>;
+}): CstInteractionStartEventV1 {
+  return CstInteractionStartEventV1Schema.parse({
+    specversion: CST_EVENT_SPEC_VERSION,
+    id: params.id,
+    source: params.source || 'cst/voice/elevenlabs',
+    time: params.time || new Date().toISOString(),
+    tenant_id: params.tenant_id,
+    project_id: params.project_id,
+    correlation_id: params.correlation_id,
+    channel: params.channel,
+    customer: params.customer,
+    type: 'cst.interaction.start',
+    data: params.start,
+    metadata: params.metadata,
+  });
+}
+
+export function createCstTranscriptEventV1(params: {
+  id: string;
+  source?: string;
+  time?: string;
+  tenant_id: string;
+  project_id: string;
+  correlation_id: string;
+  channel: AllowedChannel;
+  customer: CustomerPayload;
+  transcript: CstTranscript;
+  metadata?: Record<string, unknown>;
+}): CstTranscriptEventV1 {
+  return CstTranscriptEventV1Schema.parse({
+    specversion: CST_EVENT_SPEC_VERSION,
+    id: params.id,
+    source: params.source || 'cst/voice/elevenlabs',
+    time: params.time || new Date().toISOString(),
+    tenant_id: params.tenant_id,
+    project_id: params.project_id,
+    correlation_id: params.correlation_id,
+    channel: params.channel,
+    customer: params.customer,
+    type: 'cst.transcript',
+    data: params.transcript,
+    metadata: params.metadata,
+  });
+}
+
+export function createCstOutcomeEventV1(params: {
+  id: string;
+  source?: string;
+  time?: string;
+  tenant_id: string;
+  project_id: string;
+  correlation_id: string;
+  channel: AllowedChannel;
+  customer: CustomerPayload;
+  outcome: CstOutcome;
+  metadata?: Record<string, unknown>;
+}): CstOutcomeEventV1 {
+  return CstOutcomeEventV1Schema.parse({
+    specversion: CST_EVENT_SPEC_VERSION,
+    id: params.id,
+    source: params.source || 'cst/voice/elevenlabs',
+    time: params.time || new Date().toISOString(),
+    tenant_id: params.tenant_id,
+    project_id: params.project_id,
+    correlation_id: params.correlation_id,
+    channel: params.channel,
+    customer: params.customer,
+    type: 'cst.outcome',
+    data: params.outcome,
+    metadata: params.metadata,
+  });
+}
+
+export function createCstEscalationEventV1(params: {
+  id: string;
+  source?: string;
+  time?: string;
+  tenant_id: string;
+  project_id: string;
+  correlation_id: string;
+  channel: AllowedChannel;
+  customer: CustomerPayload;
+  escalation: CstEscalationEventData;
+  metadata?: Record<string, unknown>;
+}): CstEscalationEventV1 {
+  return CstEscalationEventV1Schema.parse({
+    specversion: CST_EVENT_SPEC_VERSION,
+    id: params.id,
+    source: params.source || 'cst/escalation',
+    time: params.time || new Date().toISOString(),
+    tenant_id: params.tenant_id,
+    project_id: params.project_id,
+    correlation_id: params.correlation_id,
+    channel: params.channel,
+    customer: params.customer,
+    type: 'cst.escalation',
+    data: params.escalation,
     metadata: params.metadata,
   });
 }

@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-11-03T18:15:14.089Z",
+  "sms": {
+    "provider_sid": "NONE_PREFLIGHT",
+    "status": "not_tested",
+    "price": "N/A",
+    "error_code": null,
+    "error_message": null
+  },
+  "voice": {
+    "call_sid": "NONE_PREFLIGHT",
+    "status": "preflight_only",
+    "duration_seconds": null,
+    "price": "N/A",
+    "answered": false
+  }
+}

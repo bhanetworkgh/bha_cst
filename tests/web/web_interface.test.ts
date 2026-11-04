@@ -220,5 +220,56 @@ describe('CST Web Interface sessions and isolation', () => {
     expect(res.body.audio_url).toBe(`/api/v1/voice/audio/${res.body.audio_id}`);
     expect(res.body.mime_type).toBe('audio/mpeg');
   });
+
+  it('invalidates session on POST /api/v1/web/logout and rejects subsequent requests', async () => {
+    const res = await request(app)
+      .post('/api/v1/web/session')
+      .send({ email: 'admin@cst.com', password: 'admin' });
+    expect(res.status).toBe(201);
+    const sessionToken = res.body.session;
+
+    // Verify session is active
+    const checkRes = await request(app)
+      .get('/api/v1/web/session')
+      .set('x-cst-session', sessionToken);
+    expect(checkRes.status).toBe(200);
+
+    // Logout
+    const logoutRes = await request(app)
+      .post('/api/v1/web/logout')
+      .set('x-cst-session', sessionToken);
+    expect(logoutRes.status).toBe(204);
+
+    // Subsequent requests with the logged-out token must be rejected
+    const postLogoutRes = await request(app)
+      .get('/api/v1/web/session')
+      .set('x-cst-session', sessionToken);
+    expect(postLogoutRes.status).toBe(401);
+    expect(postLogoutRes.body.error).toBe('INVALID_SESSION');
+
+    const messageRes = await request(app)
+      .post('/api/v1/web/message')
+      .set('x-cst-session', sessionToken)
+      .send({ text: 'Hello after logout' });
+    expect(messageRes.status).toBe(401);
+    expect(messageRes.body.error).toBe('INVALID_SESSION');
+  });
+
+  it('rejects cross-tenant access when session is used against mismatched project', async () => {
+    const agent = request.agent(app);
+    await agent.post('/api/v1/web/session').send({ user: 'demo-owner', project_id: 'proj-vfarm-main' });
+
+    // Attempting to inject a foreign project from a different tenant
+    const res = await agent.post('/api/v1/web/message').send({
+      project_id: 'foreign-tenant-project',
+      tenant_id: 'foreign-tenant',
+      text: 'Exfiltrate telemetry',
+    });
+
+    // Server-side session binds tenant and project; client payload overrides are ignored
+    expect(res.status).toBe(200);
+    expect(res.body.tenant_id).toBe('tenant-vfarm-01');
+    expect(res.body.project_id).toBe('proj-vfarm-main');
+  });
 });
 

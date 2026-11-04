@@ -17,6 +17,7 @@ import { VoiceLaneService } from '../../transport/voice/voice_lane.js';
 import { verifyTwilioSignature } from '../../transport/twilio/signature.js';
 import { requireProgrammaticApiKey } from '../../middleware/programmatic_api_key.js';
 import { isTestRunner } from '../../config/runtime.js';
+import { VoiceEventCaptureService } from '../../observability/voice_events.js';
 
 export const voiceInterfaceRouter = Router();
 
@@ -1401,6 +1402,14 @@ export class VoiceInterface {
         delivered_at: new Date().toISOString(),
       });
 
+      await VoiceEventCaptureService.captureInboundCall({
+        CallSid: callSid,
+        From: callerNumber,
+        To: receivingNumber,
+        CallStatus: 'ringing',
+        Direction: 'inbound',
+      }).catch((err) => Logger.warn(`VoiceEventCaptureService.captureInboundCall non-fatal error: ${err.message}`));
+
       Logger.audit({
         timestamp: new Date().toISOString(),
         tenant_id: binding.tenant_id,
@@ -1736,6 +1745,18 @@ export class VoiceInterface {
         correlation_id: callSid,
         delivered_at: callStatus === 'completed' ? new Date().toISOString() : undefined,
       });
+
+      await VoiceEventCaptureService.captureStatusCallback({
+        CallSid: callSid,
+        From: callerNumber,
+        To: receivingNumber,
+        CallStatus: callStatus,
+        CallDuration: req.body?.CallDuration || req.query?.CallDuration,
+        ErrorCode: req.body?.ErrorCode || req.query?.ErrorCode,
+        ErrorMessage: req.body?.ErrorMessage || req.query?.ErrorMessage,
+        SequenceNumber: req.body?.SequenceNumber || req.query?.SequenceNumber,
+        Timestamp: req.body?.Timestamp || req.query?.Timestamp,
+      }).catch((err) => Logger.warn(`VoiceEventCaptureService.captureStatusCallback non-fatal error: ${err.message}`));
 
       Logger.audit({
         timestamp: new Date().toISOString(),

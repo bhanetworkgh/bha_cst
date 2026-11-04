@@ -1,0 +1,20 @@
+{
+  "run_id": "CST-LIVE-VOICE-PREFLIGHT",
+  "utc_request_timestamp": "2026-11-03T15:08:50.413Z",
+  "destination_masked": "+9230***3844",
+  "sender_number": "+19715885823",
+  "cst_voice_delivery_id": "NONE",
+  "twilio_call_sid": "NONE_PREFLIGHT",
+  "call_creation_response": "preflight_only",
+  "call_status_callbacks": [],
+  "answered_status": false,
+  "call_duration_seconds": null,
+  "playback_announcement_text": "Preflight only",
+  "hangup_status": "not_initiated",
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "project_id": "proj-vfarm-main",
+  "correlation_id": "preflight",
+  "error_code": null,
+  "sanitized_error_message": null,
+  "verdict": "NOT_TESTED"
+}

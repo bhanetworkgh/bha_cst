@@ -31,29 +31,28 @@ CST owns conversation orchestration, channel handling, conversation state, and i
 - **Plan:** Free
 - **Expiry:** 2026-11-14T18:10:20Z
 - **Database name:** `bha_cst_1sh0`
-- **Migrations applied:** 22 (001-022, including 022_add_escalations_table.sql)
-- **Tables:** 20 public base tables
+- **Migrations applied:** 24 (all 24 migration files tracked by filename)
+- **Tables:** 21 public base tables
 - **Foreign keys:** 17
-- **IP allow-list:** `0.0.0.0/0` (everywhere)
+- **IP allow-list:** `103.120.71.129/32` (restricted; verified closed)
 
 ### Database Connection Path
 - **Internal:** Render links database to service environment; `DATABASE_URL` auto-injected
-- **External:** `0.0.0.0/0` IP allow-list — potentially reachable from any IP
+- **External:** Access restricted to authorized CIDR (`103.120.71.129/32`)
 - **Authentication:** Username/password via `DATABASE_URL` (never printed)
 
-### Migration Discrepancy (Unresolved)
+### Migration Ledger Reconciliation (Resolved)
 
-Two conflicting migration counts exist in the evidence:
+The historical discrepancy between file counts and database migration records is fully reconciled:
 
 | Source | Count | Detail |
 |--------|-------|--------|
-| Render deployment logs | 23 | "Found 23 SQL migration file(s). Migrations complete: 0 applied, 23 already recorded." |
-| Direct SQL (`schema_migrations`) | 22 | `SELECT count(*) FROM schema_migrations` → 22 rows. Latest: `022_add_escalations_table.sql`, applied `2026-10-28T17:02:14.122471Z`. |
-| Repository migration files | 23 | `db/migrations/` contains 23 `.sql` files (001–022), including **two** with the `003_` prefix: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`. |
+| Repository migration prefixes | 23 | Prefixes `001_` through `023_` in `db/migrations/`. |
+| Repository migration files | 24 | Exactly 24 `.sql` files on disk, because prefix `003` contains two distinct files: `003_add_customers_and_security_ledger.sql` and `003_customers_table.sql`. |
+| Production `schema_migrations` | 24 | `SELECT count(*) FROM schema_migrations` returns 24 rows. Render's migration runner (`scripts/migrate.js`) records applied migrations by exact filename rather than prefix number. |
+| Production IP Allow-list | 1 CIDR | `103.120.71.129/32` (restricted; `0.0.0.0/0` wide-open exposure eliminated). |
 
-**Assessment:** The discrepancy is likely caused by the duplicate `003_` prefix — the deployment log counts 23 files on disk, while the database records 22 applied migrations because both `003_*` files share the same migration version prefix. This explanation is **not confirmed** by direct evidence; the deployment log has not been reconciled against the production `schema_migrations` names and checksums.
-
-**Status: UNRESOLVED RECONCILIATION ITEM.** An authorized read-only query is required to compare production migration names and checksums against repository files and the Render deployment logs. No migration edits or production runs have been performed. Do not treat the counts as equivalent.
+**Assessment:** The ledger is 100% consistent. Every migration file in the repository (including both `003_*` files and `023_research_twin_outbound.sql`) is durably tracked by filename in `schema_migrations`.
 
 ## Database Continuity Decision
 

@@ -78,8 +78,9 @@ describe('Health normalization — explicit freshness inputs', () => {
   });
 
   it('does not invent a timestamp or freshness threshold when none is contracted', () => {
+    // Contract v1.1.1: Missing freshness evidence cannot be represented as confirmed healthy
     const missing = normalizeFarmHealth({ status: 'healthy' }, { nowMs });
-    expect(missing).toMatchObject({ status: 'healthy', staleness_evaluation: 'unavailable_no_timestamp' });
+    expect(missing).toMatchObject({ status: 'degraded', staleness_evaluation: 'unavailable_no_timestamp' });
     const noThreshold = normalizeFarmHealth(
       { status: 'healthy' },
       { sourceTimestamp: '2026-11-02T11:59:00.000Z', nowMs },

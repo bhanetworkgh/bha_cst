@@ -1043,12 +1043,14 @@ export class VfarmLiveClient {
   // ── Alerts ───────────────────────────────────────────────────────────────
 
   /**
-   * GET /api/v1/alerts/threshold/counts?farm_id={farm_id}
+   * GET /api/v1/alerts/threshold/counts?rung={rung}&farm_id={farm_id}
    * PlaceCountListResponse { counts[] }.
+   * Note: The vFarm OpenAPI contract specifies that query parameter `rung`
+   * is REQUIRED (values: farm | zone | location | sublocation). Omitting it returns HTTP 422.
    */
-  async getAlertCounts(farmId: string): Promise<PlaceCountListResponse> {
+  async getAlertCounts(farmId: string, rung = 'farm'): Promise<PlaceCountListResponse> {
     return this.request(
-      `/api/v1/alerts/threshold/counts?farm_id=${encodeURIComponent(farmId)}`,
+      `/api/v1/alerts/threshold/counts?rung=${encodeURIComponent(rung)}&farm_id=${encodeURIComponent(farmId)}`,
       placeCountListResponseSchema,
     );
   }

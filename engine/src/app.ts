@@ -4,6 +4,7 @@ import { outboundRouter } from './transport/twilio/outbound.js';
 import { voiceRouter } from './transport/voice/voice_router.js';
 import { voiceInterfaceRouter } from './interfaces/voice/index.js';
 import { webInterfaceRouter } from './interfaces/web/index.js';
+import { brainInterfaceRouter } from './interfaces/brain/index.js';
 import { adminRouter } from './admin/routes.js';
 import { authRouter, requireAdminAuth } from './admin/auth.js';
 import {
@@ -21,6 +22,9 @@ import { fileURLToPath } from 'node:url';
 import { CoreRegistry } from './core/registry.js';
 import { getResearchTwinConfigStatus } from './research_twin/config.js';
 import { researchTwinWebhookRouter } from './research_twin/webhook.js';
+import { elevenlabsWebhookRouter } from './interfaces/elevenlabs/index.js';
+import { voiceObservabilityRouter } from './interfaces/voice/observability_router.js';
+import { FailureDetector } from './observability/failure_detector.js';
 import {
   normalizeFarmHealth,
   type NormalizedFarmHealth,
@@ -95,11 +99,14 @@ export function createApp(): Express {
   app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);
   app.use('/webhooks/research-twin', researchTwinWebhookRouter);
+  app.use('/webhooks/elevenlabs', elevenlabsWebhookRouter);
+  app.use('/webhooks/voice', voiceObservabilityRouter);
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/admin', requireAdminAuth, adminRouter);
   app.use(voiceRouter);
   app.use(voiceInterfaceRouter);
   app.use(webInterfaceRouter);
+  app.use(brainInterfaceRouter);
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
 
   // ── vFarm Public & Dashboard Endpoints ─────────────────────────────────────
@@ -341,6 +348,13 @@ export function createApp(): Express {
   // Render / AWS ALB hit this endpoint to determine if the instance is live.
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', service: 'bha-cst-engine' });
+  });
+
+  // ── Reliability & Failure Detection Health Check ────────────────────────────
+  app.get('/health/reliability', (_req: Request, res: Response) => {
+    const report = FailureDetector.getHealthReport();
+    const status = report.readiness === 'unready' ? 503 : 200;
+    res.status(status).json(report);
   });
 
   // ── Debug State ─────────────────────────────────────────────────────────────

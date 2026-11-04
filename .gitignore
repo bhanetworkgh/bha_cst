@@ -20,6 +20,7 @@ npm-debug.log*
 coverage/
 .vitest/
 .nyc_output/
+test-results/
 
 # OS artifacts
 .DS_Store
