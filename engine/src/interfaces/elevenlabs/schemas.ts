@@ -2,7 +2,10 @@ import { z } from 'zod';
 
 export const ElevenLabsTranscriptMessageSchema = z.object({
   role: z.string(),
-  message: z.string(),
+  // ElevenLabs sends null here on a tool call or tool result turn. A null must
+  // not refuse the whole post-call report (every report with a tool turn
+  // answered 400 from 4 Nov 2026), so it is accepted and left out downstream.
+  message: z.string().nullish(),
   time_in_call_secs: z.number().optional(),
 }).passthrough();
 export type ElevenLabsTranscriptMessage = z.infer<typeof ElevenLabsTranscriptMessageSchema>;

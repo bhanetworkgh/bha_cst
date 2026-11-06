@@ -1,3 +1,4 @@
+import { CstDashboardPublisher, setActiveDashboardPublisher } from '../../engine/src/publishers/dashboard.js';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createHmac } from 'node:crypto';
@@ -356,5 +357,53 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     expect(outcomeEvt).toBeDefined();
     expect((outcomeEvt as any).data.status).toBe('resolved');
     expect((outcomeEvt as any).data.duration_secs).toBe(64);
+  });
+  it('11. A tool turn with a null message does not refuse the report, and the call goes to the dashboard as one cst.turn', async () => {
+    const sent: any[] = [];
+    const publisher = new CstDashboardPublisher({
+      dashboardUrl: 'http://localhost:9/api/engine/cst-events',
+      dashboardKey: 'k',
+      dryRun: false,
+      fetchFn: (async (_u: string, init: any) => {
+        sent.push(JSON.parse(init.body));
+        return new Response('{}', { status: 200 });
+      }) as any,
+    });
+    setActiveDashboardPublisher(publisher);
+    const payload = {
+      type: 'post_call_transcription',
+      event_timestamp: Math.floor(Date.now() / 1000),
+      data: {
+        conversation_id: 'conv_toolturn001',
+        start_time_unix_secs: Math.floor(Date.now() / 1000),
+        transcript: [
+          { role: 'user', message: 'What does vFarm do?' },
+          { role: 'agent', message: null, tool_calls: [{ tool_name: 'lookup_help_pages' }] },
+          { role: 'agent', message: 'It grows food indoors.' },
+        ],
+        metadata: { call_duration_secs: 30, phone_call: { external_number: '+12025550123' } },
+        analysis: { call_successful: 'success' },
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const hmacHex = createHmac('sha256', testSecret).update(`${timestamp}.${rawBody}`).digest('hex');
+    const res = await request(app)
+      .post('/webhooks/elevenlabs/post-call')
+      .set('ElevenLabs-Signature', `t=${timestamp},v0=${hmacHex}`)
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+    setActiveDashboardPublisher(null);
+
+    expect(res.status).toBe(200);
+    expect(res.body.dashboard_published).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].event_type).toBe('cst.turn');
+    expect(sent[0].turn_id).toBe('conv_toolturn001');
+    expect(sent[0].channel).toBe('voice');
+    expect(sent[0].message).toBe('What does vFarm do?');
+    expect(sent[0].reply).toBe('It grows food indoors.');
+    expect(sent[0].duration_ms).toBe(30000);
+    expect(sent[0].customer.phone_e164).toBe('+12025550123');
   });
 });
