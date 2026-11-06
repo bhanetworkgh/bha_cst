@@ -258,3 +258,12 @@ The Swagger documentation covers:
 * [System Architecture & Implementation Guide](docs/system-architecture-and-guide.md)
 * [Tenant Isolation Guide](docs/tenant-isolation-guide.md)
 * [Architecture Blueprint](2026-08-26-spec-bha-cst-architecture-v1.0.md)
+
+## PBT5 relay tracing (draft, opt-in)
+
+`CST_RELAY_TRACE=true` adds structured webhook/DB/dispatch IDs and a Slack trace
+marker without changing relay routing or retry behavior. It defaults off.
+`scripts/pbt5_slack_receipt.mjs` is a separate read-only operator tool using
+`PBT5_SLACK_READ_TOKEN` to bind a dispatch marker to the exact Slack message.
+See [the traced relay drill](docs/reports/PBT5_TRACED_RELAY_DRILL.md) for ID
+semantics, required read permissions, evidence limits and approval gates.

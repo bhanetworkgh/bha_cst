@@ -10,6 +10,7 @@ import type { EscalationRecord } from '../escalation/types.js';
 import { CoreRegistry } from '../core/registry.js';
 import { deliveryStatusRank } from '../contracts/events.js';
 import type { Project, ServiceNumberBinding, Tenant } from '../core/types.js';
+import { traceDatabaseWrite } from '../observability/relay_trace.js';
 
 /**
  * Raised when an outbound message row could not be persisted.
@@ -2718,12 +2719,17 @@ export class DbClient {
             record.replayed_at || null,
           ],
         );
+        // pool.query is a standalone INSERT; report commitment only after it resolves.
+        traceDatabaseWrite('committed', id, record.event_id);
       } catch (err: any) {
+        traceDatabaseWrite('failed', id, record.event_id);
         // A failed evidence write must never break the customer path.
         Logger.warn(
           `DbClient.recordDashboardPublishOutcome: could not persist outcome for ${record.event_id}: ${err?.message}`,
         );
       }
+    } else {
+      traceDatabaseWrite('memory_only', id, record.event_id);
     }
 
     return record;

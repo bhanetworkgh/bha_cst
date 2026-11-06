@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { ElevenLabsPostCallWebhookPayloadSchema } from './schemas.js';
 import { ElevenLabsWebhookService } from './service.js';
 import { FailureDetector } from '../../observability/failure_detector.js';
+import { createRelayTrace, traceRelay, withRelayTrace } from '../../observability/relay_trace.js';
 
 export const elevenlabsWebhookRouter = Router();
 
@@ -12,6 +13,10 @@ export const elevenlabsWebhookRouter = Router();
 elevenlabsWebhookRouter.post('/post-call', async (req: Request, res: Response): Promise<void> => {
   // 1. Authenticate webhook
   const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+  const providerHeader = req.header('x-elevenlabs-request-id') ? 'x-elevenlabs-request-id' : 'x-request-id';
+  const trace = process.env.CST_RELAY_TRACE === 'true'
+    ? createRelayTrace(rawBody, req.header(providerHeader), providerHeader)
+    : undefined;
   const isAuthenticated = ElevenLabsWebhookService.authenticate(req, rawBody);
   if (!isAuthenticated) {
     res.status(401).json({
@@ -35,7 +40,21 @@ elevenlabsWebhookRouter.post('/post-call', async (req: Request, res: Response): 
 
   // 3. Process webhook through service
   try {
-    const outcome = await ElevenLabsWebhookService.process(parseResult.data);
+    const outcome = trace
+      ? await withRelayTrace(trace, async () => {
+        traceRelay('webhook_receive', { authenticated: true, validated: true });
+        res.setHeader('X-CST-Webhook-Receive-ID', trace.webhook_receive_id);
+        const result = await ElevenLabsWebhookService.process(parseResult.data);
+        traceRelay('webhook_result', {
+          processing_status: result.status,
+          event_ids: result.event_ids,
+          slack_delivered: result.slack_delivered,
+          dashboard_published: result.dashboard_published ?? null,
+          response_status: result.status === 'failed' ? 500 : 200,
+        });
+        return result;
+      })
+      : await ElevenLabsWebhookService.process(parseResult.data);
     if (outcome.status === 'failed') {
       res.status(500).json({
         error: 'PROCESSING_FAILED',
