@@ -19,6 +19,7 @@ import {
 import { ErrorRouter } from '../../notifications/error_router.js';
 import { FailureDetector } from '../../observability/failure_detector.js';
 import { CutOverManager } from '../../observability/cut_over.js';
+import { getDashboardPublisher } from '../../publishers/dashboard.js';
 
 export interface WebhookProcessResult {
   status: 'processed' | 'already_processed' | 'ignored_pre_cutover' | 'failed';
@@ -28,6 +29,9 @@ export interface WebhookProcessResult {
   slack_delivered: boolean;
   escalation_created: boolean;
   escalation_id?: string;
+  /** True only once the dashboard accepted this call's cst.turn. */
+  dashboard_published?: boolean;
+  dashboard_error?: string;
   error?: string;
 }
 
@@ -190,11 +194,14 @@ export class ElevenLabsWebhookService {
     const customVars = (metadata.custom_variables || {}) as Record<string, any>;
     const tenantId = String(customVars.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01');
     const projectId = String(customVars.project_id || 'proj-vfarm-main');
-    const callerPhone = String(customVars.caller_phone || metadata.caller_id || '+15550000000');
+    const phoneCall = (metadata.phone_call || {}) as Record<string, any>;
+    const callerPhone = String(customVars.caller_phone || phoneCall.external_number || metadata.caller_id || '+15550000000');
     const rawChannel = String(customVars.channel || 'voice').toLowerCase();
     const channel: AllowedChannel = rawChannel === 'whatsapp' ? 'whatsapp' : 'voice';
 
-    const transcriptList = (payload.transcript || payload.message_history || d?.transcript || d?.message_history || []) as ElevenLabsTranscriptMessage[];
+    // Tool turns carry no text; only spoken lines go on.
+    const transcriptList = ((payload.transcript || payload.message_history || d?.transcript || d?.message_history || []) as ElevenLabsTranscriptMessage[])
+      .filter((m): m is ElevenLabsTranscriptMessage & { message: string } => typeof m.message === 'string' && m.message.trim() !== '');
     const dataCollection = (analysis.data_collection_results || {}) as Record<string, any>;
     const customerName = (typeof dataCollection.customer_name === 'object' ? dataCollection.customer_name?.value : dataCollection.customer_name) as string | undefined;
     const customerEmail = (typeof dataCollection.customer_email === 'object' ? dataCollection.customer_email?.value : dataCollection.customer_email) as string | undefined;
@@ -242,7 +249,7 @@ export class ElevenLabsWebhookService {
       }
 
       // 4B. Normalize Transcript Event
-      const transcriptMessages = transcriptList.map((m: ElevenLabsTranscriptMessage) => ({
+      const transcriptMessages = transcriptList.map((m) => ({
         role: (m.role === 'agent' || m.role === 'assistant' ? 'agent' : m.role === 'system' ? 'system' : 'user') as 'user' | 'agent' | 'system',
         message: m.message,
         time_in_call_secs: m.time_in_call_secs,
@@ -361,7 +368,10 @@ export class ElevenLabsWebhookService {
         }
       }
 
-      // 5. Durable Event Persistence (dashboard_publish_outcomes)
+      // 5. Durable Event Persistence (dashboard_publish_outcomes).
+      // These four are CST's own record: the dashboard takes cst.turn and
+      // cst.delivery only, so they are never sent and are not marked published.
+      // What reaches the dashboard is the one cst.turn built below.
       for (const event of generatedEvents) {
         this.persistedEvents.set(event.id, event);
         try {
@@ -372,14 +382,60 @@ export class ElevenLabsWebhookService {
             correlation_id: event.correlation_id,
             tenant_id: event.tenant_id,
             project_id: event.project_id,
-            status: 'published',
-            attempts: 1,
+            status: 'internal_only',
+            attempts: 0,
             payload: event as any,
           });
         } catch (dbErr: any) {
           FailureDetector.recordWebhookPersistenceFailure(dbErr.message);
           Logger.warn(`ElevenLabsWebhookService: could not persist event ${event.id}: ${dbErr.message}`);
         }
+      }
+
+      // 5b. The call on the dashboard: one cst.turn, awaited, read from the
+      // publisher's own answer. Its outcome row says what really happened, and a
+      // failure is replayed at boot. It never fails the webhook.
+      const spoken = (who: 'user' | 'agent') =>
+        transcriptMessages.filter((m) => m.role === who).map((m) => m.message).join('\n');
+      const turnCustomer: CustomerPayload = { ...customerPayload, role: 'unknown', is_known: false };
+      const callTime = startUnix ? new Date(startUnix * 1000).toISOString() : nowIso;
+      const turnEvent = {
+        specversion: 'cst.event.v1',
+        id: `turn_evt_${randomUUID()}`,
+        source: 'cst/voice/elevenlabs',
+        time: callTime,
+        tenant_id: tenantId,
+        project_id: projectId,
+        correlation_id: conversationId,
+        channel,
+        customer: turnCustomer,
+        type: 'cst.turn',
+        data: {
+          turn_id: conversationId,
+          conversation_id: conversationId,
+          direction: 'inbound',
+          channel,
+          status: 'ok',
+          intent: escalationRequested ? 'escalate' : 'default',
+          text: spoken('user'),
+          message: spoken('user'),
+          reply_text: spoken('agent'),
+          reply: spoken('agent'),
+          duration: { total_ms: durationSecs * 1000 },
+          duration_ms: durationSecs * 1000,
+          incident_id: escalationId,
+          tenant_id: tenantId,
+          project_id: projectId,
+          customer: turnCustomer,
+          event_type: 'cst.turn',
+          occurred_at: callTime,
+          metadata: { agent_id: agentId, summary, call_successful: analysis.call_successful, source: 'elevenlabs_post_call' },
+        },
+      } as unknown as CstEventV1;
+      const publishResult = await getDashboardPublisher().publish(turnEvent);
+      if (!publishResult.success) {
+        FailureDetector.recordWebhookProcessingFailure(`dashboard publish failed: ${publishResult.error}`);
+        Logger.error(`ElevenLabsWebhookService: call ${conversationId} did not reach the dashboard: ${publishResult.error}`);
       }
 
       // 6. Slack Event Delivery to Customer Service Channel (#bha-customer-service-twin)
@@ -432,6 +488,8 @@ export class ElevenLabsWebhookService {
         slack_delivered: slackDelivered,
         escalation_created: escalationCreated,
         escalation_id: escalationId,
+        dashboard_published: publishResult.success && !publishResult.dryRun,
+        dashboard_error: publishResult.success ? undefined : publishResult.error,
       };
     } catch (err: any) {
       FailureDetector.recordWebhookProcessingFailure(err?.message);

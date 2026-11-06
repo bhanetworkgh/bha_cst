@@ -177,7 +177,7 @@ export interface DashboardPublishOutcome {
   correlation_id?: string;
   tenant_id?: string;
   project_id?: string;
-  status: 'published' | 'failed' | 'missing_configuration' | 'dry_run';
+  status: 'published' | 'failed' | 'missing_configuration' | 'dry_run' | 'internal_only';
   http_status?: number;
   attempts: number;
   error?: string;
@@ -2747,7 +2747,7 @@ export class DbClient {
                   tenant_id, project_id, status, http_status, attempts, error,
                   payload, created_at, expires_at, replayed_at
              FROM dashboard_publish_outcomes
-            WHERE status <> 'published'
+            WHERE status NOT IN ('published', 'internal_only')
               AND replayed_at IS NULL
               AND expires_at > NOW()
             ORDER BY created_at ASC
@@ -2782,7 +2782,7 @@ export class DbClient {
       }
     }
     return Array.from(this.dashboardOutcomeStore.values())
-      .filter((o) => o.status !== 'published' && o.replayed_at === undefined)
+      .filter((o) => o.status !== 'published' && o.status !== 'internal_only' && o.replayed_at === undefined)
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
       .slice(0, limit);
   }
