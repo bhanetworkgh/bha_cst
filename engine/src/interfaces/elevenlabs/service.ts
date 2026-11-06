@@ -20,6 +20,7 @@ import { ErrorRouter } from '../../notifications/error_router.js';
 import { FailureDetector } from '../../observability/failure_detector.js';
 import { CutOverManager } from '../../observability/cut_over.js';
 import { getDashboardPublisher } from '../../publishers/dashboard.js';
+import { currentRelayTrace, traceId, traceRelay } from '../../observability/relay_trace.js';
 
 export interface WebhookProcessResult {
   status: 'processed' | 'already_processed' | 'ignored_pre_cutover' | 'failed';
@@ -156,6 +157,13 @@ export class ElevenLabsWebhookService {
 
     const d = payload.data;
     const conversationId = String(payload.conversation_id || payload.call_id || d?.conversation_id || d?.call_id);
+    const trace = currentRelayTrace();
+    if (trace) {
+      trace.provider_conversation_id = traceId(conversationId);
+      const phone = (d?.metadata || payload.metadata || {}) as Record<string, any>;
+      trace.provider_call_sid = traceId(phone.phone_call?.call_sid);
+      traceRelay('provider_link');
+    }
     const idempotencyKey = `elevenlabs:${conversationId}:post_call`;
 
     // 1. Idempotency Check

@@ -1,5 +1,7 @@
 import { Logger } from '../config/logger.js';
 import { maskPhone } from '../util/privacy.js';
+import { randomUUID, createHash } from 'node:crypto';
+import { currentRelayTrace, traceRelay } from '../observability/relay_trace.js';
 
 export type ErrorClass = 'Twilio' | 'vFarm' | 'CST' | 'NS' | 'CS_HANDOFF';
 
@@ -266,6 +268,7 @@ export class ErrorRouter {
     }
 
     if (!targetUrl) {
+      traceRelay('slack_dispatch_deferred', { destination_channel: classified.destination_channel });
       return {
         dispatched: false,
         error_class: classified.error_class,
@@ -275,11 +278,32 @@ export class ErrorRouter {
       };
     }
 
+    // Observation-only marker, after existing routing/dedup decisions. The
+    // incoming webhook returns no message ts; the read-only receipt tool joins
+    // this exact marker to Slack history without changing this delivery path.
+    const trace = currentRelayTrace();
+    const dispatchId = trace ? `dispatch_${randomUUID()}` : undefined;
+    if (dispatchId) slackBody.text += `\n[PBT5 trace: ${dispatchId}]`;
+    const traceFields = trace ? {
+      dispatch_id: dispatchId,
+      destination_channel: classified.destination_channel,
+      committed_rows: [...trace.committed_rows],
+      slack_text_sha256: createHash('sha256').update(slackBody.text).digest('hex'),
+    } : {};
+    traceRelay('slack_dispatch_attempt', traceFields);
+
     try {
       const response = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(slackBody),
+      });
+      traceRelay('slack_dispatch_result', {
+        ...traceFields,
+        http_status: response.status,
+        http_ok: response.ok,
+        // Transport success is not yet an exact-message receipt.
+        slack_message_id: null,
       });
 
       if (!response.ok) {
@@ -301,6 +325,7 @@ export class ErrorRouter {
         status: 'sent',
       };
     } catch (err: any) {
+      traceRelay('slack_dispatch_result', { ...traceFields, http_ok: false, http_status: null, slack_message_id: null });
       this.failedDeliveries.push(classified);
       return {
         dispatched: false,
