@@ -315,6 +315,7 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
         ],
         metadata: {
           call_duration_secs: 64,
+          phone_call: { external_number: '+12025550123' },
           cost: 110,
           authorization_method: 'xi-api-key',
         },

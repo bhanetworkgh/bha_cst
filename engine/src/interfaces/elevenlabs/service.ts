@@ -203,7 +203,24 @@ export class ElevenLabsWebhookService {
     const tenantId = String(customVars.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01');
     const projectId = String(customVars.project_id || 'proj-vfarm-main');
     const phoneCall = (metadata.phone_call || {}) as Record<string, any>;
-    const callerPhone = String(customVars.caller_phone || phoneCall.external_number || metadata.caller_id || '+15550000000');
+    // Preserve source precedence, but never fabricate or coerce a caller identity.
+    const suppliedPhone = [customVars.caller_phone, phoneCall.external_number, metadata.caller_id]
+      .find((value) => value !== undefined && value !== null && value !== '');
+    const callerPhone = typeof suppliedPhone === 'string' ? suppliedPhone.trim() : '';
+    if (!/^\+[1-9]\d{1,14}$/.test(callerPhone)) {
+      const error = suppliedPhone === undefined ? 'CALLER_IDENTITY_MISSING' : 'CALLER_IDENTITY_INVALID';
+      FailureDetector.recordWebhookProcessingFailure(error);
+      Logger.warn(`ElevenLabsWebhookService: ${error}`);
+      return {
+        status: 'failed',
+        conversation_id: conversationId,
+        events_count: 0,
+        event_ids: [],
+        slack_delivered: false,
+        escalation_created: false,
+        error,
+      };
+    }
     const rawChannel = String(customVars.channel || 'voice').toLowerCase();
     const channel: AllowedChannel = rawChannel === 'whatsapp' ? 'whatsapp' : 'voice';
 
