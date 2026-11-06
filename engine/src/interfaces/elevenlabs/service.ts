@@ -249,7 +249,7 @@ export class ElevenLabsWebhookService {
       }
 
       // 4B. Normalize Transcript Event
-      const transcriptMessages = transcriptList.map((m: ElevenLabsTranscriptMessage) => ({
+      const transcriptMessages = transcriptList.map((m) => ({
         role: (m.role === 'agent' || m.role === 'assistant' ? 'agent' : m.role === 'system' ? 'system' : 'user') as 'user' | 'agent' | 'system',
         message: m.message,
         time_in_call_secs: m.time_in_call_secs,
