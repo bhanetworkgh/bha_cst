@@ -24,6 +24,7 @@ import { getResearchTwinConfigStatus } from './research_twin/config.js';
 import { researchTwinWebhookRouter } from './research_twin/webhook.js';
 import { elevenlabsWebhookRouter } from './interfaces/elevenlabs/index.js';
 import { voiceObservabilityRouter } from './interfaces/voice/observability_router.js';
+import { testAlertRouter } from './notifications/test_alert_router.js';
 import { FailureDetector } from './observability/failure_detector.js';
 import {
   normalizeFarmHealth,
@@ -118,6 +119,8 @@ export function createApp(): Express {
   app.use(voiceInterfaceRouter);
   app.use(webInterfaceRouter);
   app.use(brainInterfaceRouter);
+  // Operator alert test, locked behind CST_API_KEY; posts labelled test alerts only.
+  app.use(testAlertRouter);
   const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web');
 
   // ── vFarm Public & Dashboard Endpoints ─────────────────────────────────────
