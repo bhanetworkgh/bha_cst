@@ -1336,14 +1336,15 @@ export class DbClient {
    * a given time? Used to send the 971 calls-only reply at most once a day per
    * sender (8 Nov 2026). Reads Postgres when it is connected, otherwise the
    * in-memory store. A failed read answers "yes, already sent", so a database
-   * problem means one missed reply rather than a reply loop.
+   * problem means one missed reply rather than a reply loop. A reply that was
+   * refused or failed does not count, so it never blocks the next one.
    */
   static async hasRecentOutboundBody(fromE164: string, toE164: string, body: string, sinceIso: string): Promise<boolean> {
     const pool = this.getPool();
     if (pool) {
       try {
         const r = await pool.query(
-          `SELECT 1 FROM messages_out WHERE to_e164 = $1 AND body = $2 AND created_at >= $3 AND (from_e164 = $4 OR from_e164 IS NULL) LIMIT 1`,
+          `SELECT 1 FROM messages_out WHERE to_e164 = $1 AND body = $2 AND created_at >= $3 AND (from_e164 = $4 OR from_e164 IS NULL) AND status NOT IN ('refused', 'failed') LIMIT 1`,
           [toE164, body, sinceIso, fromE164],
         );
         return (r.rowCount || 0) > 0;
@@ -1354,7 +1355,7 @@ export class DbClient {
     }
     const since = Date.parse(sinceIso);
     for (const m of this.messagesOutStore.values()) {
-      if (m.to_e164 === toE164 && m.body === body && (!m.from_e164 || m.from_e164 === fromE164) && Date.parse(m.created_at || '') >= since) return true;
+      if (m.to_e164 === toE164 && m.body === body && (!m.from_e164 || m.from_e164 === fromE164) && m.status !== 'refused' && m.status !== 'failed' && Date.parse(m.created_at || '') >= since) return true;
     }
     return false;
   }

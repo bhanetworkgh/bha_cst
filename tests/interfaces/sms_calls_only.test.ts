@@ -58,6 +58,16 @@ describe('971 texts: calls-only reply', () => {
     expect(sent.filter((m) => m.body === CALLS_ONLY_REPLY)).toHaveLength(1);
   });
 
+  it('does not count a refused or failed reply toward the once-a-day limit', async () => {
+    await DbClient.saveOutboundMessage({
+      tenant_id: 'tenant-vfarm-01', from_e164: NUMBER, to_e164: '+15550005555', body: CALLS_ONLY_REPLY,
+      correlation_id: 'old', status: 'refused',
+    } as any);
+    await text('+15550005555', 'hello', 'SM_CO_8');
+    await settle();
+    expect(sent.filter((m) => m.body === CALLS_ONLY_REPLY)).toHaveLength(1);
+  });
+
   it('still answers HELP and STOP with their own replies', async () => {
     await text('+15550003333', 'HELP', 'SM_CO_4');
     await settle();
