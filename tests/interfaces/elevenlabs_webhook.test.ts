@@ -305,7 +305,7 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
 
     // The failed call log is reported to CST ops, never to the customer service channel
     expect(mockSlack).toHaveBeenCalledWith(
-      expect.objectContaining({ error_class: 'CST', destination_channel: '#cst-ops' }),
+      expect.objectContaining({ error_class: 'CST', destination_channel: '#bha-pipeline-errors' }),
       expect.anything()
     );
     // ErrorRouter tracks that report's failed delivery for retry
