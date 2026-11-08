@@ -227,6 +227,9 @@ export class ElevenLabsWebhookService {
         error,
       };
     }
+    // A WhatsApp call (not a chat) carries metadata.whatsapp.call_result, and its
+    // conversation is not text-only (seen live 8 Nov 2026).
+    const isWhatsAppCall = isWhatsApp && (!!whatsappMeta.call_result || metadata.text_only === false);
     const rawChannel = String(customVars.channel || (isWhatsApp ? 'whatsapp' : 'voice')).toLowerCase();
     const channel: AllowedChannel = rawChannel === 'whatsapp' ? 'whatsapp' : 'voice';
 
@@ -481,8 +484,10 @@ export class ElevenLabsWebhookService {
       // WhatsApp (8 Nov 2026, Destiny): a WhatsApp conversation is posted only
       // when the customer confirmed they were done and CST Genie closed it
       // (end_call). One that just went quiet still reaches the dashboard above.
+      // A WhatsApp call always gets its card, like a phone call: a caller who
+      // hangs up has ended it.
       const terminationReason = typeof metadata.termination_reason === 'string' ? metadata.termination_reason : '';
-      if (channel === 'whatsapp' && !/end_call/i.test(terminationReason)) {
+      if (channel === 'whatsapp' && !isWhatsAppCall && !/end_call/i.test(terminationReason)) {
         Logger.info(`ElevenLabsWebhookService: WhatsApp conversation ${conversationId} closed without the customer confirming (${terminationReason || 'no reason'}); dashboard only, no Slack card`);
         this.processedIdempotencyKeys.add(idempotencyKey);
         FailureDetector.recordWebhookProcessingSuccess();
@@ -500,6 +505,7 @@ export class ElevenLabsWebhookService {
       }
       const callLog = await CallLogPoster.post({
         channel: channel === 'whatsapp' ? 'whatsapp' : 'voice',
+        whatsapp_call: isWhatsAppCall,
         conversation_id: conversationId,
         caller_phone: callerPhone,
         started_unix: startUnix,
