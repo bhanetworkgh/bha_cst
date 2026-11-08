@@ -516,6 +516,14 @@ export class DbClient {
           // the in-memory view of a deferred retry disagrees with the row the
           // worker actually claimed.
           next_retry_at: r.next_retry_at ? new Date(r.next_retry_at).toISOString() : undefined,
+          // messages_out has no consent_exempt column, so the flag lived only on
+          // the in-memory record and this copy dropped it (8 Nov 2026): every
+          // HELP, STOP-confirmation, onboarding and calls-only reply to a
+          // not-yet-consented sender was then blocked by the consent gate in
+          // production. Keep the flag the record was queued with. After a
+          // restart the flag is gone and the reply is blocked, which fails
+          // closed.
+          consent_exempt: this.messagesOutStore.get(r.id)?.consent_exempt === true ? true : undefined,
         }));
 
         for (const msg of dbPending) {
