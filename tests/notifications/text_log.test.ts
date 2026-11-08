@@ -73,6 +73,32 @@ describe('every text on 971 posts one alert with its outcome', () => {
     expect(said[2]).toContain('Calls-only reply sent');
   });
 
+  it('answers HELP, STOP and START itself for a sender outside +1, with Twilio wording', async () => {
+    const sent: any[] = [];
+    TwilioClientWrapper.setMockHandler(async (p: any) => { sent.push(p); return { sid: `SM_O_${sent.length}`, status: 'queued' }; });
+    const from = '+2348000000001';
+    for (const [body, sid] of [['HELP', 'D1'], ['STOP', 'D2'], ['START', 'D3']]) {
+      await text(from, body, sid);
+      await settle();
+    }
+    expect(sent.map((m) => m.body)).toEqual([
+      expect.stringContaining('Bays Horizon Network (vFarm) support'),
+      expect.stringContaining("you're unsubscribed"),
+      expect.stringContaining("you're subscribed again"),
+    ]);
+    const said = cards.map((c) => JSON.stringify(c.blocks));
+    expect(said[0]).toContain('Answered by the CST service');
+    expect(said[2]).toContain('Opt-in recorded and confirmed by the CST service');
+  });
+
+  it('leaves keyword replies to Twilio for a +1 sender', async () => {
+    const sent: any[] = [];
+    TwilioClientWrapper.setMockHandler(async (p: any) => { sent.push(p); return { sid: 'SM_X', status: 'queued' }; });
+    await text('+15550004321', 'HELP', 'E1');
+    await settle();
+    expect(sent).toHaveLength(0);
+  });
+
   it('raises a card that Slack refuses instead of dropping it', async () => {
     TextLogPoster.mockHandler = async () => ({ ok: false, error: 'not_in_channel' });
     const r = await TextLogPoster.post({ from_e164: '+15550008888', to_e164: '+19715885823', body: 'hi', message_sid: 'B1', outcome: 'calls_only_sent' });

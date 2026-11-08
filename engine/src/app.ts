@@ -42,6 +42,16 @@ export function createApp(): Express {
   // ── Body Parsing ────────────────────────────────────────────────────────────
   // Twilio sends application/x-www-form-urlencoded webhooks or JSON CloudEvents.
   // Limit body size to 100kb to prevent payload floods, and preserve rawBody for signature verification.
+  // ElevenLabs' post-call webhook carries the whole transcript and analysis,
+  // which passed 100kb on Destiny's first full test call (8 Nov 2026): the
+  // request was refused as "entity too large" and no call card was posted.
+  // This route alone gets a larger limit; it is HMAC-checked against rawBody.
+  app.use('/webhooks/elevenlabs', express.json({
+    limit: '5mb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  }));
   app.use(express.urlencoded({
     extended: true,
     limit: '100kb',

@@ -45,6 +45,18 @@ export async function shouldSendCallsOnlyReply(fromServiceNumber: string, toSend
  * opt-in or opt-out and sends nothing; CST_SMS_KEYWORD_REPLIES=app brings back
  * this service's own keyword replies (for a number without Twilio's handling).
  */
-export function appSendsKeywordReplies(): boolean {
-  return (process.env.CST_SMS_KEYWORD_REPLIES || '').trim().toLowerCase() === 'app';
+export function appSendsKeywordReplies(senderE164?: string): boolean {
+  if ((process.env.CST_SMS_KEYWORD_REPLIES || '').trim().toLowerCase() === 'app') return true;
+  // Twilio's opt-out replies only went to US and Canadian senders on Destiny's
+  // live test (8 Nov 2026): his Nigerian number got the calls-only reply but
+  // nothing for HELP, STOP or START. So this service answers keywords itself
+  // for any sender outside +1, using the same wording Twilio uses.
+  return !!senderE164 && !senderE164.startsWith('+1');
 }
+
+/** Twilio's keyword wording on the approved service, for senders outside +1. */
+export const KEYWORD_REPLY = {
+  help: 'Bays Horizon Network (vFarm) support: call this number to talk to Genie, our automated assistant, or email support@bhanetwork.org. More at bhanetwork.org. Msg&data rates may apply. Reply STOP to opt out.',
+  stop: "Bays Horizon Network: you're unsubscribed and won't get more texts from this number. Reply START to rejoin.",
+  start: "Bays Horizon Network: you're subscribed again. Reply HELP for help or STOP to opt out. Msg & data rates may apply.",
+};

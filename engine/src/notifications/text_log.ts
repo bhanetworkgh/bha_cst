@@ -21,6 +21,9 @@ export type TextOutcome =
   | 'help_by_twilio'
   | 'stop_by_twilio'
   | 'start_by_twilio'
+  | 'help_by_cst'
+  | 'stop_by_cst'
+  | 'start_by_cst'
   | 'opted_out_silent'
   | 'agent_reply';
 
@@ -48,6 +51,9 @@ const OUTCOME: Record<TextOutcome, { emoji: string; title: string; line: string 
   help_by_twilio: { emoji: ':information_source:', title: 'HELP text', line: 'Answered by Twilio with the approved HELP reply.' },
   stop_by_twilio: { emoji: ':no_entry_sign:', title: 'STOP text: opted out', line: 'Opt-out recorded. Twilio sent the unsubscribe confirmation; no more texts go to this number.' },
   start_by_twilio: { emoji: ':white_check_mark:', title: 'START text: opted back in', line: 'Opt-in recorded. Twilio sent the confirmation.' },
+  help_by_cst: { emoji: ':information_source:', title: 'HELP text', line: 'Answered by the CST service with the HELP reply (Twilio only answers US and Canadian numbers).' },
+  stop_by_cst: { emoji: ':no_entry_sign:', title: 'STOP text: opted out', line: 'Opt-out recorded and confirmed by the CST service (Twilio only answers US and Canadian numbers); no more texts go to this number.' },
+  start_by_cst: { emoji: ':white_check_mark:', title: 'START text: opted back in', line: 'Opt-in recorded and confirmed by the CST service (Twilio only answers US and Canadian numbers).' },
   opted_out_silent: { emoji: ':speech_balloon:', title: 'Text from an opted-out number', line: 'No reply: this sender has opted out.' },
   agent_reply: { emoji: ':speech_balloon:', title: 'New text', line: 'Answered by the agent (CST_SMS_AGENT_REPLIES is on).' },
 };
