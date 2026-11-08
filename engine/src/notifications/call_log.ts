@@ -41,7 +41,11 @@ export interface CallLogInput {
   termination_reason?: string;
   /** Twilio Call SID, so the card covers what the old status post showed. */
   call_sid?: string;
+  /** 'whatsapp' for the WhatsApp agent (chats and WhatsApp calls); phone calls otherwise. */
+  channel?: 'voice' | 'whatsapp';
 }
+
+const who = (input: { channel?: string }) => (input.channel === 'whatsapp' ? 'Customer' : 'Caller');
 
 /** How the call ended, in plain words (8 Nov 2026). */
 export function howItEnded(reason?: string): { text: string; problem: boolean } {
@@ -112,12 +116,12 @@ export function buildTranscriptText(input: CallLogInput): string {
   const head = [
     'CST Genie call transcript',
     `Conversation: ${input.conversation_id}`,
-    `Caller: ${maskPhone(input.caller_phone)}`,
+    `${who(input)}: ${maskPhone(input.caller_phone)}`,
     `Started: ${newYorkTime(input.started_unix)} New York`,
     `Length: ${formatDuration(input.duration_secs)}`,
     '',
   ];
-  const body = input.lines.map((l) => `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : l.role === 'user' ? 'Caller' : 'System'}: ${l.message}`);
+  const body = input.lines.map((l) => `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : l.role === 'user' ? who(input) : 'System'}: ${l.message}`);
   return [...head, ...(body.length ? body : ['(nothing was said on this call)'])].join('\n') + '\n';
 }
 
@@ -134,10 +138,10 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
   const callerTurns = input.lines.filter((l) => l.role === 'user').length;
 
   const title = urgent
-    ? ':rotating_light:  Urgent call'
+    ? (input.channel === 'whatsapp' ? ':rotating_light:  Urgent WhatsApp conversation' : ':rotating_light:  Urgent call')
     : wantedPerson
-      ? ':raising_hand:  Call ended: caller asked for a person'
-      : ':telephone_receiver:  Call ended';
+      ? (input.channel === 'whatsapp' ? ':raising_hand:  WhatsApp conversation closed: customer asked for a person' : ':raising_hand:  Call ended: caller asked for a person')
+      : (input.channel === 'whatsapp' ? ':speech_balloon:  WhatsApp conversation closed' : ':telephone_receiver:  Call ended');
 
   const blocks: any[] = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: true } },
@@ -145,12 +149,12 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `CST Genie  •  ${formatDuration(input.duration_secs)}  •  ${newYorkTime(input.started_unix)} New York  •  Caller ${esc(maskPhone(input.caller_phone))}`,
+        text: `CST Genie  •  ${input.channel === 'whatsapp' ? 'WhatsApp  •  ' : ''}${formatDuration(input.duration_secs)}  •  ${newYorkTime(input.started_unix)} New York  •  ${who(input)} ${esc(maskPhone(input.caller_phone))}`,
       }],
     },
   ];
 
-  const summary = input.summary || (callerTurns === 0 ? 'The caller hung up before saying anything.' : String(reason || 'No summary was produced for this call.'));
+  const summary = input.summary || (callerTurns === 0 ? (input.channel === 'whatsapp' ? 'The customer sent nothing.' : 'The caller hung up before saying anything.') : String(reason || 'No summary was produced for this call.'));
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Summary*\n${esc(summary)}` } });
 
   const handoff = !wantedPerson ? 'Not asked for' : handoffSent ? ':white_check_mark: Sent to the team' : ':x: Not sent';
@@ -158,9 +162,10 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
     { type: 'mrkdwn', text: `*Wanted a person*\n${wantedPerson ? 'Yes' : 'No'}` },
     { type: 'mrkdwn', text: `*Handoff*\n${handoff}` },
     { type: 'mrkdwn', text: `*Urgent*\n${urgent ? ':red_circle: Yes' : 'No'}` },
-    { type: 'mrkdwn', text: `*Caller turns*\n${callerTurns}` },
+    { type: 'mrkdwn', text: `*${who(input)} turns*\n${callerTurns}` },
   ];
   const ended = howItEnded(input.termination_reason);
+  if (input.channel === 'whatsapp' && ended.text === 'CST Genie ended the call') ended.text = 'Closed by CST Genie after the customer confirmed';
   fields.push({ type: 'mrkdwn', text: `*How it ended*\n${ended.problem ? ':warning: ' : ''}${esc(ended.text)}` });
   if (name) fields.push({ type: 'mrkdwn', text: `*Name*\n${esc(name)}` });
   if (email) fields.push({ type: 'mrkdwn', text: `*Email*\n${esc(email)}` });
@@ -199,7 +204,7 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
 
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `Conversation \`${esc(input.conversation_id)}\`${input.call_sid ? `  •  Call \`${esc(input.call_sid)}\`` : ''}  •  Full transcript in the thread` }] });
 
-  const text = `${urgent ? 'URGENT ' : ''}CST Genie call (${formatDuration(input.duration_secs)}, ${maskPhone(input.caller_phone)}): ${esc(summary)}`.slice(0, 300);
+  const text = `${urgent ? 'URGENT ' : ''}CST Genie ${input.channel === 'whatsapp' ? 'WhatsApp' : 'call'} (${formatDuration(input.duration_secs)}, ${maskPhone(input.caller_phone)}): ${esc(summary)}`.slice(0, 300);
   return { text, blocks };
 }
 
@@ -210,7 +215,7 @@ function transcriptBlocks(input: CallLogInput): any[] {
     ? lines.map((l) => ({
         type: 'rich_text_section',
         elements: [
-          { type: 'text', text: `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : 'Caller'}: `, style: { bold: true } },
+          { type: 'text', text: `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : who(input)}: `, style: { bold: true } },
           { type: 'text', text: l.message.slice(0, 1500) },
         ],
       }))

@@ -13,7 +13,7 @@ import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
 import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
-import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies, KEYWORD_REPLY } from './text_policy.js';
+import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies, KEYWORD_REPLY, publishTextTurn } from './text_policy.js';
 import { TextLogPoster, TextOutcome } from '../../notifications/text_log.js';
 
 export const smsInterfaceRouter = Router();
@@ -137,8 +137,19 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
     const binding = (req as any).serviceBinding;
     const normalizedMsg = normalizeTwilioInbound(req.body, tenancy.tenant_id, tenancy.system_id);
     // Text alert in the customer service twin channel (8 Nov 2026).
-    const alertText = (outcome: TextOutcome, reply: string | null = null) =>
-      TextLogPoster.post({
+    const alertText = (outcome: TextOutcome, reply: string | null = null) => {
+      if (outcome !== 'agent_reply') {
+        publishTextTurn({
+          message_sid: normalizedMsg.message_id,
+          tenant_id: tenancy.tenant_id,
+          project_id: (req as any).serviceBinding?.project_id,
+          from_e164: normalizedMsg.from_e164,
+          body: normalizedMsg.body,
+          reply,
+          outcome,
+        });
+      }
+      return TextLogPoster.post({
         reply,
         from_e164: normalizedMsg.from_e164,
         to_e164: normalizedMsg.to_e164,
@@ -148,6 +159,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         tenant_id: tenancy.tenant_id,
         num_media: (normalizedMsg.media || []).length,
       });
+    };
     // Keyword handling (8 Nov 2026): Twilio answers START, HELP and STOP for
     // senders on +1. For anyone else this service answers with Twilio's
     // wording, because Twilio's replies did not reach a Nigerian number.

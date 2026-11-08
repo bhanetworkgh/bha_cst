@@ -205,7 +205,12 @@ export class ElevenLabsWebhookService {
     const projectId = String(customVars.project_id || 'proj-vfarm-main');
     const phoneCall = (metadata.phone_call || {}) as Record<string, any>;
     // Preserve source precedence, but never fabricate or coerce a caller identity.
-    const suppliedPhone = [customVars.caller_phone, phoneCall.external_number, metadata.caller_id]
+    // WhatsApp (8 Nov 2026): the sender comes as metadata.whatsapp.whatsapp_user_id,
+    // digits with the country code and no '+'.
+    const whatsappMeta = (metadata.whatsapp || {}) as Record<string, any>;
+    const isWhatsApp = metadata.conversation_initiation_source === 'whatsapp' || !!metadata.whatsapp;
+    const whatsappUser = String(whatsappMeta.whatsapp_user_id || whatsappMeta.recipient?.phone || '').replace(/\D/g, '');
+    const suppliedPhone = [customVars.caller_phone, phoneCall.external_number, metadata.caller_id, whatsappUser ? `+${whatsappUser}` : undefined]
       .find((value) => value !== undefined && value !== null && value !== '');
     const callerPhone = typeof suppliedPhone === 'string' ? suppliedPhone.trim() : '';
     if (!/^\+[1-9]\d{1,14}$/.test(callerPhone)) {
@@ -222,7 +227,7 @@ export class ElevenLabsWebhookService {
         error,
       };
     }
-    const rawChannel = String(customVars.channel || 'voice').toLowerCase();
+    const rawChannel = String(customVars.channel || (isWhatsApp ? 'whatsapp' : 'voice')).toLowerCase();
     const channel: AllowedChannel = rawChannel === 'whatsapp' ? 'whatsapp' : 'voice';
 
     // Tool turns carry no text; only spoken lines go on.
@@ -257,7 +262,7 @@ export class ElevenLabsWebhookService {
         const startEventId = `evt_start_${randomUUID()}`;
         const startEvent = createCstInteractionStartEventV1({
           id: startEventId,
-          source: 'cst/voice/elevenlabs',
+          source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
           time: startIso,
           tenant_id: tenantId,
           project_id: projectId,
@@ -287,7 +292,7 @@ export class ElevenLabsWebhookService {
       const transcriptEventId = `evt_trsc_${randomUUID()}`;
       const transcriptEvent = createCstTranscriptEventV1({
         id: transcriptEventId,
-        source: 'cst/voice/elevenlabs',
+        source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
         time: nowIso,
         tenant_id: tenantId,
         project_id: projectId,
@@ -311,7 +316,7 @@ export class ElevenLabsWebhookService {
       const outcomeEventId = `evt_outc_${randomUUID()}`;
       const outcomeEvent = createCstOutcomeEventV1({
         id: outcomeEventId,
-        source: 'cst/voice/elevenlabs',
+        source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
         time: nowIso,
         tenant_id: tenantId,
         project_id: projectId,
@@ -434,7 +439,7 @@ export class ElevenLabsWebhookService {
       const turnEvent = {
         specversion: 'cst.event.v1',
         id: `turn_evt_${randomUUID()}`,
-        source: 'cst/voice/elevenlabs',
+        source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
         time: callTime,
         tenant_id: tenantId,
         project_id: projectId,
@@ -473,7 +478,28 @@ export class ElevenLabsWebhookService {
       // 6. Call log in #bha-customer-service-twin from the CS Twin app: a Block
       // Kit card with the summary and checks, transcript as a file in the
       // thread. A failed post is reported to CST ops, never to this channel.
+      // WhatsApp (8 Nov 2026, Destiny): a WhatsApp conversation is posted only
+      // when the customer confirmed they were done and CST Genie closed it
+      // (end_call). One that just went quiet still reaches the dashboard above.
+      const terminationReason = typeof metadata.termination_reason === 'string' ? metadata.termination_reason : '';
+      if (channel === 'whatsapp' && !/end_call/i.test(terminationReason)) {
+        Logger.info(`ElevenLabsWebhookService: WhatsApp conversation ${conversationId} closed without the customer confirming (${terminationReason || 'no reason'}); dashboard only, no Slack card`);
+        this.processedIdempotencyKeys.add(idempotencyKey);
+        FailureDetector.recordWebhookProcessingSuccess();
+        return {
+          status: 'processed',
+          conversation_id: conversationId,
+          events_count: generatedEvents.length,
+          event_ids: eventIds,
+          slack_delivered: false,
+          escalation_created: escalationCreated,
+          escalation_id: escalationId,
+          dashboard_published: publishResult.success && !publishResult.dryRun,
+          dashboard_error: publishResult.success ? undefined : publishResult.error,
+        };
+      }
       const callLog = await CallLogPoster.post({
+        channel: channel === 'whatsapp' ? 'whatsapp' : 'voice',
         conversation_id: conversationId,
         caller_phone: callerPhone,
         started_unix: startUnix,

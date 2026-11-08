@@ -60,3 +60,66 @@ export const KEYWORD_REPLY = {
   stop: "Bays Horizon Network: you're unsubscribed and won't get more texts from this number. Reply START to rejoin.",
   start: "Bays Horizon Network: you're subscribed again. Reply HELP for help or STOP to opt out. Msg & data rates may apply.",
 };
+
+/**
+ * Dashboard record for a text (8 Nov 2026, Destiny): the CST page and Bays read
+ * the dashboard, and the calls-only and keyword paths never reach the Core
+ * Engine that used to write the turn. Every text now writes one cst.turn with
+ * channel sms, what they wrote, what we replied and the outcome as its intent.
+ */
+import { randomUUID } from 'node:crypto';
+import { getDashboardPublisher } from '../../publishers/dashboard.js';
+import { isTestRunner } from '../../config/runtime.js';
+
+export function publishTextTurn(input: {
+  message_sid: string;
+  tenant_id: string;
+  project_id?: string;
+  from_e164: string;
+  body: string;
+  reply: string | null;
+  outcome: string;
+}): void {
+  const now = new Date().toISOString();
+  const customer = { customer_ref: input.from_e164, phone_e164: input.from_e164, role: 'unknown', is_known: false, tenant_id: input.tenant_id, project_id: input.project_id };
+  try {
+    getDashboardPublisher().publishFireAndForget({
+      specversion: 'cst.event.v1',
+      id: `turn_evt_${randomUUID()}`,
+      source: 'cst/sms/text_policy',
+      time: now,
+      tenant_id: input.tenant_id,
+      project_id: input.project_id,
+      correlation_id: input.message_sid,
+      channel: 'sms',
+      customer,
+      type: 'cst.turn',
+      data: {
+        turn_id: input.message_sid,
+        conversation_id: input.message_sid,
+        direction: 'inbound',
+        channel: 'sms',
+        // The dashboard takes ok, refused, step_up_required, onboarding or error.
+        // A text to an opted-out sender is refused; every other text was handled
+        // as designed (ok), with or without a reply, and the outcome says which.
+        status: input.outcome === 'opted_out_silent' ? 'refused' : 'ok',
+        intent: input.outcome,
+        text: input.body,
+        message: input.body,
+        reply_text: input.reply || '',
+        reply: input.reply || '',
+        duration: { total_ms: 0 },
+        duration_ms: 0,
+        tenant_id: input.tenant_id,
+        project_id: input.project_id,
+        customer,
+        event_type: 'cst.turn',
+        occurred_at: now,
+        ...(isTestRunner() ? { test: true } : {}),
+        metadata: { source: 'text_policy', outcome: input.outcome },
+      },
+    });
+  } catch {
+    // The publisher reports and replays its own failures.
+  }
+}
