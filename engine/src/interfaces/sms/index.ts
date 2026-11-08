@@ -14,6 +14,7 @@ import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsent
 import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
 import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies } from './text_policy.js';
+import { TextLogPoster, TextOutcome } from '../../notifications/text_log.js';
 
 export const smsInterfaceRouter = Router();
 
@@ -135,6 +136,17 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
     const tenancy = req.tenancy!;
     const binding = (req as any).serviceBinding;
     const normalizedMsg = normalizeTwilioInbound(req.body, tenancy.tenant_id, tenancy.system_id);
+    // Text alert in the customer service twin channel (8 Nov 2026).
+    const alertText = (outcome: TextOutcome) =>
+      TextLogPoster.post({
+        from_e164: normalizedMsg.from_e164,
+        to_e164: normalizedMsg.to_e164,
+        body: normalizedMsg.body,
+        message_sid: normalizedMsg.message_id,
+        outcome,
+        tenant_id: tenancy.tenant_id,
+        num_media: (normalizedMsg.media || []).length,
+      });
 
     // Deduplication check via MessageSid
     const { isDuplicate } = await DbClient.saveInboundMessage(normalizedMsg);
@@ -167,6 +179,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         );
         if (stopResult && !appSendsKeywordReplies()) {
           // Opt-out recorded; Twilio sends the confirmation (see text_policy.ts).
+          await alertText('stop_by_twilio');
           return;
         }
         if (stopResult) {
@@ -197,6 +210,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         );
         if (helpResult && !appSendsKeywordReplies()) {
           // HELP recorded; Twilio sends the registered HELP reply.
+          await alertText('help_by_twilio');
           return;
         }
         if (helpResult) {
@@ -227,6 +241,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         );
         if (resubscribeResult && !appSendsKeywordReplies()) {
           // Re-subscribe recorded; Twilio sends the START confirmation.
+          await alertText('start_by_twilio');
           return;
         }
         if (resubscribeResult) {
@@ -319,6 +334,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
             phone_e164: normalizedMsg.from_e164,
             correlation_id: normalizedMsg.message_id,
           });
+          await alertText('opted_out_silent');
           return;
         }
 
@@ -395,6 +411,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         if (!agentRepliesEnabled()) {
           if (!appSendsKeywordReplies() && isResubscribeRequest(normalizedMsg.body)) {
             // START from someone who never opted out: Twilio answers it.
+            await alertText('start_by_twilio');
             return;
           }
           const send = await shouldSendCallsOnlyReply(normalizedMsg.to_e164, normalizedMsg.from_e164);
@@ -403,6 +420,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
               tenant_id: binding.tenant_id,
               correlation_id: normalizedMsg.message_id,
             });
+            await alertText('calls_only_already_sent');
             return;
           }
           const callsOnlyReply: OutboundMessage = {
@@ -420,6 +438,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           };
           await DbClient.saveOutboundMessage(callsOnlyReply);
           await processOutboundQueue();
+          await alertText('calls_only_sent');
           return;
         }
 
@@ -488,6 +507,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
 
         // Process through Core Engine
         const engineResponse = await CoreEngine.processEnvelope(envelope, speaker);
+        void alertText('agent_reply');
 
         // Save outbound message and process queue.
         // IMPORTANT: correlation_id = envelope.correlation_id = MessageSid = cst.turn.turn_id
