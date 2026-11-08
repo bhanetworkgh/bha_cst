@@ -34,3 +34,17 @@ export async function shouldSendCallsOnlyReply(fromServiceNumber: string, toSend
   const already = await DbClient.hasRecentOutboundBody(fromServiceNumber, toSender, CALLS_ONLY_REPLY, since);
   return !already;
 }
+
+/**
+ * Who answers START, HELP and STOP on this number (8 Nov 2026, Destiny).
+ *
+ * Twilio's opt-out management on the approved messaging service already
+ * answers all three with the campaign's registered wording (seen live: HELP
+ * from 945 got Twilio's reply). If this service answered as well, every
+ * keyword would get two replies. So by default this service records the
+ * opt-in or opt-out and sends nothing; CST_SMS_KEYWORD_REPLIES=app brings back
+ * this service's own keyword replies (for a number without Twilio's handling).
+ */
+export function appSendsKeywordReplies(): boolean {
+  return (process.env.CST_SMS_KEYWORD_REPLIES || '').trim().toLowerCase() === 'app';
+}

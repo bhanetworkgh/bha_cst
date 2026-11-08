@@ -25,6 +25,7 @@ describe('971 texts: calls-only reply', () => {
 
   beforeEach(() => {
     vi.stubEnv('CST_SMS_AGENT_REPLIES', '');
+    vi.stubEnv('CST_SMS_KEYWORD_REPLIES', '');
     DbClient.clearAll();
     SystemsRegistry.resetToDefault();
     seedTestCustomers();
@@ -68,13 +69,24 @@ describe('971 texts: calls-only reply', () => {
     expect(sent.filter((m) => m.body === CALLS_ONLY_REPLY)).toHaveLength(1);
   });
 
-  it('still answers HELP and STOP with their own replies', async () => {
+  it('leaves START, HELP and STOP replies to Twilio, sends nothing itself, and still records the opt-out', async () => {
     await text('+15550003333', 'HELP', 'SM_CO_4');
+    await text('+15550003333', 'START', 'SM_CO_4b');
     await settle();
-    expect(sent[0].body).toContain('Reply STOP to cancel');
+    expect(sent).toHaveLength(0);
     await text('+15550003333', 'STOP', 'SM_CO_5');
     await settle();
-    expect(sent[1].body).toContain('You have been unsubscribed');
+    expect(sent).toHaveLength(0);
+    const { getConsentStatus } = await import('../../engine/src/consent/service.js');
+    const { status } = await getConsentStatus('tenant-vfarm-01', '+15550003333', 'proj-vfarm-main');
+    expect(status).toBe('opted_out');
+  });
+
+  it('sends its own keyword replies when CST_SMS_KEYWORD_REPLIES=app', async () => {
+    vi.stubEnv('CST_SMS_KEYWORD_REPLIES', 'app');
+    await text('+15550006666', 'HELP', 'SM_CO_9');
+    await settle();
+    expect(sent[0].body).toContain('Reply STOP to cancel');
   });
 
   it('stays silent to a sender who has opted out', async () => {

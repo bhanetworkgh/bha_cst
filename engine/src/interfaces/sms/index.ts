@@ -13,7 +13,7 @@ import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
 import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
-import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply } from './text_policy.js';
+import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies } from './text_policy.js';
 
 export const smsInterfaceRouter = Router();
 
@@ -165,6 +165,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
+        if (stopResult && !appSendsKeywordReplies()) {
+          // Opt-out recorded; Twilio sends the confirmation (see text_policy.ts).
+          return;
+        }
         if (stopResult) {
           // Send the STOP confirmation reply (consent_exempt — opt-out confirmation is allowed)
           const confirmationReply: OutboundMessage = {
@@ -191,6 +195,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
+        if (helpResult && !appSendsKeywordReplies()) {
+          // HELP recorded; Twilio sends the registered HELP reply.
+          return;
+        }
         if (helpResult) {
           const helpReply: OutboundMessage = {
             tenant_id: binding.tenant_id,
@@ -217,6 +225,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
+        if (resubscribeResult && !appSendsKeywordReplies()) {
+          // Re-subscribe recorded; Twilio sends the START confirmation.
+          return;
+        }
         if (resubscribeResult) {
           // Send the consent prompt reply (consent_exempt — this is the prompt itself)
           const confirmationReply: OutboundMessage = {
@@ -381,6 +393,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // once a day per sender, and never reaches the Core Engine.
         // CST_SMS_AGENT_REPLIES=on restores the old engine replies.
         if (!agentRepliesEnabled()) {
+          if (!appSendsKeywordReplies() && isResubscribeRequest(normalizedMsg.body)) {
+            // START from someone who never opted out: Twilio answers it.
+            return;
+          }
           const send = await shouldSendCallsOnlyReply(normalizedMsg.to_e164, normalizedMsg.from_e164);
           if (!send) {
             Logger.info(`Inbound SMS from ${maskPhone(normalizedMsg.from_e164)}: calls-only reply already sent in the last day; no reply`, {

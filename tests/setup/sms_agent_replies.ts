@@ -3,3 +3,4 @@
 // engine/src/interfaces/sms/text_policy.ts). They keep running against it with
 // the switch on. tests/interfaces/sms_calls_only.test.ts covers the default.
 if (process.env.CST_SMS_AGENT_REPLIES === undefined) process.env.CST_SMS_AGENT_REPLIES = 'on';
+if (process.env.CST_SMS_KEYWORD_REPLIES === undefined) process.env.CST_SMS_KEYWORD_REPLIES = 'app';
