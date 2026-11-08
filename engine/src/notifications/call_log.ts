@@ -49,7 +49,7 @@ export function howItEnded(reason?: string): { text: string; problem: boolean } 
   if (!r) return { text: 'Ended', problem: false };
   const lower = r.toLowerCase();
   if (lower.includes('remote party') || lower.includes('caller')) return { text: 'Caller hung up', problem: false };
-  if (lower.includes('end_call') || lower.includes('agent ended') || lower.includes('ended by agent')) return { text: 'Genie ended the call', problem: false };
+  if (lower.includes('end_call') || lower.includes('agent ended') || lower.includes('ended by agent')) return { text: 'CST Genie ended the call', problem: false };
   if (lower.includes('guardrail')) return { text: `Cut off by a safety rule: ${r}`, problem: true };
   if (lower.includes('silence')) return { text: 'Ended after silence', problem: false };
   if (lower.includes('max') && lower.includes('duration')) return { text: 'Hit the time limit', problem: true };
@@ -117,7 +117,7 @@ export function buildTranscriptText(input: CallLogInput): string {
     `Length: ${formatDuration(input.duration_secs)}`,
     '',
   ];
-  const body = input.lines.map((l) => `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'Genie' : l.role === 'user' ? 'Caller' : 'System'}: ${l.message}`);
+  const body = input.lines.map((l) => `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : l.role === 'user' ? 'Caller' : 'System'}: ${l.message}`);
   return [...head, ...(body.length ? body : ['(nothing was said on this call)'])].join('\n') + '\n';
 }
 
@@ -167,7 +167,7 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
   blocks.push({ type: 'section', fields });
 
   if (unanswered) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Genie couldn't answer*\n>${esc(unanswered).replace(/\n/g, '\n>')}` } });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*CST Genie couldn't answer*\n>${esc(unanswered).replace(/\n/g, '\n>')}` } });
   }
 
   const evaluation = input.evaluation || {};
@@ -210,7 +210,7 @@ function transcriptBlocks(input: CallLogInput): any[] {
     ? lines.map((l) => ({
         type: 'rich_text_section',
         elements: [
-          { type: 'text', text: `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'Genie' : 'Caller'}: `, style: { bold: true } },
+          { type: 'text', text: `[${formatClock(l.time_in_call_secs)}] ${l.role === 'agent' ? 'CST Genie' : 'Caller'}: `, style: { bold: true } },
           { type: 'text', text: l.message.slice(0, 1500) },
         ],
       }))
