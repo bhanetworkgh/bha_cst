@@ -43,6 +43,8 @@ export interface CallLogInput {
   call_sid?: string;
   /** 'whatsapp' for the WhatsApp agent (chats and WhatsApp calls); phone calls otherwise. */
   channel?: 'voice' | 'whatsapp';
+  /** True for a WhatsApp call (not a chat): the card says call, not conversation. */
+  whatsapp_call?: boolean;
 }
 
 const who = (input: { channel?: string }) => (input.channel === 'whatsapp' ? 'Customer' : 'Caller');
@@ -52,7 +54,8 @@ export function howItEnded(reason?: string): { text: string; problem: boolean } 
   const r = String(reason || '').trim();
   if (!r) return { text: 'Ended', problem: false };
   const lower = r.toLowerCase();
-  if (lower.includes('remote party') || lower.includes('caller')) return { text: 'Caller hung up', problem: false };
+  // A WhatsApp caller hanging up arrives as "Client disconnected: 1000".
+  if (lower.includes('remote party') || lower.includes('caller') || lower.includes('client disconnected')) return { text: 'Caller hung up', problem: false };
   if (lower.includes('end_call') || lower.includes('agent ended') || lower.includes('ended by agent')) return { text: 'CST Genie ended the call', problem: false };
   if (lower.includes('guardrail')) return { text: `Cut off by a safety rule: ${r}`, problem: true };
   if (lower.includes('silence')) return { text: 'Ended after silence', problem: false };
@@ -137,11 +140,13 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
   const unanswered = collected(dc, 'unanswered_question');
   const callerTurns = input.lines.filter((l) => l.role === 'user').length;
 
+  const waChat = input.channel === 'whatsapp' && !input.whatsapp_call;
+  const waCall = input.channel === 'whatsapp' && !!input.whatsapp_call;
   const title = urgent
-    ? (input.channel === 'whatsapp' ? ':rotating_light:  Urgent WhatsApp conversation' : ':rotating_light:  Urgent call')
+    ? (waChat ? ':rotating_light:  Urgent WhatsApp conversation' : waCall ? ':rotating_light:  Urgent WhatsApp call' : ':rotating_light:  Urgent call')
     : wantedPerson
-      ? (input.channel === 'whatsapp' ? ':raising_hand:  WhatsApp conversation closed: customer asked for a person' : ':raising_hand:  Call ended: caller asked for a person')
-      : (input.channel === 'whatsapp' ? ':speech_balloon:  WhatsApp conversation closed' : ':telephone_receiver:  Call ended');
+      ? (waChat ? ':raising_hand:  WhatsApp conversation closed: customer asked for a person' : waCall ? ':raising_hand:  WhatsApp call ended: customer asked for a person' : ':raising_hand:  Call ended: caller asked for a person')
+      : (waChat ? ':speech_balloon:  WhatsApp conversation closed' : waCall ? ':telephone_receiver:  WhatsApp call ended' : ':telephone_receiver:  Call ended');
 
   const blocks: any[] = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: true } },
@@ -149,7 +154,7 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `CST Genie  •  ${input.channel === 'whatsapp' ? 'WhatsApp  •  ' : ''}${formatDuration(input.duration_secs)}  •  ${newYorkTime(input.started_unix)} New York  •  ${who(input)} ${esc(maskPhone(input.caller_phone))}`,
+        text: `CST Genie  •  ${waCall ? 'WhatsApp call  •  ' : waChat ? 'WhatsApp  •  ' : ''}${formatDuration(input.duration_secs)}  •  ${newYorkTime(input.started_unix)} New York  •  ${who(input)} ${esc(maskPhone(input.caller_phone))}`,
       }],
     },
   ];
@@ -165,7 +170,7 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
     { type: 'mrkdwn', text: `*${who(input)} turns*\n${callerTurns}` },
   ];
   const ended = howItEnded(input.termination_reason);
-  if (input.channel === 'whatsapp' && ended.text === 'CST Genie ended the call') ended.text = 'Closed by CST Genie after the customer confirmed';
+  if (waChat && ended.text === 'CST Genie ended the call') ended.text = 'Closed by CST Genie after the customer confirmed';
   fields.push({ type: 'mrkdwn', text: `*How it ended*\n${ended.problem ? ':warning: ' : ''}${esc(ended.text)}` });
   if (name) fields.push({ type: 'mrkdwn', text: `*Name*\n${esc(name)}` });
   if (email) fields.push({ type: 'mrkdwn', text: `*Email*\n${esc(email)}` });

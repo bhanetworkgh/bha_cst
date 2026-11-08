@@ -76,4 +76,16 @@ describe('WhatsApp post-call', () => {
     expect(res.body.slack_delivered).toBe(false);
     expect(cards).toHaveLength(0);
   });
+
+  it('always posts a card for a WhatsApp call, even when the caller hung up', async () => {
+    const body: any = payload('conv_wa_3', 'Client disconnected: 1000');
+    body.metadata.text_only = false;
+    body.metadata.whatsapp.call_result = 'answered';
+    const res = await send(body);
+    expect(res.status).toBe(200);
+    expect(cards).toHaveLength(1);
+    const json = JSON.stringify(cards[0].blocks);
+    expect(json).toContain('WhatsApp call ended');
+    expect(json).toContain('Caller hung up');
+  });
 });
