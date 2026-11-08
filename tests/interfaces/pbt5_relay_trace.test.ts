@@ -83,7 +83,8 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     const slackCall = network.mock.calls.find(([url]) => url === 'https://slack.invalid/webhook');
     const slackBody = JSON.parse(slackCall![1].body);
     expect(slackBody.text).toContain(`[PBT5 trace: ${attempt.dispatch_id}]`);
-    expect(slackBody.channel).toBe('#bha-customer-service-twin');
+    expect(attempt.destination_channel).toBe('#bha-customer-service-twin');
+    expect(slackBody.blocks[0].type).toBe('header');
     const evidence = readDispatchEvidence(rows.map((r) => JSON.stringify(r)).join('\n'), attempt.dispatch_id);
     const reads = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, messages: [{ bot_id: 'B123', ts: '100.001', text: slackBody.text }] })))
@@ -121,7 +122,7 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     expect(traces()).toEqual([]);
     const body = JSON.parse(network.mock.calls.find(([url]) => url === 'https://slack.invalid/webhook')![1].body);
     expect(body.text).not.toContain('PBT5 trace');
-    expect(body.correlation_id).toBe('conv_off');
+    expect(JSON.stringify(body.blocks)).toContain('conv_off');
   });
 
   it('retains duplicate suppression and does not manufacture a second dispatch', async () => {
