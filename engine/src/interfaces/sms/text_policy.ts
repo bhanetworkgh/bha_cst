@@ -82,7 +82,6 @@ export function publishTextTurn(input: {
 }): void {
   const now = new Date().toISOString();
   const customer = { customer_ref: input.from_e164, phone_e164: input.from_e164, role: 'unknown', is_known: false, tenant_id: input.tenant_id, project_id: input.project_id };
-  const replied = !!input.reply;
   try {
     getDashboardPublisher().publishFireAndForget({
       specversion: 'cst.event.v1',
@@ -100,7 +99,10 @@ export function publishTextTurn(input: {
         conversation_id: input.message_sid,
         direction: 'inbound',
         channel: 'sms',
-        status: replied ? 'ok' : 'dropped',
+        // The dashboard takes ok, refused, step_up_required, onboarding or error.
+        // A text to an opted-out sender is refused; every other text was handled
+        // as designed (ok), with or without a reply, and the outcome says which.
+        status: input.outcome === 'opted_out_silent' ? 'refused' : 'ok',
         intent: input.outcome,
         text: input.body,
         message: input.body,
