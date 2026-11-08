@@ -5,6 +5,7 @@ import { createHmac } from 'node:crypto';
 import { createApp } from '../../engine/src/app.js';
 import { ElevenLabsWebhookService } from '../../engine/src/interfaces/elevenlabs/service.js';
 import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
+import { CallLogPoster } from '../../engine/src/notifications/call_log.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
 import { CutOverManager } from '../../engine/src/observability/cut_over.js';
 import { DbClient } from '../../engine/src/db/client.js';
@@ -12,6 +13,7 @@ import { DbClient } from '../../engine/src/db/client.js';
 describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)', () => {
   const app = createApp();
   const testSecret = 'test_webhook_secret_12345';
+  let callLog: ReturnType<typeof vi.fn>;
 
   const validPayload = {
     type: 'post_call_transcription',
@@ -57,6 +59,8 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     ElevenLabsWebhookService.reset();
     ErrorRouter.reset();
     ErrorRouter.setMockHandler(vi.fn().mockResolvedValue(true));
+    callLog = vi.fn().mockResolvedValue({ posted: true, via: 'bot', ts: '1794000000.000100', transcript: 'file' });
+    CallLogPoster.mockHandler = callLog;
     FailureDetector.reset();
     CutOverManager.reset();
     DbClient.clearInMemory();
@@ -64,6 +68,7 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
 
   afterEach(() => {
     delete process.env.ELEVENLABS_WEBHOOK_SECRET;
+    CallLogPoster.mockHandler = null;
   });
 
   it('1. Successfully processes a real completed-call payload and normalizes to cst.event.v1', async () => {
@@ -102,14 +107,14 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     expect(outcEvt?.type).toBe('cst.outcome');
     expect((outcEvt as any).data.status).toBe('resolved');
 
-    // Verify Slack event delivered to #bha-customer-service-twin
-    expect(mockSlack).toHaveBeenCalledWith(
-      expect.objectContaining({
-        destination_channel: '#bha-customer-service-twin',
-        error_class: 'CS_HANDOFF',
-      }),
-      expect.anything()
-    );
+    // The call log card went to the customer service channel, transcript alongside
+    expect(callLog).toHaveBeenCalledTimes(1);
+    const [card, transcript] = callLog.mock.calls[0];
+    expect(card.blocks[0].text.text).toContain('Call ended');
+    expect(JSON.stringify(card.blocks)).toContain('Customer checked Austin HQ temperature');
+    expect(transcript).toContain('Caller: Hi, what is the temperature in Austin HQ?');
+    // Nothing went through the error router on a clean call
+    expect(mockSlack).not.toHaveBeenCalled();
   });
 
   it('2. Supports completed message / WhatsApp payload', async () => {
@@ -180,7 +185,7 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
       .send(validPayload);
     expect(res1.status).toBe(200);
     expect(res1.body.status).toBe('processed');
-    expect(mockSlack).toHaveBeenCalledTimes(1);
+    expect(callLog).toHaveBeenCalledTimes(1);
 
     // Second send (duplicate retry from provider) -> already_processed
     const res2 = await request(app)
@@ -189,7 +194,7 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
       .send(validPayload);
     expect(res2.status).toBe(200);
     expect(res2.body.status).toBe('already_processed');
-    expect(mockSlack).toHaveBeenCalledTimes(1); // Did not re-send Slack alert
+    expect(callLog).toHaveBeenCalledTimes(1); // Did not re-post the call log
   });
 
   it('6. Generates escalation event and persists escalation record when human assistance is requested', async () => {
@@ -239,9 +244,48 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     expect(record?.status).toBe('pending');
   });
 
+  it('6b. Uses CST Genie analysis for a person request, not words in the transcript', async () => {
+    const wordsOnly = {
+      ...validPayload,
+      call_id: 'conv_words_only',
+      conversation_id: 'conv_words_only',
+      transcript: [
+        { role: 'user', message: 'Is the agent a human?', time_in_call_secs: 2 },
+        { role: 'agent', message: "I'm Genie, the automated assistant.", time_in_call_secs: 4 },
+      ],
+    };
+    const res1 = await request(app).post('/webhooks/elevenlabs/post-call').set('elevenlabs-signature', computeSignature(wordsOnly)).send(wordsOnly);
+    expect(res1.body.escalation_created).toBe(false);
+
+    const asked = {
+      ...validPayload,
+      call_id: 'conv_genie_person',
+      conversation_id: 'conv_genie_person',
+      analysis: {
+        transcript_summary: 'Caller asked for a person about moving the rack.',
+        call_successful: 'success',
+        evaluation_criteria_results: { handoff_honest: { criteria_id: 'handoff_honest', result: 'success', rationale: 'ok' } },
+        data_collection_results: {
+          caller_name: { value: 'Maria Lopez' },
+          caller_email: { value: 'maria.lopez@example.com' },
+          wanted_person: { value: true },
+          handoff_sent: { value: true },
+        },
+      },
+    };
+    const res2 = await request(app).post('/webhooks/elevenlabs/post-call').set('elevenlabs-signature', computeSignature(asked)).send(asked);
+    expect(res2.body.escalation_created).toBe(true);
+    const record = await DbClient.getEscalationRecord(res2.body.escalation_id);
+    expect(record?.caller_email).toBe('maria.lopez@example.com');
+    const card = callLog.mock.calls[1][0];
+    expect(card.blocks[0].text.text).toContain('asked for a person');
+    expect(JSON.stringify(card.blocks)).toContain('Sent to the team');
+  });
+
   it('7. Handles Slack failure safely and records for retry without breaking event persistence', async () => {
     const mockSlack = vi.fn().mockRejectedValue(new Error('Slack API 500 error'));
     ErrorRouter.setMockHandler(mockSlack);
+    callLog.mockResolvedValue({ posted: false, via: 'bot', transcript: 'none', error: 'chat.postMessage: channel_not_found' });
 
     const payload = { ...validPayload, call_id: 'conv_slack_retry_001', conversation_id: 'conv_slack_retry_001' };
     const sig = computeSignature(payload);
@@ -259,7 +303,12 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     const persisted = ElevenLabsWebhookService.getPersistedEvents();
     expect(persisted.some((e) => e.correlation_id === 'conv_slack_retry_001')).toBe(true);
 
-    // ErrorRouter tracks failed delivery for retry
+    // The failed call log is reported to CST ops, never to the customer service channel
+    expect(mockSlack).toHaveBeenCalledWith(
+      expect.objectContaining({ error_class: 'CST', destination_channel: '#cst-ops' }),
+      expect.anything()
+    );
+    // ErrorRouter tracks that report's failed delivery for retry
     expect(ErrorRouter.getFailedDeliveries().length).toBeGreaterThan(0);
   });
 

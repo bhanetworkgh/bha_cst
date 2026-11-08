@@ -17,6 +17,7 @@ import {
   ElevenLabsTranscriptMessage,
 } from './schemas.js';
 import { ErrorRouter } from '../../notifications/error_router.js';
+import { CallLogPoster, collected } from '../../notifications/call_log.js';
 import { FailureDetector } from '../../observability/failure_detector.js';
 import { CutOverManager } from '../../observability/cut_over.js';
 import { getDashboardPublisher } from '../../publishers/dashboard.js';
@@ -228,8 +229,10 @@ export class ElevenLabsWebhookService {
     const transcriptList = ((payload.transcript || payload.message_history || d?.transcript || d?.message_history || []) as ElevenLabsTranscriptMessage[])
       .filter((m): m is ElevenLabsTranscriptMessage & { message: string } => typeof m.message === 'string' && m.message.trim() !== '');
     const dataCollection = (analysis.data_collection_results || {}) as Record<string, any>;
-    const customerName = (typeof dataCollection.customer_name === 'object' ? dataCollection.customer_name?.value : dataCollection.customer_name) as string | undefined;
-    const customerEmail = (typeof dataCollection.customer_email === 'object' ? dataCollection.customer_email?.value : dataCollection.customer_email) as string | undefined;
+    // CST Genie collects caller_name and caller_email (8 Nov 2026); the older
+    // customer_* names are still read so earlier reports keep working.
+    const customerName = collected(dataCollection, 'caller_name', 'customer_name') as string | undefined;
+    const customerEmail = collected(dataCollection, 'caller_email', 'customer_email') as string | undefined;
     const durationSecs = Number(payload.call_duration_secs ?? d?.call_duration_secs ?? metadata.call_duration_secs ?? 0);
     const summary = typeof analysis.transcript_summary === 'string' ? analysis.transcript_summary : undefined;
 
@@ -329,11 +332,15 @@ export class ElevenLabsWebhookService {
 
       // 4D. Detect Escalation & Normalize Escalation Event
       const evalResults = (analysis.evaluation_criteria_results || {}) as Record<string, any>;
+      // The caller asked for a person when CST Genie's own analysis says so.
+      // The old word match ("agent", "human" and so on) flagged ordinary calls,
+      // and the live handoff now goes through CST Genie's request_person tool.
+      const wantedPerson = collected(dataCollection, 'wanted_person');
       const escalationRequested =
+        wantedPerson === true || String(wantedPerson).toLowerCase() === 'true' ||
         evalResults.escalation_requested === true ||
         evalResults.human_handoff === true ||
-        evalResults.escalate === true ||
-        transcriptList.some((m) => /human|agent|technician|escalat|representative/i.test(m.message));
+        evalResults.escalate === true;
 
       let escalationId: string | undefined;
       let escalationCreated = false;
@@ -463,42 +470,38 @@ export class ElevenLabsWebhookService {
         Logger.error(`ElevenLabsWebhookService: call ${conversationId} did not reach the dashboard: ${publishResult.error}`);
       }
 
-      // 6. Slack Event Delivery to Customer Service Channel (#bha-customer-service-twin)
-      let slackDelivered = false;
-      const firstQuestion = transcriptList.find((m) => m.role === 'user')?.message || 'N/A';
-      const summaryText = summary || payload.analysis?.transcript_summary || 'Completed voice interaction';
-
-      const slackResult = await ErrorRouter.route({
-        service: 'CS_HANDOFF',
-        category: escalationRequested ? 'escalation' : 'cs_handoff',
-        message: escalationRequested
-          ? `Human escalation requested by ${customerName || maskPhone(callerPhone)} (${channel}): "${firstQuestion}"`
-          : `Customer service interaction completed for ${maskPhone(callerPhone)}: ${summaryText}`,
-        severity: 'WARN',
-        tenant_id: tenantId,
-        project_id: projectId,
-        correlation_id: conversationId,
-        timestamp: nowIso,
-        meta: {
-          interaction_id: conversationId,
-          channel,
-          customer_name: customerName || 'unspecified',
-          customer_email: customerEmail || 'unspecified',
-          customer_phone_masked: maskPhone(callerPhone),
-          customer_question: firstQuestion,
-          escalation_id: escalationId,
-          escalation_created: escalationCreated,
-          duration_secs: durationSecs,
-        },
+      // 6. Call log in #bha-customer-service-twin from the CS Twin app: a Block
+      // Kit card with the summary and checks, transcript as a file in the
+      // thread. A failed post is reported to CST ops, never to this channel.
+      const callLog = await CallLogPoster.post({
+        conversation_id: conversationId,
+        caller_phone: callerPhone,
+        started_unix: startUnix,
+        duration_secs: durationSecs,
+        summary,
+        lines: transcriptMessages.map((m) => ({ role: m.role, message: m.message, time_in_call_secs: m.time_in_call_secs })),
+        data_collection: dataCollection,
+        evaluation: evalResults,
       });
-
-      slackDelivered = slackResult.dispatched;
-      if (slackDelivered) {
+      const slackDelivered = callLog.posted;
+      if (callLog.posted && !callLog.error) {
         FailureDetector.recordSlackSuccess();
-      } else if (slackResult.status === 'failed') {
-        FailureDetector.recordSlackFailure(slackResult.error);
-      } else if (slackResult.status === 'deferred') {
-        FailureDetector.recordSlackDeferred(slackResult.destination_channel);
+      } else {
+        FailureDetector.recordSlackFailure(callLog.error);
+        Logger.error(`ElevenLabsWebhookService: call log for ${conversationId} ${callLog.posted ? 'posted without a transcript file' : 'did not post'}: ${callLog.error}`);
+        await ErrorRouter.route({
+          service: 'CST',
+          category: 'call_log',
+          message: callLog.posted
+            ? `CST Genie call log for ${conversationId} posted, but the transcript ${callLog.transcript === 'thread_text' ? 'went in as text because the file upload was refused' : 'did not post'}: ${callLog.error}`
+            : `CST Genie call log for ${conversationId} did not reach the customer service channel: ${callLog.error}`,
+          severity: callLog.posted ? 'WARN' : 'ERROR',
+          tenant_id: tenantId,
+          project_id: projectId,
+          correlation_id: conversationId,
+          timestamp: nowIso,
+          meta: { interaction_id: conversationId, via: callLog.via, transcript: callLog.transcript, duration_secs: durationSecs },
+        });
       }
 
       // 7. Mark Idempotency Key Complete

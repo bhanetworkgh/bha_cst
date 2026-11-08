@@ -256,12 +256,22 @@ export class ErrorRouter {
       }
     }
 
-    // Resolve webhook URL: target env var first, fall back to SLACK_CUSTOMER_SERVICE_WEBHOOK_URL, SLACK_ERROR_WEBHOOK_URL or SLACK_WEBHOOK_URL
-    let targetUrl = process.env[classified.webhook_env_var] ||
-      process.env.SLACK_CUSTOMER_SERVICE_WEBHOOK_URL ||
-      process.env.SLACK_CS_WEBHOOK_URL ||
-      process.env.SLACK_ERROR_WEBHOOK_URL ||
-      process.env.SLACK_WEBHOOK_URL;
+    // Resolve the webhook for this class only (8 Nov 2026). Errors used to
+    // fall back to the customer service webhook when their own variable was
+    // unset, which put Twilio and app errors in #bha-customer-service-twin.
+    // Now only customer service posts use that webhook; Twilio and CST errors
+    // use the CST ops webhook; vFarm and North Star use their own or stay in
+    // the logs (deferred), since those systems report their own errors.
+    const fallbacks: Record<ErrorClass, string[]> = {
+      CS_HANDOFF: ['SLACK_CS_WEBHOOK_URL', 'SLACK_CUSTOMER_SERVICE_WEBHOOK_URL'],
+      Twilio: ['SLACK_TWILIO_OPS_WEBHOOK_URL', 'SLACK_CST_OPS_WEBHOOK_URL'],
+      CST: ['SLACK_CST_OPS_WEBHOOK_URL'],
+      vFarm: ['SLACK_VFARM_MONITORING_WEBHOOK_URL'],
+      NS: ['SLACK_NS_WEBHOOK_URL'],
+    };
+    let targetUrl = [classified.webhook_env_var, ...fallbacks[classified.error_class]]
+      .map((name) => process.env[name])
+      .find((value): value is string => Boolean(value));
 
     if (targetUrl && targetUrl.startsWith('http://')) {
       targetUrl = 'https://' + targetUrl.slice(7);
