@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { ErrorRouter, RawErrorEvent } from '../../engine/src/notifications/error_router.js';
 
 describe('Error Routing by Class & Destination Isolation (Deliverable E)', () => {
@@ -6,7 +6,7 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
     ErrorRouter.reset();
   });
 
-  it('1. Routes Twilio transport error to #cst-ops', () => {
+  it('1. Routes Twilio transport error to #bha-pipeline-errors', () => {
     const event: RawErrorEvent = {
       service: 'TWILIO',
       source: 'twilio_voice_webhook',
@@ -18,7 +18,7 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
 
     const classified = ErrorRouter.classify(event);
     expect(classified.error_class).toBe('Twilio');
-    expect(classified.destination_channel).toBe('#cst-ops');
+    expect(classified.destination_channel).toBe('#bha-pipeline-errors');
     expect(classified.canonical_owner).toContain('Twilio');
   });
 
@@ -39,7 +39,7 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
     expect(classified.canonical_owner).toContain('Monitoring Twin');
   });
 
-  it('3. Routes CST application error to CST operations (#cst-ops)', () => {
+  it('3. Routes CST application error to CST operations (#bha-pipeline-errors)', () => {
     const event: RawErrorEvent = {
       service: 'CUSTOMER_TWIN',
       source: 'core_engine',
@@ -50,7 +50,7 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
 
     const classified = ErrorRouter.classify(event);
     expect(classified.error_class).toBe('CST');
-    expect(classified.destination_channel).toBe('#cst-ops');
+    expect(classified.destination_channel).toBe('#bha-pipeline-errors');
     expect(classified.canonical_owner).toContain('CST Application');
   });
 
@@ -109,7 +109,7 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
     expect(res.dispatched).toBe(true);
     expect(mockDispatcher).toHaveBeenCalledTimes(1);
     expect(mockDispatcher).toHaveBeenCalledWith(
-      expect.objectContaining({ destination_channel: '#cst-ops' }),
+      expect.objectContaining({ destination_channel: '#bha-pipeline-errors' }),
       expect.anything()
     );
   });
@@ -159,3 +159,48 @@ describe('Error Routing by Class & Destination Isolation (Deliverable E)', () =>
   });
 });
 
+
+describe('CS Twin posts its own Twilio and CST errors (8 Nov 2026)', () => {
+  beforeEach(() => ErrorRouter.reset());
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+  it('posts a Block Kit card to #bha-pipeline-errors with the bot token and reads ok', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test');
+    vi.stubEnv('SLACK_CUSTOMER_SERVICE_WEBHOOK_URL', 'https://hooks.slack.invalid/cs');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' })));
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await ErrorRouter.route({ service: 'CST', message: 'Call log did not post', correlation_id: 'conv_1' });
+    expect(res).toMatchObject({ dispatched: true, status: 'sent', destination_channel: '#bha-pipeline-errors' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://slack.com/api/chat.postMessage');
+    const body = JSON.parse(init.body);
+    expect(body.channel).toBe('C0ATC4CA3G9');
+    expect(body.blocks[0].type).toBe('header');
+    expect(JSON.stringify(body.blocks)).toContain('Call log did not post');
+  });
+
+  it('reports ok:false as a failed delivery and never falls back to the customer service webhook', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test');
+    vi.stubEnv('SLACK_CUSTOMER_SERVICE_WEBHOOK_URL', 'https://hooks.slack.invalid/cs');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: 'not_in_channel' })));
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await ErrorRouter.route({ service: 'TWILIO', message: 'Signature check failed' });
+    expect(res).toMatchObject({ dispatched: false, status: 'failed' });
+    expect(res.error).toContain('not_in_channel');
+    expect(fetchMock.mock.calls.every(([u]) => u !== 'https://hooks.slack.invalid/cs')).toBe(true);
+    expect(ErrorRouter.getFailedDeliveries().length).toBe(1);
+  });
+
+  it('without a bot token, a CST error with no ops webhook is deferred, not sent to the customer service channel', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', '');
+    vi.stubEnv('SLACK_CUSTOMER_SERVICE_WEBHOOK_URL', 'https://hooks.slack.invalid/cs');
+    vi.stubEnv('SLACK_CST_OPS_WEBHOOK_URL', '');
+    vi.stubEnv('SLACK_PIPELINE_ERRORS_WEBHOOK_URL', '');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await ErrorRouter.route({ service: 'CST', message: 'Something broke' });
+    expect(res.status).toBe('deferred');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

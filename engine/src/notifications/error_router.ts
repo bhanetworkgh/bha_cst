@@ -115,7 +115,7 @@ export class ErrorRouter {
       return {
         error_class: 'Twilio',
         canonical_owner: 'CST / Twilio Infrastructure Lead',
-        destination_channel: '#cst-ops',
+        destination_channel: '#bha-pipeline-errors',
         webhook_env_var: 'SLACK_TWILIO_OPS_WEBHOOK_URL',
         title: 'Twilio Telephony Alert',
         severity,
@@ -176,7 +176,7 @@ export class ErrorRouter {
     return {
       error_class: 'CST',
       canonical_owner: 'Ahad / CST Application Engineer',
-      destination_channel: '#cst-ops',
+      destination_channel: '#bha-pipeline-errors',
       webhook_env_var: 'SLACK_CST_OPS_WEBHOOK_URL',
       title: 'CST Application Alert',
       severity,
@@ -256,6 +256,34 @@ export class ErrorRouter {
       }
     }
 
+    // Twilio and CST errors are posted by the CS Twin app itself in
+    // #bha-pipeline-errors (8 Nov 2026), as a Block Kit card, and Slack's
+    // answer is checked. The webhook below is only the fallback when the
+    // service has no bot token.
+    if ((classified.error_class === 'Twilio' || classified.error_class === 'CST') && process.env.SLACK_BOT_TOKEN) {
+      const channel = process.env.CST_ERROR_CHANNEL_ID || 'C0ATC4CA3G9';
+      try {
+        const res = await fetch('https://slack.com/api/chat.postMessage', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ channel, ...this.buildErrorCard(classified, event), unfurl_links: false }),
+        });
+        const answer: any = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
+        if (answer.ok) {
+          return { dispatched: true, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'sent' };
+        }
+        this.recentAlerts.delete(dedupKey);
+        this.failedDeliveries.push(classified);
+        Logger.error(`ErrorRouter: CS Twin could not post a ${classified.error_class} error to #bha-pipeline-errors: ${answer.error}`);
+        return { dispatched: false, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'failed', error: `chat.postMessage: ${answer.error}` };
+      } catch (err: any) {
+        this.recentAlerts.delete(dedupKey);
+        this.failedDeliveries.push(classified);
+        Logger.error(`ErrorRouter: CS Twin error post threw: ${err?.message}`);
+        return { dispatched: false, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'failed', error: err?.message };
+      }
+    }
+
     // Resolve the webhook for this class only (8 Nov 2026). Errors used to
     // fall back to the customer service webhook when their own variable was
     // unset, which put Twilio and app errors in #bha-customer-service-twin.
@@ -264,8 +292,8 @@ export class ErrorRouter {
     // the logs (deferred), since those systems report their own errors.
     const fallbacks: Record<ErrorClass, string[]> = {
       CS_HANDOFF: ['SLACK_CS_WEBHOOK_URL', 'SLACK_CUSTOMER_SERVICE_WEBHOOK_URL'],
-      Twilio: ['SLACK_TWILIO_OPS_WEBHOOK_URL', 'SLACK_CST_OPS_WEBHOOK_URL'],
-      CST: ['SLACK_CST_OPS_WEBHOOK_URL'],
+      Twilio: ['SLACK_TWILIO_OPS_WEBHOOK_URL', 'SLACK_CST_OPS_WEBHOOK_URL', 'SLACK_PIPELINE_ERRORS_WEBHOOK_URL'],
+      CST: ['SLACK_CST_OPS_WEBHOOK_URL', 'SLACK_PIPELINE_ERRORS_WEBHOOK_URL'],
       vFarm: ['SLACK_VFARM_MONITORING_WEBHOOK_URL'],
       NS: ['SLACK_NS_WEBHOOK_URL'],
     };
@@ -345,6 +373,32 @@ export class ErrorRouter {
         error: err?.message,
       };
     }
+  }
+
+  /**
+   * The Block Kit card CS Twin posts for a Twilio or CST error.
+   */
+  static buildErrorCard(classified: ClassifiedError, event: RawErrorEvent): { text: string; blocks: any[] } {
+    const esc = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(classified.timestamp));
+    const what = classified.error_class === 'Twilio' ? 'Twilio error' : 'CST service error';
+    const icon = classified.severity === 'WARN' ? ':warning:' : ':rotating_light:';
+    const detail = event.error instanceof Error ? event.error.message : event.error ? String(event.error) : '';
+    const fields: any[] = [
+      { type: 'mrkdwn', text: `*Severity*\n${classified.severity}` },
+      { type: 'mrkdwn', text: `*Owner*\n${esc(classified.canonical_owner)}` },
+    ];
+    if (classified.correlation_id) fields.push({ type: 'mrkdwn', text: `*Correlation*\n\`${esc(classified.correlation_id)}\`` });
+    if (event.tenant_id) fields.push({ type: 'mrkdwn', text: `*Tenant*\n${esc(event.tenant_id)}` });
+    const blocks: any[] = [
+      { type: 'header', text: { type: 'plain_text', text: `${icon}  CST Genie: ${what}`, emoji: true } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: `CS Twin  •  bha-cst on Render  •  ${when} New York` }] },
+      { type: 'section', text: { type: 'mrkdwn', text: `*What happened*\n${esc(event.message).slice(0, 2500)}` } },
+      { type: 'section', fields },
+    ];
+    if (detail) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Detail*\n\`\`\`${esc(detail).slice(0, 2500)}\`\`\`` } });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Full trace is in the bha-cst Render logs.' }] });
+    return { text: `${classified.severity} CST Genie ${what}: ${esc(event.message).slice(0, 250)}`, blocks };
   }
 
   /**
