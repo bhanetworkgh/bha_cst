@@ -482,6 +482,8 @@ export class ElevenLabsWebhookService {
         lines: transcriptMessages.map((m) => ({ role: m.role, message: m.message, time_in_call_secs: m.time_in_call_secs })),
         data_collection: dataCollection,
         evaluation: evalResults,
+        termination_reason: typeof metadata.termination_reason === 'string' ? metadata.termination_reason : undefined,
+        call_sid: typeof phoneCall.call_sid === 'string' ? phoneCall.call_sid : undefined,
       });
       const slackDelivered = callLog.posted;
       if (callLog.posted && !callLog.error) {

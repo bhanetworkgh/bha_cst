@@ -41,6 +41,15 @@ describe('CST Genie call log card', () => {
     expect(text).toContain('CST Genie call');
   });
 
+  it('says how the call ended and shows the Call SID, flagging a guardrail cut-off', () => {
+    const { blocks } = buildCallLogMessage({ ...base, termination_reason: "Conversation was stopped because the 'No prices, orders or promises' custom guardrail was triggered", call_sid: 'CA123' });
+    const json = JSON.stringify(blocks);
+    expect(json).toContain('How it ended');
+    expect(json).toContain(':warning: Cut off by a safety rule');
+    expect(json).toContain('CA123');
+    expect(JSON.stringify(buildCallLogMessage({ ...base, termination_reason: 'Call ended by remote party' }).blocks)).toContain('Caller hung up');
+  });
+
   it('flags an urgent call and a person request in the header', () => {
     const urgent = buildCallLogMessage({ ...base, data_collection: { urgent: { value: true }, wanted_person: { value: true }, handoff_sent: { value: true } } });
     expect(urgent.blocks[0].text.text).toContain('Urgent');
