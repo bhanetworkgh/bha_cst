@@ -240,7 +240,15 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           normalizedMsg.message_id,
         );
         if (resubscribeResult && !appSendsKeywordReplies()) {
-          // Re-subscribe recorded; Twilio sends the START confirmation.
+          // Twilio has already told the sender "you're subscribed again", so
+          // this service records the opt-in too (8 Nov 2026). Without it the
+          // sender stayed opted out here and every later text got no reply.
+          await recordConsent(binding.tenant_id, normalizedMsg.from_e164, {
+            projectId: binding.project_id,
+            source: 'start_keyword',
+            correlationId: normalizedMsg.message_id,
+            actor: 'sender',
+          });
           await alertText('start_by_twilio');
           return;
         }
@@ -410,7 +418,14 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // CST_SMS_AGENT_REPLIES=on restores the old engine replies.
         if (!agentRepliesEnabled()) {
           if (!appSendsKeywordReplies() && isResubscribeRequest(normalizedMsg.body)) {
-            // START from someone who never opted out: Twilio answers it.
+            // START from someone who never opted out: Twilio answers it and
+            // this service records the opt-in, as for a returning sender.
+            await recordConsent(binding.tenant_id, normalizedMsg.from_e164, {
+              projectId: binding.project_id,
+              source: 'start_keyword',
+              correlationId: normalizedMsg.message_id,
+              actor: 'sender',
+            });
             await alertText('start_by_twilio');
             return;
           }

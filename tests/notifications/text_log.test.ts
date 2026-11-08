@@ -62,6 +62,17 @@ describe('every text on 971 posts one alert with its outcome', () => {
     expect(said[4]).toContain('has opted out');
   });
 
+  it('START after STOP opts the sender back in, so their next text gets the calls-only reply', async () => {
+    const from = '+15550009999';
+    for (const [body, sid] of [['STOP', 'C1'], ['START', 'C2'], ['hello', 'C3']]) {
+      await text(from, body, sid);
+      await settle();
+    }
+    const said = cards.map((c) => JSON.stringify(c.blocks));
+    expect(said[1]).toContain('Opt-in recorded');
+    expect(said[2]).toContain('Calls-only reply sent');
+  });
+
   it('raises a card that Slack refuses instead of dropping it', async () => {
     TextLogPoster.mockHandler = async () => ({ ok: false, error: 'not_in_channel' });
     const r = await TextLogPoster.post({ from_e164: '+15550008888', to_e164: '+19715885823', body: 'hi', message_sid: 'B1', outcome: 'calls_only_sent' });
