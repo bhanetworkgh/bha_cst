@@ -94,7 +94,47 @@ export function collected(data: Record<string, unknown> | undefined, ...keys: st
   return undefined;
 }
 
-const truthy = (v: unknown): boolean => v === true || String(v).toLowerCase() === 'true';
+export const truthy = (v: unknown): boolean => v === true || String(v).toLowerCase() === 'true';
+
+/** How a conversation ended, as a fixed word the dashboard can count (8 Nov 2026, Jason: CST outcomes as canonical data, not only a Slack card). */
+export type EndedCode = 'closed_by_genie' | 'caller_hung_up' | 'went_quiet' | 'time_limit' | 'safety_rule' | 'failed' | 'other' | 'not_recorded';
+
+export function endedCode(reason?: string): EndedCode {
+  const lower = String(reason || '').trim().toLowerCase();
+  if (!lower) return 'not_recorded';
+  if (lower.includes('remote party') || lower.includes('caller') || lower.includes('client disconnected')) return 'caller_hung_up';
+  if (lower.includes('end_call') || lower.includes('agent ended') || lower.includes('ended by agent')) return 'closed_by_genie';
+  if (lower.includes('guardrail')) return 'safety_rule';
+  if (lower.includes('silence') || lower.includes('inactivity')) return 'went_quiet';
+  if (lower.includes('max') && lower.includes('duration')) return 'time_limit';
+  if (lower.includes('error') || lower.includes('fail')) return 'failed';
+  return 'other';
+}
+
+export interface EndedRecord {
+  code: EndedCode;
+  /** The words the Slack card shows, so the dashboard and the card never disagree. */
+  text: string;
+  handed_to_person: boolean;
+  urgent: boolean;
+  whatsapp_call: boolean;
+  termination_reason: string | null;
+}
+
+export function endedRecord(input: { termination_reason?: string; data_collection?: Record<string, unknown>; handed_to_person: boolean; channel: 'voice' | 'whatsapp'; whatsapp_call?: boolean }): EndedRecord {
+  const code = endedCode(input.termination_reason);
+  const card = howItEnded(input.termination_reason);
+  const waChat = input.channel === 'whatsapp' && !input.whatsapp_call;
+  const text = waChat && card.text === 'CST Genie ended the call' ? 'Closed by CST Genie after the customer confirmed' : code === 'went_quiet' && waChat ? 'Went quiet' : card.text;
+  return {
+    code,
+    text,
+    handed_to_person: input.handed_to_person,
+    urgent: truthy(collected(input.data_collection, 'urgent')),
+    whatsapp_call: !!input.whatsapp_call,
+    termination_reason: input.termination_reason ? String(input.termination_reason) : null,
+  };
+}
 
 export function formatDuration(secs: number): string {
   const s = Math.max(0, Math.round(Number(secs) || 0));

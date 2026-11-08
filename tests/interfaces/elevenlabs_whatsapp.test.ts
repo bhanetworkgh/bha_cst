@@ -7,6 +7,7 @@ import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
 import { CallLogPoster } from '../../engine/src/notifications/call_log.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
 import { DbClient } from '../../engine/src/db/client.js';
+import { endedCode } from '../../engine/src/notifications/call_log.js';
 
 // 8 Nov 2026: WhatsApp conversations from the CST Genie WhatsApp agent. The
 // sender comes as metadata.whatsapp.whatsapp_user_id, the channel is whatsapp,
@@ -87,5 +88,13 @@ describe('WhatsApp post-call', () => {
     const json = JSON.stringify(cards[0].blocks);
     expect(json).toContain('WhatsApp call ended');
     expect(json).toContain('Caller hung up');
+  });
+
+  it('names how a conversation ended as a fixed word', () => {
+    expect(endedCode('end_call tool was called.')).toBe('closed_by_genie');
+    expect(endedCode('Client disconnected: 1000')).toBe('caller_hung_up');
+    expect(endedCode('Conversation ended due to inactivity')).toBe('went_quiet');
+    expect(endedCode('Maximum duration reached')).toBe('time_limit');
+    expect(endedCode('')).toBe('not_recorded');
   });
 });

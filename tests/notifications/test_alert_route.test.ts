@@ -10,6 +10,7 @@ import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
 import { SlackNotifier } from '../../engine/src/notifications/slack.js';
+import { AlertTestRecorder, engineEventsUrl } from '../../engine/src/notifications/test_alert_router.js';
 
 const SECRET = 'test_programmatic_api_key_32_chars_long';
 
@@ -29,12 +30,14 @@ describe('Operator alert test route', () => {
     SlackNotifier.setMockHandler(() => {
       notified += 1;
     });
+    AlertTestRecorder.mockHandler = () => ({ recorded: true });
   });
 
   afterEach(() => {
     delete process.env.CST_API_KEY;
     ErrorRouter.reset();
     SlackNotifier.reset();
+    AlertTestRecorder.mockHandler = null;
   });
 
   it('refuses a request with no key', async () => {
@@ -72,5 +75,30 @@ describe('Operator alert test route', () => {
 
     const bad = await request(app).post('/api/v1/alerts/test').set('x-cst-api-key', SECRET).send({ kinds: ['everything'] });
     expect(bad.status).toBe(400);
+  });
+
+  it('writes one record of the run to the dashboard and says whether it landed', async () => {
+    const records: any[] = [];
+    AlertTestRecorder.mockHandler = (r) => { records.push(r); return { recorded: true }; };
+    const res = await request(app).post('/api/v1/alerts/test').set('x-cst-api-key', SECRET).send({ requested_by: 'destiny' });
+    expect(res.status).toBe(200);
+    expect(res.body.recorded).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(records[0].test_id).toBe(res.body.test_id);
+    expect(records[0].requested_by).toBe('destiny');
+    expect(records[0].results).toHaveLength(3);
+  });
+
+  it('a record that does not land is said on the answer and never changes the alerts', async () => {
+    AlertTestRecorder.mockHandler = () => ({ recorded: false, error: 'dashboard answered 401' });
+    const res = await request(app).post('/api/v1/alerts/test').set('x-cst-api-key', SECRET).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.recorded).toBe(false);
+    expect(res.body.record_error).toBe('dashboard answered 401');
+  });
+
+  it('posts to the events route beside the cst-events URL', () => {
+    expect(engineEventsUrl('https://dashboard.bhanetwork.org/api/engine/cst-events')).toBe('https://dashboard.bhanetwork.org/api/engine/events');
   });
 });

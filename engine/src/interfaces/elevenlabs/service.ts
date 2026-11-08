@@ -17,7 +17,7 @@ import {
   ElevenLabsTranscriptMessage,
 } from './schemas.js';
 import { ErrorRouter } from '../../notifications/error_router.js';
-import { CallLogPoster, collected } from '../../notifications/call_log.js';
+import { CallLogPoster, collected, endedRecord } from '../../notifications/call_log.js';
 import { FailureDetector } from '../../observability/failure_detector.js';
 import { CutOverManager } from '../../observability/cut_over.js';
 import { getDashboardPublisher } from '../../publishers/dashboard.js';
@@ -439,6 +439,13 @@ export class ElevenLabsWebhookService {
         transcriptMessages.filter((m) => m.role === who).map((m) => m.message).join('\n');
       const turnCustomer: CustomerPayload = { ...customerPayload, role: 'unknown', is_known: false };
       const callTime = startUnix ? new Date(startUnix * 1000).toISOString() : nowIso;
+      const ended = endedRecord({
+        termination_reason: typeof metadata.termination_reason === 'string' ? metadata.termination_reason : undefined,
+        data_collection: dataCollection,
+        handed_to_person: escalationRequested,
+        channel,
+        whatsapp_call: isWhatsAppCall,
+      });
       const turnEvent = {
         specversion: 'cst.event.v1',
         id: `turn_evt_${randomUUID()}`,
@@ -469,7 +476,7 @@ export class ElevenLabsWebhookService {
           customer: turnCustomer,
           event_type: 'cst.turn',
           occurred_at: callTime,
-          metadata: { agent_id: agentId, summary, call_successful: analysis.call_successful, source: 'elevenlabs_post_call' },
+          metadata: { agent_id: agentId, summary, call_successful: analysis.call_successful, source: 'elevenlabs_post_call', ended },
         },
       } as unknown as CstEventV1;
       const publishResult = await getDashboardPublisher().publish(turnEvent);
