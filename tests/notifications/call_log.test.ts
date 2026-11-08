@@ -69,7 +69,7 @@ describe('CST Genie call log card', () => {
   it('writes a plain transcript with timestamps and speaker names', () => {
     const t = buildTranscriptText(base);
     expect(t).toContain('[00:06] Caller: How do I check my farm status?');
-    expect(t).toContain('[00:00] Genie:');
+    expect(t).toContain('[00:00] CST Genie:');
     expect(t).not.toContain('+19455550100');
     expect(formatDuration(5)).toBe('5s');
   });
