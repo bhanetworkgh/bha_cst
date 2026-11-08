@@ -13,7 +13,7 @@ import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
 import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
-import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies } from './text_policy.js';
+import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply, appSendsKeywordReplies, KEYWORD_REPLY } from './text_policy.js';
 import { TextLogPoster, TextOutcome } from '../../notifications/text_log.js';
 
 export const smsInterfaceRouter = Router();
@@ -147,6 +147,26 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         tenant_id: tenancy.tenant_id,
         num_media: (normalizedMsg.media || []).length,
       });
+    // Keyword handling (8 Nov 2026): Twilio answers START, HELP and STOP for
+    // senders on +1. For anyone else this service answers with Twilio's
+    // wording, because Twilio's replies did not reach a Nigerian number.
+    // CST_SMS_KEYWORD_REPLIES=app keeps the older replies of this service.
+    const legacyKeywordReplies = (process.env.CST_SMS_KEYWORD_REPLIES || '').trim().toLowerCase() === 'app';
+    const twilioAnswersKeywords = !appSendsKeywordReplies(normalizedMsg.from_e164);
+    const sendKeywordReply = async (body: string) => {
+      await DbClient.saveOutboundMessage({
+        tenant_id: binding.tenant_id,
+        project_id: binding.project_id,
+        from_e164: normalizedMsg.to_e164,
+        to_e164: normalizedMsg.from_e164,
+        body,
+        correlation_id: normalizedMsg.message_id,
+        turn_id: normalizedMsg.message_id,
+        status: 'pending',
+        consent_exempt: true,
+      } as OutboundMessage);
+      await processOutboundQueue();
+    };
 
     // Deduplication check via MessageSid
     const { isDuplicate } = await DbClient.saveInboundMessage(normalizedMsg);
@@ -177,9 +197,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
-        if (stopResult && !appSendsKeywordReplies()) {
-          // Opt-out recorded; Twilio sends the confirmation (see text_policy.ts).
-          await alertText('stop_by_twilio');
+        if (stopResult && !legacyKeywordReplies) {
+          // Opt-out recorded. Twilio sends the confirmation on +1; otherwise this service does.
+          if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.stop);
+          await alertText(twilioAnswersKeywords ? 'stop_by_twilio' : 'stop_by_cst');
           return;
         }
         if (stopResult) {
@@ -208,9 +229,10 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
-        if (helpResult && !appSendsKeywordReplies()) {
-          // HELP recorded; Twilio sends the registered HELP reply.
-          await alertText('help_by_twilio');
+        if (helpResult && !legacyKeywordReplies) {
+          // HELP recorded. Twilio sends the registered HELP reply on +1; otherwise this service does.
+          if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.help);
+          await alertText(twilioAnswersKeywords ? 'help_by_twilio' : 'help_by_cst');
           return;
         }
         if (helpResult) {
@@ -239,17 +261,17 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           binding.project_id,
           normalizedMsg.message_id,
         );
-        if (resubscribeResult && !appSendsKeywordReplies()) {
-          // Twilio has already told the sender "you're subscribed again", so
-          // this service records the opt-in too (8 Nov 2026). Without it the
-          // sender stayed opted out here and every later text got no reply.
+        if (resubscribeResult && !legacyKeywordReplies) {
+          // The sender is told "you're subscribed again" (by Twilio on +1,
+          // otherwise by this service), so the opt-in is recorded here too.
           await recordConsent(binding.tenant_id, normalizedMsg.from_e164, {
             projectId: binding.project_id,
             source: 'start_keyword',
             correlationId: normalizedMsg.message_id,
             actor: 'sender',
           });
-          await alertText('start_by_twilio');
+          if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.start);
+          await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst');
           return;
         }
         if (resubscribeResult) {
@@ -417,16 +439,17 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         // once a day per sender, and never reaches the Core Engine.
         // CST_SMS_AGENT_REPLIES=on restores the old engine replies.
         if (!agentRepliesEnabled()) {
-          if (!appSendsKeywordReplies() && isResubscribeRequest(normalizedMsg.body)) {
-            // START from someone who never opted out: Twilio answers it and
-            // this service records the opt-in, as for a returning sender.
+          if (!legacyKeywordReplies && isResubscribeRequest(normalizedMsg.body)) {
+            // START from someone who never opted out: answered as above and
+            // the opt-in recorded.
             await recordConsent(binding.tenant_id, normalizedMsg.from_e164, {
               projectId: binding.project_id,
               source: 'start_keyword',
               correlationId: normalizedMsg.message_id,
               actor: 'sender',
             });
-            await alertText('start_by_twilio');
+            if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.start);
+            await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst');
             return;
           }
           const send = await shouldSendCallsOnlyReply(normalizedMsg.to_e164, normalizedMsg.from_e164);
