@@ -36,6 +36,8 @@ export interface TextLogInput {
   tenant_id?: string | null;
   project_id?: string | null;
   num_media?: number;
+  /** The exact reply the sender got, or null when nothing was sent. */
+  reply?: string | null;
 }
 
 export interface TextLogResult {
@@ -74,6 +76,12 @@ export function buildTextLogMessage(input: TextLogInput): { text: string; blocks
   if (input.num_media && input.num_media > 0) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `:paperclip:  ${input.num_media} attachment(s), not shown here` }] });
   }
+  const reply = (input.reply || '').trim();
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: reply ? `*Replied*\n>${esc(reply).replace(/\n/g, '\n>')}` : '*Replied*\n_No reply was sent._' },
+  });
+  blocks.push({ type: 'divider' });
   blocks.push({
     type: 'rich_text',
     elements: [

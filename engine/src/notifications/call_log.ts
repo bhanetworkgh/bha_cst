@@ -37,6 +37,24 @@ export interface CallLogInput {
   lines: CallLogLine[];
   data_collection?: Record<string, unknown>;
   evaluation?: Record<string, unknown>;
+  /** ElevenLabs' termination_reason, e.g. "Call ended by remote party". */
+  termination_reason?: string;
+  /** Twilio Call SID, so the card covers what the old status post showed. */
+  call_sid?: string;
+}
+
+/** How the call ended, in plain words (8 Nov 2026). */
+export function howItEnded(reason?: string): { text: string; problem: boolean } {
+  const r = String(reason || '').trim();
+  if (!r) return { text: 'Ended', problem: false };
+  const lower = r.toLowerCase();
+  if (lower.includes('remote party') || lower.includes('caller')) return { text: 'Caller hung up', problem: false };
+  if (lower.includes('end_call') || lower.includes('agent ended') || lower.includes('ended by agent')) return { text: 'Genie ended the call', problem: false };
+  if (lower.includes('guardrail')) return { text: `Cut off by a safety rule: ${r}`, problem: true };
+  if (lower.includes('silence')) return { text: 'Ended after silence', problem: false };
+  if (lower.includes('max') && lower.includes('duration')) return { text: 'Hit the time limit', problem: true };
+  if (lower.includes('error') || lower.includes('fail')) return { text: `Failed: ${r}`, problem: true };
+  return { text: r, problem: false };
 }
 
 export interface CallLogResult {
@@ -142,6 +160,8 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
     { type: 'mrkdwn', text: `*Urgent*\n${urgent ? ':red_circle: Yes' : 'No'}` },
     { type: 'mrkdwn', text: `*Caller turns*\n${callerTurns}` },
   ];
+  const ended = howItEnded(input.termination_reason);
+  fields.push({ type: 'mrkdwn', text: `*How it ended*\n${ended.problem ? ':warning: ' : ''}${esc(ended.text)}` });
   if (name) fields.push({ type: 'mrkdwn', text: `*Name*\n${esc(name)}` });
   if (email) fields.push({ type: 'mrkdwn', text: `*Email*\n${esc(email)}` });
   blocks.push({ type: 'section', fields });
@@ -177,7 +197,7 @@ export function buildCallLogMessage(input: CallLogInput): { text: string; blocks
     });
   }
 
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `Conversation \`${esc(input.conversation_id)}\`  •  Full transcript in the thread` }] });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `Conversation \`${esc(input.conversation_id)}\`${input.call_sid ? `  •  Call \`${esc(input.call_sid)}\`` : ''}  •  Full transcript in the thread` }] });
 
   const text = `${urgent ? 'URGENT ' : ''}CST Genie call (${formatDuration(input.duration_secs)}, ${maskPhone(input.caller_phone)}): ${esc(summary)}`.slice(0, 300);
   return { text, blocks };

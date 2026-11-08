@@ -20,6 +20,19 @@ describe('CST text alert card', () => {
     expect(json).toContain('Calls-only reply sent');
     expect(text).not.toContain('<!channel>');
   });
+
+  it('shows They wrote, then Replied with the exact reply, then What happened', () => {
+    const withReply = JSON.stringify(buildTextLogMessage({
+      from_e164: '+15550001111', to_e164: '+19715885823', body: 'hi', message_sid: 'SM2', outcome: 'calls_only_sent', reply: 'Hi, this is Bays Horizon Network.',
+    }).blocks);
+    const a = withReply.indexOf('They wrote'), b = withReply.indexOf('*Replied*'), c = withReply.indexOf('What happened');
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+    expect(withReply).toContain('Hi, this is Bays Horizon Network.');
+    const none = JSON.stringify(buildTextLogMessage({ from_e164: '+15550001111', to_e164: '+19715885823', body: 'hi', message_sid: 'SM3', outcome: 'opted_out_silent' }).blocks);
+    expect(none).toContain('No reply was sent');
+  });
 });
 
 describe('every text on 971 posts one alert with its outcome', () => {

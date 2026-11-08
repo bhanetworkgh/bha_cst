@@ -137,8 +137,9 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
     const binding = (req as any).serviceBinding;
     const normalizedMsg = normalizeTwilioInbound(req.body, tenancy.tenant_id, tenancy.system_id);
     // Text alert in the customer service twin channel (8 Nov 2026).
-    const alertText = (outcome: TextOutcome) =>
+    const alertText = (outcome: TextOutcome, reply: string | null = null) =>
       TextLogPoster.post({
+        reply,
         from_e164: normalizedMsg.from_e164,
         to_e164: normalizedMsg.to_e164,
         body: normalizedMsg.body,
@@ -200,7 +201,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         if (stopResult && !legacyKeywordReplies) {
           // Opt-out recorded. Twilio sends the confirmation on +1; otherwise this service does.
           if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.stop);
-          await alertText(twilioAnswersKeywords ? 'stop_by_twilio' : 'stop_by_cst');
+          await alertText(twilioAnswersKeywords ? 'stop_by_twilio' : 'stop_by_cst', KEYWORD_REPLY.stop);
           return;
         }
         if (stopResult) {
@@ -232,7 +233,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
         if (helpResult && !legacyKeywordReplies) {
           // HELP recorded. Twilio sends the registered HELP reply on +1; otherwise this service does.
           if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.help);
-          await alertText(twilioAnswersKeywords ? 'help_by_twilio' : 'help_by_cst');
+          await alertText(twilioAnswersKeywords ? 'help_by_twilio' : 'help_by_cst', KEYWORD_REPLY.help);
           return;
         }
         if (helpResult) {
@@ -271,7 +272,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
             actor: 'sender',
           });
           if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.start);
-          await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst');
+          await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst', KEYWORD_REPLY.start);
           return;
         }
         if (resubscribeResult) {
@@ -449,7 +450,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
               actor: 'sender',
             });
             if (!twilioAnswersKeywords) await sendKeywordReply(KEYWORD_REPLY.start);
-            await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst');
+            await alertText(twilioAnswersKeywords ? 'start_by_twilio' : 'start_by_cst', KEYWORD_REPLY.start);
             return;
           }
           const send = await shouldSendCallsOnlyReply(normalizedMsg.to_e164, normalizedMsg.from_e164);
@@ -476,7 +477,7 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
           };
           await DbClient.saveOutboundMessage(callsOnlyReply);
           await processOutboundQueue();
-          await alertText('calls_only_sent');
+          await alertText('calls_only_sent', CALLS_ONLY_REPLY);
           return;
         }
 

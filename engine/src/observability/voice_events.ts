@@ -740,7 +740,13 @@ export class VoiceEventCaptureService {
       },
     };
 
-    const slackDelivered = await this.publishSlackNotification(slackNotification);
+    // 8 Nov 2026 (Destiny): a call that ends normally already gets the call
+    // card (summary, transcript, how it ended, duration, Call SID), so the
+    // status post is only sent when the call did not connect or failed, which
+    // is when no call card will come. CST_CALL_STATUS_SLACK=all posts every one.
+    const postStatus = (process.env.CST_CALL_STATUS_SLACK || '').trim().toLowerCase() === 'all'
+      || ['failed', 'busy', 'no-answer', 'canceled'].includes(String(rawStatus).toLowerCase());
+    const slackDelivered = postStatus ? await this.publishSlackNotification(slackNotification) : false;
 
     return {
       status: 'processed',
