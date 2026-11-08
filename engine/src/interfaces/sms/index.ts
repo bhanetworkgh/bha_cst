@@ -13,6 +13,7 @@ import { OutboundMessage } from '../../transport/twilio/types.js';
 import { recordOptOut, isOptOutMessage, STOP_KEYWORDS, recordConsent, getConsentStatus, isConsentResponse, handleInboundConsentMessage, handleInboundResubscribeMessage, isResubscribeRequest, isConsentPromptValid, recordConsentPrompt, getConsentPrompt, activateConsentViaPrompt, handleInboundHelpMessage, isHelpMessage, HELP_RESPONSE_TEXT } from '../../consent/service.js';
 import { handleEmailVerificationAttempt } from '../../identity/email_verification.js';
 import { getConsentWording } from '../../consent/wording.js';
+import { CALLS_ONLY_REPLY, agentRepliesEnabled, shouldSendCallsOnlyReply } from './text_policy.js';
 
 export const smsInterfaceRouter = Router();
 
@@ -373,6 +374,37 @@ smsInterfaceRouter.post('/twilio/sms', async (req: Request, res: Response) => {
               correlation_id: normalizedMsg.message_id,
             });
           }
+        }
+
+        // Texts on this number are START, HELP and STOP only (8 Nov 2026,
+        // Destiny). Anything else gets one fixed calls-only reply, at most
+        // once a day per sender, and never reaches the Core Engine.
+        // CST_SMS_AGENT_REPLIES=on restores the old engine replies.
+        if (!agentRepliesEnabled()) {
+          const send = await shouldSendCallsOnlyReply(normalizedMsg.to_e164, normalizedMsg.from_e164);
+          if (!send) {
+            Logger.info(`Inbound SMS from ${maskPhone(normalizedMsg.from_e164)}: calls-only reply already sent in the last day; no reply`, {
+              tenant_id: binding.tenant_id,
+              correlation_id: normalizedMsg.message_id,
+            });
+            return;
+          }
+          const callsOnlyReply: OutboundMessage = {
+            tenant_id: binding.tenant_id,
+            project_id: binding.project_id,
+            from_e164: normalizedMsg.to_e164,
+            to_e164: normalizedMsg.from_e164,
+            body: CALLS_ONLY_REPLY,
+            correlation_id: normalizedMsg.message_id,
+            turn_id: normalizedMsg.message_id,
+            status: 'pending',
+            // A single direct answer to a text the person sent us, like the
+            // HELP reply; it carries the HELP and STOP instructions.
+            consent_exempt: true,
+          };
+          await DbClient.saveOutboundMessage(callsOnlyReply);
+          await processOutboundQueue();
+          return;
         }
 
         // Construct uniform MessageEnvelope

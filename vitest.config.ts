@@ -16,5 +16,6 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/.kilo/**', '**/dist/**'],
     include: ['tests/**/*.test.ts'],
     testTimeout: 20000,
+    setupFiles: ['tests/setup/sms_agent_replies.ts'],
   },
 });

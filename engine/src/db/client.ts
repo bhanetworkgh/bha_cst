@@ -1323,6 +1323,34 @@ export class DbClient {
     return Array.from(this.transcriptsStore.values());
   }
 
+  /**
+   * Has this exact body already gone from a service number to a sender since
+   * a given time? Used to send the 971 calls-only reply at most once a day per
+   * sender (8 Nov 2026). Reads Postgres when it is connected, otherwise the
+   * in-memory store. A failed read answers "yes, already sent", so a database
+   * problem means one missed reply rather than a reply loop.
+   */
+  static async hasRecentOutboundBody(fromE164: string, toE164: string, body: string, sinceIso: string): Promise<boolean> {
+    const pool = this.getPool();
+    if (pool) {
+      try {
+        const r = await pool.query(
+          `SELECT 1 FROM messages_out WHERE to_e164 = $1 AND body = $2 AND created_at >= $3 AND (from_e164 = $4 OR from_e164 IS NULL) LIMIT 1`,
+          [toE164, body, sinceIso, fromE164],
+        );
+        return (r.rowCount || 0) > 0;
+      } catch (err: any) {
+        Logger.error(`DbClient.hasRecentOutboundBody Postgres Error: ${err.message}`);
+        return true;
+      }
+    }
+    const since = Date.parse(sinceIso);
+    for (const m of this.messagesOutStore.values()) {
+      if (m.to_e164 === toE164 && m.body === body && (!m.from_e164 || m.from_e164 === fromE164) && Date.parse(m.created_at || '') >= since) return true;
+    }
+    return false;
+  }
+
   static getAllMessagesIn(): InboundMessage[] {
     return Array.from(this.messagesInStore.values());
   }
