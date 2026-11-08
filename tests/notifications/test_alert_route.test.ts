@@ -30,6 +30,7 @@ describe('Operator alert test route', () => {
     SlackNotifier.setMockHandler(() => {
       notified += 1;
     });
+    AlertTestRecorder.mockHandler = () => ({ recorded: true });
   });
 
   afterEach(() => {
