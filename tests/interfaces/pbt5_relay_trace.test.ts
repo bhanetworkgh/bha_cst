@@ -17,7 +17,11 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
   let query: ReturnType<typeof vi.fn>;
   let network: ReturnType<typeof vi.fn>;
   const app = express();
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req, _res, buffer) => {
+      (req as typeof req & { rawBody?: string }).rawBody = buffer.toString('utf8');
+    },
+  }));
   app.use('/webhooks/elevenlabs', elevenlabsWebhookRouter);
   const traces = () => log.mock.calls.flatMap(([line]) => {
     try { const row = JSON.parse(String(line)); return row.trace_schema ? [row] : []; } catch { return []; }
@@ -31,10 +35,12 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
       },
     };
     const body = JSON.stringify(payload);
+    const timestamp = payload.event_timestamp;
+    const signature = createHmac('sha256', 'test-secret').update(`${timestamp}.${body}`).digest('hex');
     vi.stubEnv('CST_RELAY_TRACE', traced ? 'true' : 'false');
     return request(app).post('/webhooks/elevenlabs/post-call')
       .set('x-elevenlabs-request-id', 'provider_request_1')
-      .set('elevenlabs-signature', createHmac('sha256', 'test-secret').update(body).digest('hex'))
+      .set('elevenlabs-signature', `t=${timestamp},v0=${signature}`)
       .send(payload);
   };
 
