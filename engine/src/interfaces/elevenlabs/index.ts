@@ -12,10 +12,10 @@ export const elevenlabsWebhookRouter = Router();
  */
 elevenlabsWebhookRouter.post('/post-call', async (req: Request, res: Response): Promise<void> => {
   // 1. Authenticate webhook
-  const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+  const rawBody = (req as Request & { rawBody?: string }).rawBody;
   const providerHeader = req.header('x-elevenlabs-request-id') ? 'x-elevenlabs-request-id' : 'x-request-id';
   const trace = process.env.CST_RELAY_TRACE === 'true'
-    ? createRelayTrace(rawBody, req.header(providerHeader), providerHeader)
+    ? createRelayTrace(rawBody ?? '', req.header(providerHeader), providerHeader)
     : undefined;
   const isAuthenticated = ElevenLabsWebhookService.authenticate(req, rawBody);
   if (!isAuthenticated) {
