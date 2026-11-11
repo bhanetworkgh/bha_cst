@@ -37,11 +37,14 @@ describe('WhatsApp post-call', () => {
       whatsapp: { direction: 'inbound', whatsapp_user_id: '2348000000001', recipient: { phone: '2348000000001' } },
     },
   });
-  const send = (body: unknown) =>
-    request(app)
+  const send = (body: unknown) => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = createHmac('sha256', secret).update(`${timestamp}.${JSON.stringify(body)}`).digest('hex');
+    return request(app)
       .post('/webhooks/elevenlabs/post-call')
-      .set('elevenlabs-signature', createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex'))
+      .set('elevenlabs-signature', `t=${timestamp},v0=${signature}`)
       .send(body);
+  };
 
   beforeEach(() => {
     process.env.ELEVENLABS_WEBHOOK_SECRET = secret;
