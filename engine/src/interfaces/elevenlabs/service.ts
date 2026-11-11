@@ -54,97 +54,30 @@ export class ElevenLabsWebhookService {
    * Authenticate incoming ElevenLabs webhook.
    */
   static authenticate(req: Request, rawBody?: string): boolean {
-    const secret = process.env.ELEVENLABS_WEBHOOK_SECRET || process.env.CST_API_KEY;
-
-    // 1. Signature-based authentication (elevenlabs-signature / x-elevenlabs-signature)
-    const sigHeader = (req.header('elevenlabs-signature') || req.header('x-elevenlabs-signature') || '').trim();
-    if (sigHeader && secret) {
-      try {
-        const bodyCandidates = Array.from(new Set([
-          (req as any).rawBody,
-          rawBody,
-          typeof req.body === 'string' ? req.body : undefined,
-          req.body ? JSON.stringify(req.body) : undefined,
-        ].filter((c): c is string => typeof c === 'string' && c.length > 0)));
-
-        const secretsToTry = [secret];
-        if (secret.startsWith('wsec_')) {
-          secretsToTry.push(secret.slice(5));
-        }
-
-        // Case A: Official ElevenLabs format: "t=<timestamp>,v0=<hex_hmac>"
-        if (sigHeader.includes('v0=')) {
-          const parts = sigHeader.split(',');
-          const timestamp = parts.find((p) => p.trim().startsWith('t='))?.trim().slice(2);
-          const signature = parts.find((p) => p.trim().startsWith('v0='))?.trim().slice(3);
-
-          if (timestamp && signature) {
-            // Check timestamp tolerance (30 minutes)
-            const toleranceSecs = 30 * 60;
-            const currentTimestamp = Math.floor(Date.now() / 1000);
-            const eventTimestamp = parseInt(timestamp, 10);
-            if (!isNaN(eventTimestamp) && Math.abs(currentTimestamp - eventTimestamp) <= toleranceSecs) {
-              for (const sec of secretsToTry) {
-                for (const bodyCandidate of bodyCandidates) {
-                  const signedPayload = `${timestamp}.${bodyCandidate}`;
-                  const expectedHmac = createHmac('sha256', sec).update(signedPayload).digest('hex');
-                  if (signature.length === expectedHmac.length) {
-                    const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
-                    if (match) {
-                      FailureDetector.recordWebhookAuthSuccess();
-                      return true;
-                    }
-                  }
-                }
-              }
+    const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+    const header = req.header('elevenlabs-signature')?.trim();
+    if (secret && header && rawBody) {
+      const parts = header.split(',').map((part) => part.trim());
+      const timestamp = parts.find((part) => part.startsWith('t='))?.slice(2);
+      const signature = parts.find((part) => part.startsWith('v0='))?.slice(3);
+      if (timestamp && /^\d+$/.test(timestamp) && signature && /^[a-f0-9]{64}$/.test(signature)) {
+        const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+        if (age <= 30 * 60) {
+          const keys = secret.startsWith('wsec_') ? [secret, secret.slice(5)] : [secret];
+          const received = Buffer.from(signature, 'hex');
+          for (const key of keys) {
+            if (!key) continue;
+            const expected = createHmac('sha256', key).update(`${timestamp}.${rawBody}`).digest();
+            if (timingSafeEqual(received, expected)) {
+              FailureDetector.recordWebhookAuthSuccess();
+              return true;
             }
           }
         }
-
-        // Case B: Direct HMAC or "sha256=<hex>" format (used in tests and fallback)
-        const signature = sigHeader.startsWith('sha256=') ? sigHeader.slice(7) : sigHeader;
-        for (const sec of secretsToTry) {
-          for (const bodyCandidate of bodyCandidates) {
-            const expectedHmac = createHmac('sha256', sec).update(bodyCandidate).digest('hex');
-            if (signature.length === expectedHmac.length) {
-              const match = timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedHmac, 'utf8'));
-              if (match) {
-                FailureDetector.recordWebhookAuthSuccess();
-                return true;
-              }
-            }
-          }
-        }
-      } catch (err: any) {
-        Logger.warn(`ElevenLabsWebhookService: signature verification error: ${err?.message}`);
       }
     }
 
-    // 2. Secret header authentication (x-webhook-secret or Authorization: Bearer <secret>)
-    const webhookSecret = (req.header('x-webhook-secret') || '').trim();
-    if (webhookSecret && secret) {
-      if (webhookSecret.length === secret.length && timingSafeEqual(Buffer.from(webhookSecret, 'utf8'), Buffer.from(secret, 'utf8'))) {
-        FailureDetector.recordWebhookAuthSuccess();
-        return true;
-      }
-    }
-
-    const authHeader = (req.header('authorization') || '').trim();
-    if (authHeader.startsWith('Bearer ') && secret) {
-      const token = authHeader.slice(7).trim();
-      if (token.length === secret.length && timingSafeEqual(Buffer.from(token, 'utf8'), Buffer.from(secret, 'utf8'))) {
-        FailureDetector.recordWebhookAuthSuccess();
-        return true;
-      }
-    }
-
-    // If no secret configured and environment is test/dev, permit for testing
-    if (!secret && process.env.NODE_ENV === 'test') {
-      FailureDetector.recordWebhookAuthSuccess();
-      return true;
-    }
-
-    FailureDetector.recordWebhookAuthFailure('Invalid signature or missing secret header');
+    FailureDetector.recordWebhookAuthFailure('Missing or invalid ElevenLabs signature');
     return false;
   }
 
