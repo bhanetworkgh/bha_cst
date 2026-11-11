@@ -51,7 +51,9 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
 
   function computeSignature(payload: unknown, secret = testSecret): string {
     const raw = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    return createHmac('sha256', secret).update(raw).digest('hex');
+    const timestamp = Math.floor(Date.now() / 1000);
+    const digest = createHmac('sha256', secret).update(`${timestamp}.${raw}`).digest('hex');
+    return `t=${timestamp},v0=${digest}`;
   }
 
   beforeEach(() => {
