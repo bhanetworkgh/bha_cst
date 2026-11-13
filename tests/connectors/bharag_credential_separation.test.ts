@@ -48,7 +48,7 @@ describe('BHARAG credential separation', () => {
     expect(body).not.toContain('workspace-incidents-key-456');
   });
 
-  it('incidents use only BHARAG_WORKSPACE_KEY (Bearer), never BHARAG_CLUSTER_KEY', async () => {
+  it('incidents use only BHARAG_WORKSPACE_KEY (x-api-key), never BHARAG_CLUSTER_KEY', async () => {
     process.env.BHARAG_CLUSTER_KEY = 'cluster-knowledge-key-123';
     process.env.BHARAG_WORKSPACE_KEY = 'workspace-incidents-key-456';
     process.env.BHARAG_CLUSTER_URL = 'https://bharag.test/cluster/ask';
@@ -59,7 +59,7 @@ describe('BHARAG credential separation', () => {
     globalThis.fetch = vi.fn().mockImplementation(async (_url: string | URL | Request, options?: RequestInit) => {
       capturedHeaders = options?.headers;
       capturedBody = JSON.parse(options?.body as string);
-      return { ok: true, status: 201, json: async () => ({ incident_id: 'inc_real_001', status: 'open' }) } as Response;
+      return { ok: true, status: 201, json: async () => ({ incident: { entity_id: 'INC-VFARM.DEVICE-001' } }) } as Response;
     });
 
     const result = await BharagIncidentsConnector.fileIncident({
@@ -70,13 +70,18 @@ describe('BHARAG credential separation', () => {
       engine: 'VFARM',
     });
 
-    expect(capturedHeaders['Authorization']).toBe('Bearer workspace-incidents-key-456');
-    // The knowledge key must never travel on the incident path.
-    expect(capturedHeaders['x-api-key']).toBeUndefined();
+    expect(capturedHeaders['x-api-key']).toBe('workspace-incidents-key-456');
+    // BHARAG data-plane accepts workspace keys via x-api-key only, never Bearer
+    expect(capturedHeaders['Authorization']).toBeUndefined();
+    expect(capturedBody.source).toBe('cst');
+    expect(capturedBody.severity).toBe('high');
+    expect(capturedBody.subsystem).toBe('DEVICE');
+    expect(capturedBody.payload.customer_ref).toBe('cust_test');
+    expect(capturedBody.payload.conversation_id).toBe('conv_test');
     const body = JSON.stringify(capturedHeaders) + JSON.stringify(capturedBody);
     expect(body).not.toContain('cluster-knowledge-key-123');
     // Only the real incident_id is stored.
-    expect(result.incident_id).toBe('inc_real_001');
+    expect(result.incident_id).toBe('INC-VFARM.DEVICE-001');
     expect(result.created).toBe(true);
   });
 
