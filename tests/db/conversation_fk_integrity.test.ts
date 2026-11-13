@@ -24,7 +24,7 @@ import pg from 'pg';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DbClient, ConversationPersistenceError, VoiceDeliveryPersistenceError } from '../../engine/src/db/client.js';
+import { DbClient, ConversationPersistenceError, TranscriptPersistenceError, VoiceDeliveryPersistenceError } from '../../engine/src/db/client.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -228,6 +228,27 @@ if (!ENABLED) {
       expect(res.rows[0].body).toBe('conversation persistence regression check');
     });
 
+    it('rejects a message that references a conversation row that does not exist', async () => {
+      const messageId = `msg_invalid_fk_${suffix}`;
+      await expect(DbClient.addMessageToTranscript({
+        message_id: messageId,
+        conversation_id: `conv_missing_${suffix}`,
+        tenant_id: TENANT,
+        project_id: PROJECT,
+        direction: 'inbound',
+        from_e164: '+15551234567',
+        to_e164: '+19715885823',
+        body: 'invalid conversation reference regression check',
+        provider_sid: `SM_${messageId}`,
+      })).rejects.toBeInstanceOf(TranscriptPersistenceError);
+
+      const persisted = await pool.query(
+        'SELECT message_id FROM messages WHERE message_id = $1',
+        [messageId],
+      );
+      expect(persisted.rows, 'invalid conversation reference must not persist').toHaveLength(0);
+    });
+
     it('leaves no orphan message rows for this tenant after a full round trip', async () => {
       const orphans = await pool.query(
         `SELECT m.message_id FROM messages m
@@ -361,6 +382,31 @@ describe('LOOP-1790985133890-XKWD — conversation persistence: durability (no d
     // attempt a transcript write.
     expect(conversationId).toBeNull();
     expect(calls.some((c) => c.includes('INSERT INTO messages'))).toBe(false);
+  });
+
+  it('surfaces the conversation FK rejection and never caches an invalid transcript', async () => {
+    stubPool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO messages')) {
+        const error = new Error('violates foreign key constraint "messages_conversation_id_fkey"');
+        (error as any).code = '23503';
+        throw error;
+      }
+      return { rows: [] };
+    });
+
+    await expect(DbClient.addMessageToTranscript({
+      message_id: 'msg_invalid_conversation_fk',
+      conversation_id: 'conv_does_not_exist',
+      tenant_id: TENANT,
+      project_id: PROJECT,
+      direction: 'inbound',
+      from_e164: '+15551234567',
+      to_e164: '+19715885823',
+      body: 'invalid conversation reference regression check',
+      provider_sid: 'SM_invalid_conversation_fk',
+    })).rejects.toBeInstanceOf(TranscriptPersistenceError);
+
+    expect(DbClient.getAllTranscripts()).toHaveLength(0);
   });
 
   it('rejects instead of persisting a voice delivery when the tenant has no systems row', async () => {
