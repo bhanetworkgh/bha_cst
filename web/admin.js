@@ -1770,7 +1770,8 @@ async function runVfarmLiveSection(section) {
     if (section === 'devices') {
       if (!farmId) throw new Error('Select a farm first');
       const data = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
-      vfarmLiveState.deviceId = data?.devices?.[0]?.id || null;
+      const firstSensor = data?.devices?.find(d => d.device_type === 'sensor');
+      vfarmLiveState.deviceId = firstSensor?.id || data?.devices?.[0]?.id || null;
       setVfarmLiveSectionResult('devices', true, data);
       return;
     }
@@ -1779,7 +1780,8 @@ async function runVfarmLiveSection(section) {
       let deviceId = vfarmLiveState.deviceId;
       if (!deviceId) {
         const devRes = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
-        deviceId = devRes?.devices?.[0]?.id;
+        const firstSensor = devRes?.devices?.find(d => d.device_type === 'sensor');
+        deviceId = firstSensor?.id || devRes?.devices?.[0]?.id;
         vfarmLiveState.deviceId = deviceId;
       }
       // Latest readings across the whole farm (up to 5)
