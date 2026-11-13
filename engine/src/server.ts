@@ -70,6 +70,20 @@ const registryBootstrap = new RetryableBootstrap(
 
 await registryBootstrap.run();
 
+// Startup configuration validation (non-secret). Errors are logged loudly and
+// surfaced on GET /health/registry (503); inbound routing already fails closed
+// for any number that lacks a binding or system registration.
+{
+  const registryReport = SystemsRegistry.validateConfiguration();
+  if (registryReport.ok) {
+    Logger.info('System registry validation passed', { systems: registryReport.systems.length });
+  } else {
+    Logger.error('System registry validation FAILED', {
+      issues: registryReport.issues.map((i) => ({ severity: i.severity, code: i.code, system_id: i.system_id })),
+    });
+  }
+}
+
 const server = app.listen(env.PORT, () => {
   Logger.info(`CS Twin Engine listening on port ${env.PORT}`, {
     node_env: env.NODE_ENV,
