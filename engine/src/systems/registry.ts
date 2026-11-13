@@ -2,6 +2,8 @@ import { SystemConfig } from '../transport/twilio/types.js';
 import { Logger } from '../config/logger.js';
 import { getEnv } from '../config/env.js';
 import { DbClient } from '../db/client.js';
+import { CoreRegistry } from '../core/registry.js';
+import { validateSystemRegistry, type RegistryValidationReport } from './registry_validation.js';
 
 /**
  * Build system list purely from validated env vars.
@@ -128,8 +130,29 @@ export class SystemsRegistry {
   }
 
   static registerSystem(config: SystemConfig): void {
-    const orgId = config.organization_id || config.tenant_id;
-    const wsId = config.workspace_id || 'ws-default-main';
+    // Fail closed: a registration that lacks an identifier is refused outright.
+    // No identifier is ever fabricated here (the old 'ws-default-main'
+    // workspace fallback let an unmapped system silently join a shared scope).
+    const orgId = (config.organization_id || config.tenant_id || '').trim();
+    const wsId = (config.workspace_id || '').trim();
+    if (!config.system_id || !config.system_id.trim()) {
+      throw new Error('SystemsRegistry: refusing to register a system without a system_id');
+    }
+    if (!orgId) {
+      throw new Error(`SystemsRegistry: system ${config.system_id} has no tenant_id/organization_id`);
+    }
+    if (!wsId) {
+      throw new Error(`SystemsRegistry: system ${config.system_id} has no workspace_id`);
+    }
+    // One service number can belong to exactly one system.
+    for (const phone of config.phone_numbers || []) {
+      const owner = this.numberToSystemMap.get(phone.trim());
+      if (owner && owner.system_id !== config.system_id) {
+        throw new Error(
+          `SystemsRegistry: service number is already registered to system ${owner.system_id}; refusing duplicate mapping for system ${config.system_id}`,
+        );
+      }
+    }
     const normalizedConfig: SystemConfig = {
       ...config,
       organization_id: orgId,
@@ -242,6 +265,26 @@ export class SystemsRegistry {
       if (sys.organization_id === organizationId) return sys;
     }
     return null;
+  }
+
+  /**
+   * Validate the registered systems against CoreRegistry (tenants, projects,
+   * service number bindings). Safe to expose: secrets are masked/classified.
+   */
+  static validateConfiguration(): RegistryValidationReport {
+    const derived: string[] = [];
+    for (const sys of this.systems.values()) {
+      if (sys.system_id === process.env.VFARM_SYSTEM_ID && !process.env.VFARM_WORKSPACE_ID) {
+        derived.push(sys.system_id);
+      }
+    }
+    return validateSystemRegistry({
+      systems: Array.from(this.systems.values()),
+      tenants: CoreRegistry.getAllTenants(),
+      projects: CoreRegistry.getAllTenants().flatMap((t) => CoreRegistry.getProjectsForTenant(t.tenant_id)),
+      bindings: CoreRegistry.getAllBindings(),
+      derivedWorkspaceSystemIds: derived,
+    });
   }
 
   static clear(): void {

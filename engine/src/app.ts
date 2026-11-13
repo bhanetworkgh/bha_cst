@@ -26,6 +26,7 @@ import { elevenlabsWebhookRouter } from './interfaces/elevenlabs/index.js';
 import { voiceObservabilityRouter } from './interfaces/voice/observability_router.js';
 import { testAlertRouter } from './notifications/test_alert_router.js';
 import { FailureDetector } from './observability/failure_detector.js';
+import { SystemsRegistry } from './systems/registry.js';
 import {
   normalizeFarmHealth,
   type NormalizedFarmHealth,
@@ -372,6 +373,20 @@ export function createApp(): Express {
   // Render / AWS ALB hit this endpoint to determine if the instance is live.
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', service: 'bha-cst-engine' });
+  });
+
+  // ── System Registry Configuration Health ────────────────────────────────────
+  // Reports whether the vFarm system registration (system/tenant/workspace,
+  // service numbers, BHARAG workspace key) is complete and consistent. Secrets
+  // are never returned: the BHARAG key is classified and masked, numbers masked.
+  app.get('/health/registry', (_req: Request, res: Response) => {
+    const report = SystemsRegistry.validateConfiguration();
+    // Unauthenticated endpoint: in production expose only the verdict and issue
+    // codes, never tenant/workspace identifiers or number fragments.
+    const body = process.env.NODE_ENV === 'production'
+      ? { ok: report.ok, issues: report.issues.map((i) => ({ severity: i.severity, code: i.code })) }
+      : report;
+    res.status(report.ok ? 200 : 503).json(body);
   });
 
   // ── Reliability & Failure Detection Health Check ────────────────────────────
