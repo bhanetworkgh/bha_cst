@@ -132,3 +132,14 @@ describe('CallLogPoster delivery', () => {
     expect((await CallLogPoster.post(base)).posted).toBe(false);
   });
 });
+
+describe('endedRecord handed_to_person', () => {
+  it('is true only when the handoff was sent, not when a person was asked for', async () => {
+    const { endedRecord } = await import('../../engine/src/notifications/call_log.js');
+    const asked = endedRecord({ channel: 'voice', data_collection: { wanted_person: { value: true }, handoff_sent: { value: false } } });
+    expect(asked.handed_to_person).toBe(false);
+    const sent = endedRecord({ channel: 'voice', data_collection: { wanted_person: { value: true }, handoff_sent: { value: true } } });
+    expect(sent.handed_to_person).toBe(true);
+    expect(endedRecord({ channel: 'voice' }).handed_to_person).toBe(false);
+  });
+});
