@@ -73,6 +73,13 @@ describe('ElevenLabs Post-Call Webhook & cst.event.v1 Pipeline (Deliverable D)',
     CallLogPoster.mockHandler = null;
   });
 
+  it('returns HTTP 503 from webhook health after repeated Slack failures', async () => {
+    for (let i = 0; i < 6; i++) FailureDetector.recordSlackFailure('synthetic failure');
+    const response = await request(app).get('/webhooks/elevenlabs/health');
+    expect(response.status).toBe(503);
+    expect(response.body.overall_readiness).toBe('unready');
+  });
+
   it('1. Successfully processes a real completed-call payload and normalizes to cst.event.v1', async () => {
     const mockSlack = vi.fn().mockResolvedValue(true);
     ErrorRouter.setMockHandler(mockSlack);

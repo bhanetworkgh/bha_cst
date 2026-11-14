@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'crypto';
 import pg from 'pg';
 import { Logger } from '../config/logger.js';
 import type { SecurityLedgerEvent } from '../config/logger.js';
-import { shouldAutoCreatePool } from '../config/runtime.js';
+import { isTestRunner, shouldAutoCreatePool } from '../config/runtime.js';
 import type { AlertAuditRow } from '../audit/alert_audit.js';
 import type { EscalationRecord } from '../escalation/types.js';
 import { CoreRegistry } from '../core/registry.js';
@@ -2692,6 +2692,55 @@ export class DbClient {
   }
 
   // ── Dashboard Publish Outcomes (migration 020) ─────────────────────────────
+
+  /** Required post-call lifecycle records: all rows commit before dispatch.
+   * Stable IDs supplied by the webhook make an ambiguous-commit retry safe.
+   * Existing best-effort publisher writes retain their separate semantics.
+   */
+  static async recordRequiredDashboardOutcomes(outcomes: DashboardPublishOutcome[]): Promise<void> {
+    const now = new Date();
+    const records = outcomes.map(outcome => ({
+      ...outcome,
+      id: `dpo_${outcome.event_id}`,
+      created_at: outcome.created_at || now.toISOString(),
+      expires_at: outcome.expires_at || new Date(now.getTime() + DASHBOARD_OUTCOME_TTL_DAYS * 86400000).toISOString(),
+    }));
+    const pool = this.getPool();
+    if (!pool && !isTestRunner()) throw new Error('Required post-call database is unavailable');
+    if (pool) {
+      const client = await pool.connect();
+      let discardClient = false;
+      try {
+        await client.query('BEGIN');
+        for (const record of records) {
+          await client.query(
+            `INSERT INTO dashboard_publish_outcomes (
+               id, event_id, event_type, specversion, turn_id, correlation_id,
+               tenant_id, project_id, status, http_status, attempts, error,
+               payload, created_at, expires_at, replayed_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             ON CONFLICT (id) DO NOTHING`,
+            [record.id, record.event_id, record.event_type, record.specversion || null,
+              record.turn_id || null, record.correlation_id || null, record.tenant_id || null,
+              record.project_id || null, record.status, record.http_status ?? null,
+              record.attempts, record.error || null, record.payload ? JSON.stringify(record.payload) : null,
+              record.created_at, record.expires_at, record.replayed_at || null],
+          );
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        try { await client.query('ROLLBACK'); } catch { discardClient = true; }
+        for (const record of records) traceDatabaseWrite('failed', record.id, record.event_id);
+        throw err;
+      } finally {
+        client.release(discardClient);
+      }
+    }
+    for (const record of records) {
+      this.dashboardOutcomeStore.set(record.id, record);
+      traceDatabaseWrite(pool ? 'committed' : 'memory_only', record.id, record.event_id);
+    }
+  }
 
   /**
    * Record the durable outcome of a Dashboard publish attempt.
