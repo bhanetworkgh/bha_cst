@@ -115,13 +115,14 @@ export interface EndedRecord {
   code: EndedCode;
   /** The words the Slack card shows, so the dashboard and the card never disagree. */
   text: string;
+  /** True only when the handoff was really sent to the team, as the card's Handoff line reads it. Asking for a person is not a handoff. */
   handed_to_person: boolean;
   urgent: boolean;
   whatsapp_call: boolean;
   termination_reason: string | null;
 }
 
-export function endedRecord(input: { termination_reason?: string; data_collection?: Record<string, unknown>; handed_to_person: boolean; channel: 'voice' | 'whatsapp'; whatsapp_call?: boolean }): EndedRecord {
+export function endedRecord(input: { termination_reason?: string; data_collection?: Record<string, unknown>; channel: 'voice' | 'whatsapp'; whatsapp_call?: boolean }): EndedRecord {
   const code = endedCode(input.termination_reason);
   const card = howItEnded(input.termination_reason);
   const waChat = input.channel === 'whatsapp' && !input.whatsapp_call;
@@ -129,7 +130,7 @@ export function endedRecord(input: { termination_reason?: string; data_collectio
   return {
     code,
     text,
-    handed_to_person: input.handed_to_person,
+    handed_to_person: truthy(collected(input.data_collection, 'handoff_sent')),
     urgent: truthy(collected(input.data_collection, 'urgent')),
     whatsapp_call: !!input.whatsapp_call,
     termination_reason: input.termination_reason ? String(input.termination_reason) : null,

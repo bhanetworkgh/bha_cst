@@ -375,7 +375,6 @@ export class ElevenLabsWebhookService {
       const ended = endedRecord({
         termination_reason: typeof metadata.termination_reason === 'string' ? metadata.termination_reason : undefined,
         data_collection: dataCollection,
-        handed_to_person: escalationRequested,
         channel,
         whatsapp_call: isWhatsAppCall,
       });
