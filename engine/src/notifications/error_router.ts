@@ -258,10 +258,15 @@ export class ErrorRouter {
 
     // Twilio and CST errors are posted by the CS Twin app itself in
     // #bha-pipeline-errors (8 Nov 2026), as a Block Kit card, and Slack's
-    // answer is checked. The webhook below is only the fallback when the
-    // service has no bot token.
-    if ((classified.error_class === 'Twilio' || classified.error_class === 'CST') && process.env.SLACK_BOT_TOKEN) {
-      const channel = process.env.CST_ERROR_CHANNEL_ID || 'C0ATC4CA3G9';
+    // answer is checked. From 15 Nov 2026 (SI5J) a customer service handoff
+    // is posted by the same app into #bha-customer-service-twin, where the
+    // call log already goes, instead of the old incoming webhook. The webhook
+    // below is only the fallback when the service has no bot token.
+    const viaApp = classified.error_class === 'Twilio' || classified.error_class === 'CST' || classified.error_class === 'CS_HANDOFF';
+    if (viaApp && process.env.SLACK_BOT_TOKEN) {
+      const channel = classified.error_class === 'CS_HANDOFF'
+        ? (process.env.CST_HANDOFF_CHANNEL_ID || process.env.CST_CALL_LOG_CHANNEL_ID || 'C0BD6D53HAM')
+        : (process.env.CST_ERROR_CHANNEL_ID || 'C0ATC4CA3G9');
       try {
         const res = await fetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',
@@ -274,7 +279,7 @@ export class ErrorRouter {
         }
         this.recentAlerts.delete(dedupKey);
         this.failedDeliveries.push(classified);
-        Logger.error(`ErrorRouter: CS Twin could not post a ${classified.error_class} error to #bha-pipeline-errors: ${answer.error}`);
+        Logger.error(`ErrorRouter: CS Twin could not post a ${classified.error_class} alert to ${classified.destination_channel}: ${answer.error}`);
         return { dispatched: false, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'failed', error: `chat.postMessage: ${answer.error}` };
       } catch (err: any) {
         this.recentAlerts.delete(dedupKey);
@@ -376,13 +381,14 @@ export class ErrorRouter {
   }
 
   /**
-   * The Block Kit card CS Twin posts for a Twilio or CST error.
+   * The Block Kit card CS Twin posts for a Twilio or CST error, or a customer service handoff.
    */
   static buildErrorCard(classified: ClassifiedError, event: RawErrorEvent): { text: string; blocks: any[] } {
     const esc = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(classified.timestamp));
-    const what = classified.error_class === 'Twilio' ? 'Twilio error' : 'CST service error';
-    const icon = classified.severity === 'WARN' ? ':warning:' : ':rotating_light:';
+    const handoff = classified.error_class === 'CS_HANDOFF';
+    const what = classified.error_class === 'Twilio' ? 'Twilio error' : handoff ? 'customer asked for a person' : 'CST service error';
+    const icon = handoff ? ':raising_hand:' : classified.severity === 'WARN' ? ':warning:' : ':rotating_light:';
     const detail = event.error instanceof Error ? event.error.message : event.error ? String(event.error) : '';
     const fields: any[] = [
       { type: 'mrkdwn', text: `*Severity*\n${classified.severity}` },
@@ -397,8 +403,8 @@ export class ErrorRouter {
       { type: 'section', fields },
     ];
     if (detail) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Detail*\n\`\`\`${esc(detail).slice(0, 2500)}\`\`\`` } });
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Full trace is in the bha-cst Render logs.' }] });
-    return { text: `${classified.severity} CST Genie ${what}: ${esc(event.message).slice(0, 250)}`, blocks };
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: handoff ? 'A person on the customer service team needs to pick this up.' : 'Full trace is in the bha-cst Render logs.' }] });
+    return { text: `${handoff ? 'HANDOFF' : classified.severity} CST Genie ${what}: ${esc(event.message).slice(0, 250)}`, blocks };
   }
 
   /**
