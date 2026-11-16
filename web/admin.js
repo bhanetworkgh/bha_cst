@@ -2,6 +2,9 @@
 
 // ── Auth Guard ───────────────────────────────────────────────────────────────
 (function checkAuth() {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') {
+    return;
+  }
   const token = localStorage.getItem('cst_admin_token');
   if (!token) {
     window.location.replace('/admin/login');
@@ -29,8 +32,8 @@
     .catch(() => {});
 })();
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const $ = (selector) => (typeof document !== 'undefined' ? document.querySelector(selector) : null);
+const $$ = (selector) => (typeof document !== 'undefined' ? Array.from(document.querySelectorAll(selector)) : []);
 
 const state = {
   tenants: [],
@@ -150,7 +153,7 @@ function activateTab(tab) {
   if (tab === 'vfarm-users') guarded(loadVfarmUsersTab);
 }
 
-$('#admin-tabs').addEventListener('click', (event) => {
+$('#admin-tabs')?.addEventListener('click', (event) => {
   const button = event.target.closest('.admin-tab');
   if (button) activateTab(button.dataset.tab);
 });
@@ -1752,6 +1755,21 @@ async function syncVfarmLiveFarmSelect() {
   if (toSelect) liveSelect.value = toSelect;
 }
 
+/**
+ * Select the active sensor device ID for per-sensor telemetry testing.
+ * Strictly requires device_type === 'sensor'.
+ * NEVER falls back to non-sensor devices (loads, actuators, controllers).
+ * Returns null if no sensor devices are present or if inventory is empty.
+ *
+ * @param {Array<{id: string, device_type?: string}>|undefined|null} devices
+ * @returns {string|null} The selected sensor device ID, or null if no sensor exists.
+ */
+export function selectTelemetrySensor(devices) {
+  if (!Array.isArray(devices) || devices.length === 0) return null;
+  const sensor = devices.find((d) => d && typeof d === 'object' && d.device_type === 'sensor');
+  return (sensor && typeof sensor.id === 'string' && sensor.id.length > 0) ? sensor.id : null;
+}
+
 async function runVfarmLiveSection(section) {
   const farmId = getVfarmLiveFarmId();
   const q = farmId ? `?farm_id=${encodeURIComponent(farmId)}` : '';
@@ -1770,8 +1788,7 @@ async function runVfarmLiveSection(section) {
     if (section === 'devices') {
       if (!farmId) throw new Error('Select a farm first');
       const data = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
-      const firstSensor = data?.devices?.find(d => d.device_type === 'sensor');
-      vfarmLiveState.deviceId = firstSensor?.id || data?.devices?.[0]?.id || null;
+      vfarmLiveState.deviceId = selectTelemetrySensor(data?.devices);
       setVfarmLiveSectionResult('devices', true, data);
       return;
     }
@@ -1780,12 +1797,11 @@ async function runVfarmLiveSection(section) {
       let deviceId = vfarmLiveState.deviceId;
       if (!deviceId) {
         const devRes = await api(`/api/v1/admin/vfarm/devices?farm_id=${encodeURIComponent(farmId)}`);
-        const firstSensor = devRes?.devices?.find(d => d.device_type === 'sensor');
-        deviceId = firstSensor?.id || devRes?.devices?.[0]?.id;
+        deviceId = selectTelemetrySensor(devRes?.devices);
         vfarmLiveState.deviceId = deviceId;
       }
       // Latest readings across the whole farm (up to 5)
-       const latestFarm = await api(`/api/v1/admin/vfarm/readings/farm?farm_id=${encodeURIComponent(farmId)}&limit=5`);
+      const latestFarm = await api(`/api/v1/admin/vfarm/readings/farm?farm_id=${encodeURIComponent(farmId)}&limit=5`);
       const payload = { farm_latest: latestFarm };
       if (deviceId) {
         payload.sensor_id = deviceId;
@@ -1797,7 +1813,7 @@ async function runVfarmLiveSection(section) {
         payload.stats = await api(`/api/v1/admin/vfarm/readings/stats?sensor_id=${encodeURIComponent(deviceId)}&window=24h`)
           .catch((e) => ({ note: `Stats unavailable: ${e.message}` }));
       } else {
-        payload.note = 'No devices on farm — skipped per-sensor telemetry';
+        payload.note = 'No sensor devices found on farm — skipped per-sensor telemetry';
       }
       setVfarmLiveSectionResult('telemetry', true, payload);
       return;
@@ -2707,7 +2723,7 @@ $('#vfarm-tab-mapping-filter')?.addEventListener('change', renderVfarmTabFiltere
 $('#btn-vfarm-tab-refresh')?.addEventListener('click', () => guarded(loadVfarmUsersTab));
 
 // Boot refresh only when a session token is already present.
-if (localStorage.getItem('cst_admin_token')) {
+if (typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function' && localStorage.getItem('cst_admin_token')) {
   guarded(refreshAll);
 }
 

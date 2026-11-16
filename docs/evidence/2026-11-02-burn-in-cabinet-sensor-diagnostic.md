@@ -262,22 +262,25 @@ The investigation establishes three distinct, contributing factors to "sensor da
 ## 8. Fix and Regression Coverage
 
 ### 8.1 Changes Made:
-1. **`web/admin.js` (Lines 1772-1785):**
-   Updated `devices` and `telemetry` section handlers to prioritize devices where `device_type === 'sensor'`:
+1. **`web/admin.js` (Lines 1760-1805):**
+   Extracted and exported `selectTelemetrySensor(devices)` and updated `devices` and `telemetry` section handlers to strictly select `device_type === 'sensor'`. Completely removed the residual fallback to `devices[0]`, ensuring non-sensor devices (pumps, actuators, controllers) are never selected:
    ```javascript
-   const firstSensor = data?.devices?.find(d => d.device_type === 'sensor');
-   vfarmLiveState.deviceId = firstSensor?.id || data?.devices?.[0]?.id || null;
+   export function selectTelemetrySensor(devices) {
+     if (!Array.isArray(devices) || devices.length === 0) return null;
+     const sensor = devices.find((d) => d && typeof d === 'object' && d.device_type === 'sensor');
+     return (sensor && typeof sensor.id === 'string' && sensor.id.length > 0) ? sensor.id : null;
+   }
    ```
+   When no sensor exists on the farm, `deviceId` resolves to `null`, setting `payload.note = 'No sensor devices found on farm — skipped per-sensor telemetry'` and preventing any reading request from being issued.
 2. **`tests/admin/admin_telemetry_sensor_selection.test.ts`:**
-   Added automated regression suite verifying:
-   - Identifies the first sensor device rather than blindly taking `devices[0]`.
-   - Falls back safely to `devices[0]` if no sensor exists on the farm.
+   Refactored the regression test to directly import and exercise `selectTelemetrySensor` from `../../web/admin.js` (6/6 tests passing), covering Cases A through E.
 
 ### 8.2 Before vs. After Behavior:
 
 | Surface | Before Fix | After Fix |
 |---|---|---|
 | **Admin UI Telemetry Test** | Selected `pump_valve_01` (`load`) → Returned `null` readings | Selects `rack1_mq7` (`sensor`) → Returns `co: 0.61 ppm` |
+| **No-Sensor Farm Fallback** | Silently fell back to `devices[0]` (actuator/load) | Returns `null` with explicit safe note; zero readings calls |
 | **Fail-Closed Guarantee** | Maintained | Preserved: Zero synthetic readings created |
 | **Non-sensor Filtering** | Skips 19 non-sensors in `listLatestReadings` | Continues to skip 19 non-sensors |
 
@@ -326,3 +329,116 @@ The only remaining open item is external to the CST repository:
 > - **Upstream Latency Isolated:** Confirmed vFarm `/api/v1/readings/latest` experiences ~29.6s latency due to missing `(device_id, recorded_at DESC)` index. CST safely operates via interim `limit=1` endpoint (229ms).
 > - **Documentation Updated:** Authoritative evidence updated in `docs/evidence/2026-11-02-burn-in-cabinet-sensor-diagnostic.md`.
 > - **Ready for Review:** `LOOP-1793620799001-3NBE` is complete and ready for acceptance.
+
+---
+
+## 13. LOOP-1794738235750-262P — Direct Production-Module Regression Coverage
+
+**Loop ID:** `LOOP-1794738235750-262P`  
+**Title:** Rework the new regression test to import and exercise `web/admin.js` directly instead of re-implementing the selection logic inline, and clearly separate implemented vs. prototyped claims in future narration.  
+**Status:** In Progress (Implementation and Direct Test Complete; Ready for Review)  
+**Date:** 16 November 2026  
+**Assignee:** Ahad Ali  
+
+### 13.1 Original Test Weakness & Defect Review
+In the initial diagnostic commit (`9b81f56`), `tests/admin/admin_telemetry_sensor_selection.test.ts` was constructed with an inline duplicate algorithm inside the test file:
+```typescript
+// INLINE REIMPLEMENTATION IN EARLIER TEST (FLAWED):
+const firstSensor = devices.find(d => d.device_type === 'sensor');
+const selectedDeviceId = firstSensor?.id || devices[0]?.id || null;
+```
+This was insufficient because:
+1. It did not import or execute `web/admin.js`. If production dashboard logic regressed, the test would continue to pass.
+2. It codified an unsafe residual fallback: when no sensor existed, it asserted `expect(selectedDeviceId).toBe('pump_valve_01')`, continuing to select an actuator/load.
+
+### 13.2 Production Implementation & Safe Fallback Removal
+In `web/admin.js` (lines 1760–1805), the sensor-selection logic was extracted as an exported production function:
+```javascript
+export function selectTelemetrySensor(devices) {
+  if (!Array.isArray(devices) || devices.length === 0) return null;
+  const sensor = devices.find((d) => d && typeof d === 'object' && d.device_type === 'sensor');
+  return (sensor && typeof sensor.id === 'string' && sensor.id.length > 0) ? sensor.id : null;
+}
+```
+In `runVfarmLiveSection`:
+- `section === 'devices'`: `vfarmLiveState.deviceId = selectTelemetrySensor(data?.devices);`
+- `section === 'telemetry'`: `deviceId = selectTelemetrySensor(devRes?.devices);`
+- **Residual Fallback Elimination:** If no sensors exist, `deviceId` is strictly `null`. The dashboard outputs `payload.note = 'No sensor devices found on farm — skipped per-sensor telemetry'` and does **not** call `/api/v1/admin/vfarm/readings/sensor-latest` or history/stats endpoints for pumps or controllers.
+
+### 13.3 Testability & Direct ESM Import Architecture
+Because `web/admin.html` loads `<script type="module" src="/admin.js"></script>` and `package.json` specifies `"type": "module"`, `web/admin.js` is an ES module.
+To permit clean direct imports in Node.js/Vitest without breaking browser execution:
+- Guarded `checkAuth()` to check `typeof window !== 'undefined' && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'`.
+- Guarded DOM helper `$` and `$$` against `typeof document === 'undefined'`.
+- Added optional chaining on top-level listener `$('#admin-tabs')?.addEventListener`.
+- Guarded bottom-level session check against `typeof localStorage !== 'undefined'`.
+
+### 13.4 Regression Scenarios Covered
+The refactored test suite in `tests/admin/admin_telemetry_sensor_selection.test.ts` directly imports `selectTelemetrySensor` from `../../web/admin.js`:
+
+* **Case A — Sensor and pump both exist:** Input `[{ id: 'water_pump_01', device_type: 'load' }, { id: 'rack1_soil', device_type: 'sensor' }]`. Asserts `'rack1_soil'` is selected and `'water_pump_01'` is never selected.
+* **Case B — Pump appears before the sensor:** Input `[pump_valve_01 (load), relay_m3_1 (actuator), uno_board_01 (controller), rack1_mq7 (sensor)]`. Asserts `'rack1_mq7'` is selected, and `devices[0]` is not selected.
+* **Case C — No sensor exists:** Input `[pump_valve_01 (load), relay_module_01 (actuator), uno_board_01 (controller)]`. Asserts `null` is returned with **zero** silent fallback to `devices[0]`.
+* **Case D — Empty inventory:** Input `[]`, `null`, and `undefined` safely return `null`.
+* **Case E — Sensor ordering:** Multiple sensors (`rack1_mq7`, `rack1_soil`, etc.) consistently return the first sensor, never non-sensors.
+
+### 13.5 Mutation Verification (Case F)
+To prove the test is directly bound to the production implementation:
+1. Mutated `selectTelemetrySensor` in `web/admin.js` to return `devices?.[0]?.id || null`.
+2. Ran `npx vitest run tests/admin/admin_telemetry_sensor_selection.test.ts`.
+3. **Observed Result:** 4 out of 6 tests failed immediately:
+   - Case A failed: `expected 'water_pump_01' to be 'rack1_soil'`.
+   - Case B failed: `expected 'pump_valve_01' to be 'rack1_mq7'`.
+   - Case C failed: `expected 'pump_valve_01' to be null`.
+   - Case E failed: `expected 'led_light_01' to be 'rack1_mq7'`.
+4. Restored production code in `web/admin.js`. Re-run passed 6/6 cleanly.
+
+### 13.6 Execution Results
+Command:
+```bash
+npx vitest run tests/admin/admin_telemetry_sensor_selection.test.ts
+```
+Output:
+```
+ ✓ tests/admin/admin_telemetry_sensor_selection.test.ts (6 tests) 2ms
+   ✓ Admin Dashboard Telemetry Device Selection (LOOP-1794738235750-262P / LOOP-1793620799001-3NBE) (6)
+     ✓ directly imports and exercises the production implementation from web/admin.js
+     ✓ Case A: selects sensor when sensor and pump both exist, never selecting the pump
+     ✓ Case B: selects sensor even when pump and controller precede it (does not select devices[0])
+     ✓ Case C: returns null and does NOT silently fall back to devices[0] when no sensor exists
+     ✓ Case D: returns null on empty or invalid inventory
+     ✓ Case E: consistently returns the first sensor and never non-sensors
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Duration  141ms
+```
+Full suite check (6 test files, 69 tests passing):
+- `tests/admin/admin_telemetry_sensor_selection.test.ts` (6 tests)
+- `tests/integration/admin_vfarm_e2e.test.ts` (6 tests)
+- `tests/adapters/vfarm_interim_readings.test.ts` (15 tests)
+- `tests/adapters/vfarm_per_sensor_classification.test.ts` (8 tests)
+- `tests/connectors/vfarm_telemetry_mapping.test.ts` (17 tests)
+- `tests/adapters/vfarm_fleet_status.test.ts` (17 tests)
+
+TypeScript typecheck:
+```bash
+npm run typecheck  # tsc --noEmit -p engine/tsconfig.json (Exit code: 0)
+```
+
+### 13.7 Implemented versus Prototyped / Proposed Claims
+
+| Capability | Status | Evidence & Actual State |
+|---|:---:|---|
+| **Admin sensor-selection fix** | **IMPLEMENTED** | `web/admin.js:1760-1805` exports `selectTelemetrySensor` and enforces `device_type === 'sensor'`. Local branch `fix/3nbe-burn-in-cabinet-sensor-diagnostic`. |
+| **Direct-import regression test** | **IMPLEMENTED** | `tests/admin/admin_telemetry_sensor_selection.test.ts:1-71` directly imports `web/admin.js` and exercises real module behavior (6/6 pass). |
+| **No-sensor fail-closed behavior** | **IMPLEMENTED** | `web/admin.js:1764` returns `null` when no sensors exist; line 1803 skips readings calls and displays safe note. Tested in Case C. |
+| **Placement-aware fan-out in `vfarm.ts`** | **PROPOSED (NOT IMPLEMENTED)** | Mentioned as a potential future engine enhancement in previous Otter log; **no** code exists in `engine/src/connectors/vfarm.ts` or `live_client.ts`. |
+| **`live_client.ts` interim-route change** | **IMPLEMENTED (EXISTING WORKAROUND)** | `engine/src/adapters/vfarm/live_client.ts:693-705` proxies `getReadings(sensorId, 1)` via `GET /api/v1/readings?sensor_id=X&limit=1` (~229ms). Upstream `/readings/latest` remains unindexed. |
+| **Cabinet/controller placement traversal** | **IMPLEMENTED (CLIENT-SIDE) / UPSTREAM UNRESOLVED** | `engine/src/adapters/vfarm/live_client.ts:170-225` contains `resolveSensorPlacement`, but resolves `cabinet_id: null` in production because vFarm devices lack cabinet IDs/device types. |
+
+### 13.8 Remaining Limitations
+1. Upstream database index on `readings(device_id, recorded_at DESC)` remains unapplied in vFarm PostgreSQL (owned by Jegan under `LOOP-1794738235748-6X5Q`).
+2. Parent 3NBE loop remains In Progress until end-to-end post-index acceptance and production deployment.
+3. CST continues relying safely on the interim `limit=1` route.
+
