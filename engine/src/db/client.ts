@@ -3109,6 +3109,7 @@ export class DbClient {
         }
       } catch (err: any) {
         Logger.error(`DbClient.lookupSmsConsent Postgres Error: ${err.message}`);
+        throw err;
       }
     }
 

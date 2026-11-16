@@ -114,15 +114,19 @@ Immutable audit trail of all consent state changes.
 
 ## Outbound enforcement
 
-The outbound SMS queue (`engine/src/transport/twilio/outbound.ts`) calls
-`canSendSms()` before every Twilio API call. Blocked messages are marked
-`status='refused'` with an audit log entry and **never reach Twilio**.
+The outbound SMS queue (`engine/src/transport/twilio/outbound.ts`) enforces consent
+via `evaluateOutboundConsent(msg)` at two distinct stages:
 
-**Exception:** Onboarding replies (CoreEngine status `'onboarding'`) are marked
-`consent_exempt: true` at save time in the SMS ingress pipeline
-(`engine/src/interfaces/sms/index.ts`). This is necessary because the safe
-generic onboarding reply is how CST initially collects consent — blocking it
-would deadlock. All other reply types go through the normal consent gate.
+1. **Initial Queue Pickup**: Checked before DID resolution or message rendering.
+2. **Pre-Dispatch Re-Verification**: Re-evaluated immediately before calling `TwilioClientWrapper.sendSms()` on every attempt inside the retry loop (`while (attempt < maxRetries && !success)`).
+
+This guarantees that:
+- Messages queued before a recipient texts STOP are aborted prior to Twilio dispatch.
+- Messages undergoing retry backoff are re-checked before each retry attempt; if the recipient opted out between retries, sending is stopped immediately.
+- Database errors fail closed (`status: 'lookup_error'`), refusing delivery and preventing leakage during database timeouts.
+- Blocked messages are marked `status='refused'` with a `SECURITY_LEDGER` audit entry and **never reach Twilio**.
+
+**Exception:** Platform and regulatory replies (CoreEngine status `'onboarding'`, STOP confirmations, and HELP responses) are marked `consent_exempt: true`. These are strictly guarded by `validateConsentExempt()`, which verifies that the outbound send originates from an authorized project-bound service DID. Migration `024_add_consent_exempt_to_messages_out.sql` persists this flag durably in PostgreSQL.
 
 ## Inbound STOP handling
 
