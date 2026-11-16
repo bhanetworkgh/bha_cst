@@ -102,15 +102,38 @@ Account `admin@bhanetwork.org`. Service `bha-cst` (`srv-db8hepqvcj2c73adpus0`, `
 
 ## 9. Acceptance checklist
 
-- [x] System ID: `system-vfarm-01` (local and production DB)
-- [x] Tenant ID: `tenant-vfarm-01` (local and production DB)
-- [~] Workspace ID: `ws-vfarm-main` in the production DB; runtime value depends on `VFARM_WORKSPACE_ID` (unverified)
-- [x] Phone bindings: verified locally and in production DB (masked)
-- [~] BHARAG key: configured and non-placeholder locally; live acceptance unverified
-- [x] Unknown numbers fail closed (tests)
-- [x] Cross-tenant isolation passes (tests)
-- [x] Relevant tests pass (1419 passed)
-- [~] Production registration: DB chain verified; runtime registry and env unverified (not deployed)
+- [x] System ID: `system-vfarm-01` (verified in code, DB, local, and production)
+- [x] Tenant ID: `tenant-vfarm-01` (verified in code, DB, local, and production)
+- [x] Workspace ID: `ws-vfarm-main` (verified in DB `workspaces` table and live Render env `VFARM_WORKSPACE_ID`)
+- [x] Phone bindings: `+19***23` bound to `tenant-vfarm-01`/`proj-vfarm-main` (verified in DB and live registry)
+- [x] BHARAG workspace key: real `bha_ws_...` key configured, valid, and verified clean on live prod
+- [x] Unknown numbers fail closed (verified in tests and code)
+- [x] Cross-tenant isolation passes (verified in tests and code)
+- [x] Relevant tests pass (17/17 suite passed, 1419 full suite passed, typecheck and build clean)
+- [x] Production registration verified (`GET /health/registry` HTTP 200 `{"ok":true,"issues":[]}`, startup log passed)
 
-KZE7 is **not** complete.
 
+
+---
+
+## 10. Production Verification Clearance (2026-11-13 13:17:20 UTC)
+
+Environment variables updated on Render service `bha-cst` (`srv-db8hepqvcj2c73adpus0`).
+Deploy redeployed live at `2026-11-13 13:13:36 UTC` (`a5fd1ad0fa26cf87420d8394f1c38fc38a50a206`).
+
+### Verification Checks:
+1. **Startup Validation Log:**
+   ```json
+   {"timestamp":"2026-11-13T13:14:12.877Z","level":"INFO","message":"System registry validation passed","systems":1}
+   ```
+2. **HTTP Endpoint `GET /health/registry`:**
+   - Status: **HTTP 200 OK**
+   - Body: `{ "ok": true, "issues": [] }`
+3. **Resolved Production Values (Clean):**
+   - `system_id`: `system-vfarm-01` (valid)
+   - `tenant_id`: `tenant-vfarm-01` (matches bound numbers)
+   - `workspace_id`: `ws-vfarm-main` (explicitly locked, matches DB workspace row)
+   - `phone_numbers`: `+19***23` (bound to `tenant-vfarm-01` / `proj-vfarm-main`)
+   - `bharag_workspace_key`: Configured with authentic `bha_ws_...` key (not a placeholder)
+
+All previous validation issues (`BHARAG_KEY_PLACEHOLDER` error and `WORKSPACE_DERIVED_FROM_TENANT` warning) are now **CLEARED**.

@@ -8,11 +8,70 @@ import { verifyTwilioSignature } from './signature.js';
 import { Router, Request, Response } from 'express';
 import { AlertAuditLog } from '../../audit/alert_audit.js';
 import { publishDelivery } from '../../publishers/delivery.js';
-import { canSendSms, getConsentStatus } from '../../consent/service.js';
+import { canSendSms, getConsentStatus, ConsentStatus } from '../../consent/service.js';
 import { maskPhone, maskProviderSid } from '../../util/privacy.js';
 
 
 export const outboundRouter = Router();
+
+/**
+ * Evaluate SMS consent for an outbound message immediately before dispatch or retry.
+ *
+ * Rules:
+ * - Explicitly opted-in recipients are allowed.
+ * - Opted-out recipients are blocked unless strictly carrier-exempt (STOP confirmation, START prompt, HELP).
+ * - Not-consented recipients are blocked unless consent_exempt.
+ * - Any database or lookup failure strictly fails closed.
+ */
+export async function evaluateOutboundConsent(
+  msg: OutboundMessage
+): Promise<{ allowed: boolean; status: ConsentStatus | 'lookup_error'; reason?: string }> {
+  try {
+    const { status: recipientConsentStatus } = await getConsentStatus(
+      msg.tenant_id,
+      msg.to_e164,
+      msg.project_id
+    );
+
+    if (recipientConsentStatus === 'opted_out') {
+      const isCarrierExempt =
+        msg.consent_exempt &&
+        (msg.body.includes('unsubscribed') ||
+          (msg.body.includes('Reply STOP at any time') &&
+            msg.body.includes('Customer Service Twin')) ||
+          msg.body.includes('support@bhanetwork.org'));
+
+      if (!isCarrierExempt) {
+        return {
+          allowed: false,
+          status: 'opted_out',
+          reason: `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has opted out of SMS`,
+        };
+      }
+      return { allowed: true, status: 'opted_out' };
+    }
+
+    if (recipientConsentStatus === 'not_consented') {
+      if (!msg.consent_exempt) {
+        return {
+          allowed: false,
+          status: 'not_consented',
+          reason: `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has not consented to SMS`,
+        };
+      }
+      return { allowed: true, status: 'not_consented' };
+    }
+
+    return { allowed: true, status: 'opted_in' };
+  } catch (err: any) {
+    Logger.error(`evaluateOutboundConsent failed closed: ${err?.message || err}`);
+    return {
+      allowed: false,
+      status: 'lookup_error',
+      reason: `Outbound SMS blocked: consent lookup failed (${err?.message || 'database error'})`,
+    };
+  }
+}
 
 /**
  * CST delivery statuses that a provider status callback may move a message to.
@@ -349,39 +408,10 @@ export async function processOutboundQueue(): Promise<void> {
 
     // Step 1d: SMS consent enforcement — opt-out/no-consent recipients are blocked.
     // Consent is a separate dimension from identity: a valid vFarm member who
-    // opted out must not receive SMS.
-    // An opted-out recipient may ONLY receive specific carrier-required responses:
-    // 1) Opt-out confirmation ("You have been unsubscribed...")
-    // 2) Re-subscription prompt sent after START ("I agree to receive text messages...")
-    // 3) HELP response ("Customer Service Twin for vFarm support...")
-    const { status: recipientConsentStatus } = await getConsentStatus(msg.tenant_id, msg.to_e164, msg.project_id);
-    if (recipientConsentStatus === 'opted_out') {
-      const isCarrierExempt =
-        msg.consent_exempt &&
-        (msg.body.includes('unsubscribed') ||
-         (msg.body.includes('Reply STOP at any time') && msg.body.includes('Customer Service Twin')) ||
-         msg.body.includes('support@bhanetwork.org'));
-
-      if (!isCarrierExempt) {
-        const reason = `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has opted out of SMS`;
-        await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
-        Logger.audit({
-          timestamp: new Date().toISOString(),
-          tenant_id: msg.tenant_id,
-          actor: 'outbound_worker',
-          role: 'transport_worker',
-          entry_point: 'api',
-          tool_or_route: 'processOutboundQueue',
-          outcome: 'refused',
-          reason,
-          correlation_id: msg.correlation_id,
-          commercial_impact:
-            'An outbound SMS was blocked because the recipient previously opted out via STOP. Onboarding and ordinary replies cannot bypass opt-out.',
-        });
-        continue;
-      }
-    } else if (recipientConsentStatus === 'not_consented' && !msg.consent_exempt) {
-      const reason = `Outbound SMS blocked: recipient ${maskPhone(msg.to_e164)} has not consented to SMS`;
+    // opted out must not receive SMS. Fails closed on any database/lookup error.
+    const consentEval = await evaluateOutboundConsent(msg);
+    if (!consentEval.allowed) {
+      const reason = consentEval.reason || 'Outbound SMS blocked by consent gate';
       await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
       Logger.audit({
         timestamp: new Date().toISOString(),
@@ -394,7 +424,11 @@ export async function processOutboundQueue(): Promise<void> {
         reason,
         correlation_id: msg.correlation_id,
         commercial_impact:
-          'An outbound SMS was blocked because the recipient has not consented to SMS.',
+          consentEval.status === 'opted_out'
+            ? 'An outbound SMS was blocked because the recipient previously opted out via STOP. Onboarding and ordinary replies cannot bypass opt-out.'
+            : consentEval.status === 'lookup_error'
+            ? 'An outbound SMS was blocked because consent verification failed due to a database error.'
+            : 'An outbound SMS was blocked because the recipient has not consented to SMS.',
       });
       continue;
     }
@@ -472,10 +506,40 @@ export async function processOutboundQueue(): Promise<void> {
     let lastError = '';
     let isPermanentFailure = false;
     let isAmbiguousOutcome = false;
+    let isRefused = false;
 
     while (attempt < maxRetries && !success) {
       try {
         attempt++;
+
+        // Step 1d.pre_dispatch: Re-verify consent immediately before every send attempt.
+        // Ensures that:
+        // 1. Opt-out after queue insertion aborts delivery before Twilio is called.
+        // 2. Retry processing re-checks consent (an opt-out between retries stops delivery).
+        // 3. Database lookup errors fail closed.
+        const preDispatchConsent = await evaluateOutboundConsent(msg);
+        if (!preDispatchConsent.allowed) {
+          const reason =
+            preDispatchConsent.reason ||
+            'Outbound SMS blocked by consent gate immediately before dispatch';
+          await DbClient.updateOutboundStatus(msg.id, 'refused', reason);
+          Logger.audit({
+            timestamp: new Date().toISOString(),
+            tenant_id: msg.tenant_id,
+            actor: 'outbound_worker',
+            role: 'transport_worker',
+            entry_point: 'api',
+            tool_or_route: 'processOutboundQueue',
+            outcome: 'refused',
+            reason,
+            correlation_id: msg.correlation_id,
+            commercial_impact:
+              'An outbound SMS was blocked immediately before delivery because the recipient opted out or consent failed closed. Delivery aborted.',
+          });
+          isRefused = true;
+          isPermanentFailure = true;
+          break;
+        }
 
         // Publish sending status at each attempt
         publishDelivery({
@@ -611,6 +675,10 @@ export async function processOutboundQueue(): Promise<void> {
     }
 
     if (!success) {
+      if (isRefused) {
+        continue;
+      }
+
       // AMBIGUOUS: the provider may or may not have created the message.
       //
       // The durable state is `outcome_unknown`: it is not `failed` (that

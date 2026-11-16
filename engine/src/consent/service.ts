@@ -97,7 +97,11 @@ const CUSTOMER_ACTOR = 'customer';
 const ADMIN_ACTOR = 'admin';
 
 function cleanPhone(phoneE164: string): string {
-  return (phoneE164 || '').trim();
+  const p = (phoneE164 || '').trim();
+  if (p && !p.startsWith('+') && /^\d{8,30}$/.test(p)) {
+    return `+${p}`;
+  }
+  return p;
 }
 
 function isValidE164(phoneE164: string): boolean {
@@ -217,30 +221,58 @@ export async function canSendSms(
   phoneE164: string,
   projectId?: string
 ): Promise<{ allowed: boolean; status: ConsentStatus; reason: string }> {
-  const { status, record } = await getConsentStatus(tenantId, phoneE164, projectId);
+  try {
+    const { status, record } = await getConsentStatus(tenantId, phoneE164, projectId);
 
-  if (status === 'opted_out') {
-    Logger.audit({
-      timestamp: new Date().toISOString(),
-      tenant_id: tenantId,
-      actor: 'outbound_worker',
-      role: 'transport_worker',
-      entry_point: 'api',
-      tool_or_route: 'canSendSms',
-      outcome: 'refused',
-      reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has opted out (${record?.opted_out_at})`,
-      correlation_id: record?.id,
-      commercial_impact:
-        'An outbound SMS was blocked because the recipient previously sent a STOP keyword. The customer will not receive this message.',
-    });
+    if (status === 'opted_out') {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'canSendSms',
+        outcome: 'refused',
+        reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has opted out (${record?.opted_out_at})`,
+        correlation_id: record?.id,
+        commercial_impact:
+          'An outbound SMS was blocked because the recipient previously sent a STOP keyword. The customer will not receive this message.',
+      });
+      return {
+        allowed: false,
+        status: 'opted_out',
+        reason: `Recipient ${maskPhone(phoneE164)} has opted out of SMS.`,
+      };
+    }
+
+    if (status === 'not_consented' && !record) {
+      Logger.audit({
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        actor: 'outbound_worker',
+        role: 'transport_worker',
+        entry_point: 'api',
+        tool_or_route: 'canSendSms',
+        outcome: 'refused',
+        reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has no SMS consent record`,
+        correlation_id: undefined,
+        commercial_impact:
+          'An outbound SMS was blocked because the recipient has not consented to SMS. The customer will not receive this message.',
+      });
+      return {
+        allowed: false,
+        status: 'not_consented',
+        reason: `Recipient ${maskPhone(phoneE164)} has not consented to SMS.`,
+      };
+    }
+
     return {
-      allowed: false,
-      status: 'opted_out',
-      reason: `Recipient ${maskPhone(phoneE164)} has opted out of SMS.`,
+      allowed: true,
+      status: 'opted_in',
+      reason: '',
     };
-  }
-
-  if (status === 'not_consented' && !record) {
+  } catch (err: any) {
+    Logger.error(`canSendSms Postgres Error: ${err?.message || err}`);
     Logger.audit({
       timestamp: new Date().toISOString(),
       tenant_id: tenantId,
@@ -249,23 +281,17 @@ export async function canSendSms(
       entry_point: 'api',
       tool_or_route: 'canSendSms',
       outcome: 'refused',
-      reason: `Outbound SMS blocked: recipient ${maskPhone(phoneE164)} has no SMS consent record`,
+      reason: `Outbound SMS blocked: consent database error (${err?.message || 'lookup failure'})`,
       correlation_id: undefined,
       commercial_impact:
-        'An outbound SMS was blocked because the recipient has not consented to SMS. The customer will not receive this message.',
+        'An outbound SMS was blocked because consent verification failed due to a database error.',
     });
     return {
       allowed: false,
       status: 'not_consented',
-      reason: `Recipient ${maskPhone(phoneE164)} has not consented to SMS.`,
+      reason: `Outbound SMS blocked: consent database error (${err?.message || 'lookup failure'})`,
     };
   }
-
-  return {
-    allowed: true,
-    status: 'opted_in',
-    reason: '',
-  };
 }
 
 export {

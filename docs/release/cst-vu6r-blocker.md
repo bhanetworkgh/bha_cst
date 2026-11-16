@@ -64,3 +64,20 @@ Assignee **Ahad (`U0AC6RFNP3P`)** is responsible for:
 
 - **Blocker**: Client session confirmation and client-specific validation remain pending until Ahad completes the source check and logs client confirmation.
 - **Next Action**: Ahad reports the source-check findings and reaches out to Jason Bays regarding the Client 2 contact to schedule the validation session.
+
+---
+
+## 5. Resolution of Blockers via Reconciled Form 2 Process & Active Gates (November 2026)
+
+### 5.1 Shift from Working Session to Reusable Form 2
+The requirement for an unstructured client meeting was superseded by Jason Bays' directive to standardize on a reusable **Form 2 / Site Specification questionnaire** (`Form 2 — Commissary Ops Twin Site Spec v1`).
+
+### 5.2 Resolution of the 3 Open Design Questions
+1. **Photo Sampling:** RESOLVED per Client 2's confirmed requirement on `CARD-MTUW`: *"I need time stamped photo evidence of everything."* Policy locked as `every_visit_mandatory` (no periodic sampling).
+2. **Commercial / Billing Model:** FORMALIZED in Section 5 schema with explicit support for `operator_pays`, `bha_bundled`, or `hybrid_cost_share`, pending executed commercial terms.
+3. **Regulatory Requirements:** RESOLVED in schema Section 4. Tracked with Utica / Oneida County under `JOB-1791920840073-BKPU`, marked strictly `VERIFICATION REQUIRED — NOT AN OFFICIALLY CONFIRMED REGULATORY DETERMINATION`.
+
+### 5.3 Active Cross-Functional Gates
+- **Jeganathan (`DW-1793342080834-M7GY`):** Section 1 technical review and vFarm Site Survey schema compatibility sign-off.
+- **Destiny Arupi (`DW-1793290384075-UDZG`):** Private dashboard form deployment, Build Pattern registration, and live Client 2 intake link generation.
+- **Status of Loop `LOOP-1791922936305-VU6R`:** In Progress. Form must not be sent to Client 2 until Destiny's intake deployment and Jegan's technical sign-off are complete.

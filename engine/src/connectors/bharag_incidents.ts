@@ -6,7 +6,7 @@ export interface FileIncidentParams {
   customerRef: string;
   conversationId: string;
   summary: string;
-  subsystem?: 'CUSTOMER_TWIN';
+  subsystem?: string;
   engine?: string; // e.g. 'VFARM'
   workspaceKey?: string;
   priority?: 'low' | 'medium' | 'high' | 'critical';
@@ -31,11 +31,43 @@ export interface IncidentResult {
   error?: string;
 }
 
+/**
+ * Map CST internal priority levels to BHARAG incident severity enum:
+ * 'critical' | 'high' | 'warning' | 'info'
+ */
+function mapSeverity(priority?: string): 'critical' | 'high' | 'warning' | 'info' {
+  switch (priority) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'medium':
+      return 'warning';
+    case 'low':
+      return 'info';
+    default:
+      return 'high';
+  }
+}
+
+/**
+ * Map subsystem to a registered, upper-case alphanumeric code without underscores.
+ * BHARAG enforces ^[A-Z][A-Z0-9]{1,15}$ registered against the target engine (e.g. VFARM).
+ * Registered VFARM subsystems include: CLEANER, CLEANR, DEVICE, ENV, IRRIGATION, POLLINATION, POWER, PUMPS, WATER.
+ */
+function mapSubsystem(raw?: string): string {
+  if (!raw) return 'DEVICE';
+  const clean = raw.trim().toUpperCase();
+  if (clean === 'CUSTOMER_TWIN') return 'DEVICE';
+  if (/^[A-Z][A-Z0-9]{1,15}$/.test(clean)) return clean;
+  return 'DEVICE';
+}
+
 export class BharagIncidentsConnector {
   /**
-   * File incident in BHARAG incidents.v0 (Spec §3, §4 & §6).
-   * Subsystem is frozen as 'CUSTOMER_TWIN', engine as 'VFARM'.
-   * CST stores ONLY the returned incident_id on the conversation record.
+   * File incident in BHARAG incidents API (Spec §3, §4 & §6).
+   * Authenticates via workspace-scoped key in `x-api-key` header.
+   * CST stores ONLY the returned incident id on the conversation record.
    *
    * Integrity rule: if BHARAG does not return an incident id, this method
    * resolves with `created: false` and `incident_id: null`. It does not invent
@@ -45,9 +77,8 @@ export class BharagIncidentsConnector {
     const env = getEnv();
     const workspaceKey = params.workspaceKey || env.BHARAG_WORKSPACE_KEY;
     const apiUrl = env.BHARAG_API_URL;
-    const subsystem = params.subsystem || 'CUSTOMER_TWIN';
-    const engineType = params.engine || 'VFARM';
-    const priority = params.priority || 'high';
+    const severity = mapSeverity(params.priority);
+    const subsystem = mapSubsystem(params.subsystem);
 
     Logger.audit({
       timestamp: new Date().toISOString(),
@@ -66,27 +97,29 @@ export class BharagIncidentsConnector {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      const payload = {
+      // BHARAG POST /api/v1/incidents schema requires: source, severity, payload.
+      // Subsystem is an uppercase alphanumeric registered code (e.g. DEVICE).
+      const payload: Record<string, unknown> = {
+        source: 'cst',
+        severity,
+        summary: params.summary ? params.summary.slice(0, 2000) : 'Customer escalation',
         subsystem,
-        engine: engineType,
-        customer_ref: params.customerRef,
-        workspace_key: workspaceKey,
-        priority,
-        details: {
-          summary: params.summary,
+        payload: {
+          customer_ref: params.customerRef,
           conversation_id: params.conversationId,
           timestamp: new Date().toISOString(),
           ...(params.unitContext ? { unit_context: params.unitContext } : {}),
         },
       };
 
-      const response = await fetch(`${apiUrl}/incidents`, {
+      const endpoint = `${apiUrl.replace(/\/$/, '')}/incidents`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${workspaceKey}`,
+          'x-api-key': workspaceKey,
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -99,17 +132,33 @@ export class BharagIncidentsConnector {
 
       if (response && (response.ok || response.status === 201)) {
         const data = await response.json() as any;
-        // Only trust a non-empty string id that BHARAG actually returned.
+        // BHARAG returns allocated canonical id in data.incident.entity_id or entity_id or incident_id
+        const rawId =
+          data?.incident?.entity_id ||
+          data?.entity_id ||
+          data?.incident_id ||
+          data?.incident?.id ||
+          data?.id ||
+          null;
         incidentId =
-          typeof data?.incident_id === 'string' && data.incident_id.trim()
-            ? data.incident_id.trim()
+          typeof rawId === 'string' && rawId.trim()
+            ? rawId.trim()
             : null;
         if (!incidentId) {
-          failureReason = `BHARAG responded ${response.status} without an incident_id`;
+          failureReason = `BHARAG responded ${response.status} without a recognized incident entity_id`;
         }
       } else {
+        let errDetail = '';
+        if (response) {
+          try {
+            const errJson = await response.json() as any;
+            errDetail = errJson?.error?.message || errJson?.message || '';
+          } catch {
+            // body not json
+          }
+        }
         failureReason = response
-          ? `BHARAG incidents API returned HTTP ${response.status}`
+          ? `BHARAG incidents API returned HTTP ${response.status}${errDetail ? `: ${errDetail}` : ''}`
           : 'BHARAG incidents API unreachable';
       }
     } catch (err: any) {
@@ -163,7 +212,7 @@ export class BharagIncidentsConnector {
     // Store ONLY the incident_id reference on the conversation record per Spec §3
     await DbClient.addIncidentToConversation(params.conversationId, incidentId);
 
-    Logger.info(`Filed incident ${incidentId} in BHARAG incidents.v0 for conversation ${params.conversationId}`);
+    Logger.info(`Filed incident ${incidentId} in BHARAG incidents API for conversation ${params.conversationId}`);
 
     return result;
   }

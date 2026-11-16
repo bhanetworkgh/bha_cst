@@ -91,3 +91,27 @@ Full agenda & validation table template ready in docs/release/cst-vu6r-prep.md.
 - **Immediate Next Action**:
   - Ahad logs source-check findings across internal records and coordinates with Jason Bays regarding Client 2 contact and session scheduling.
   - Do not mark loop closed until client-specific session findings are documented.
+
+---
+
+## 5. Updated Directive Reconciliation (November 2026): Reusable Form 2 / Site Specification Intake
+
+### 5.1 Shift from Unstructured Working Session to Reusable Form 2 Pattern
+Jason Bays subsequently updated the execution directive: rather than holding an unstructured working session with Client 2, execute the intake via an institutionalized, reusable **Form 2 / Site Specification questionnaire** patterned after the vFarm Form 2 standard.
+
+### 5.2 Preservation of Client 2 Confirmed Answers (`CARD-1791918264578-MTUW`)
+Per client confirmation card `CARD-1791918264578-MTUW` (Audits 2015, 2016, 2017), Client 2 has already confirmed the core workflow:
+1. **Bookings:** Online bookings only; hourly office-share style.
+2. **Access Control:** Personal card-swipe access, programmed through the same online registration/onboarding flow.
+3. **Cleaning & Exit:** Tenants must use the mobile application and complete an exit checklist.
+4. **Health Department:** Client has not yet met with the county and will align with its requirements.
+5. **Core Evidence Requirement:** *"I need time stamped photo evidence of everything."*
+
+Under Audit ID 2017, the `missing_research_questions` field was narrowed strictly to the county log-format requirement tracked under `JOB-1791920840073-BKPU` (`VERIFICATION REQUIRED — NOT AN OFFICIALLY CONFIRMED REGULATORY DETERMINATION`).
+
+### 5.3 Technical Implementation & Evidence Status
+- **Build Pattern:** `Form 2 — Commissary Ops Twin Site Spec v1` (Section 1: Site/Kitchen Layout, Section 2: Operations, Section 3: Equipment & Roles, Section 4: Regulatory Records, Section 5: Commercial Pilot).
+- **CST Implementation:** `engine/src/contracts/commissary_ops_twin.ts` implements the complete Zod schema, append-only cryptographic event ledger (`previous_event_hash` -> `event_hash`), fail-closed `READY` state guardrails, and configuration mapping.
+- **Verification:** 11/11 tests passing in `tests/contracts/commissary_ops_twin.test.ts`. Full evidence documented in `docs/evidence/2026-11-16-vu6r-commissary-ops-twin-intake.md`.
+- **Handoffs:** Section 1 technical review tracked with Jeganathan (`DW-1793342080834-M7GY`); outcome ownership, private dashboard form deployment, and live link generation tracked with Destiny Arupi (`DW-1793290384075-UDZG`).
+- **Loop Status:** Strictly **IN PROGRESS** pending external reviews and dashboard form publication.

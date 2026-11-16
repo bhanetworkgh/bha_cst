@@ -11,7 +11,7 @@ async function captureEvidence(page: Page, testInfo: TestInfo, name: string): Pr
 }
 
 test.describe('CST Web UI — Authentication, Farm Linking & ElevenLabs Voice', () => {
-  test('displays login form with email, password, and project selection', async ({ page }, testInfo) => {
+  test('displays login form with email and password only', async ({ page }, testInfo) => {
     await page.route('**/api/v1/web/session', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'INVALID_SESSION' }) });
@@ -19,20 +19,15 @@ test.describe('CST Web UI — Authentication, Farm Linking & ElevenLabs Voice', 
         await route.continue();
       }
     });
-    await page.route('**/api/v1/web/projects', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify([{ project_id: 'proj-vfarm-main', name: 'vFarm Austin Alpha' }]),
-      });
-    });
 
     await page.goto('/');
 
     await expect(page.locator('#login-view')).not.toHaveClass(/hidden/);
     await expect(page.locator('#email-input')).toBeVisible();
     await expect(page.locator('#password-input')).toBeVisible();
-    await expect(page.locator('#project-select')).toBeVisible();
+    // Verify project and dev overrides are NOT shown to users
+    await expect(page.locator('#project-select')).toHaveCount(0);
+    await expect(page.locator('#dev-user-row')).toHaveCount(0);
     await expect(page.locator('#login-form button[type="submit"]')).toContainText('Open workspace');
 
     await captureEvidence(page, testInfo, 'ui-login-form-view');

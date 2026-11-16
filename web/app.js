@@ -173,18 +173,13 @@ async function openWorkspace(event) {
   $('#login-error').textContent = '';
   const email = $('#email-input')?.value?.trim();
   const password = $('#password-input')?.value;
-  const user = $('#user-select')?.value;
-  const projectId = $('#project-select')?.value;
 
   try {
     const payload = {};
     if (email && password) {
       payload.email = email;
       payload.password = password;
-    } else if (user) {
-      payload.user = user;
     }
-    if (projectId) payload.project_id = projectId;
 
     const adminToken = typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
       ? localStorage.getItem('cst_admin_token')
@@ -290,11 +285,14 @@ async function init() {
     await loadHistory();
     showView('overview');
   } catch {
-    try {
-      const projects = await api('/api/v1/web/projects');
-      $('#project-select').replaceChildren(...projects.map((project) => new Option(project.name, project.project_id)));
-    } catch {
-      // Fallback if projects request fails
+    const projectSelect = $('#project-select');
+    if (projectSelect) {
+      try {
+        const projects = await api('/api/v1/web/projects');
+        projectSelect.replaceChildren(...projects.map((project) => new Option(project.name, project.project_id)));
+      } catch {
+        // Fallback if projects request fails
+      }
     }
   }
 }
