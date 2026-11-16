@@ -380,4 +380,77 @@ describe('BharagRagConnector Tests', () => {
     // Verify error.message containing token isn't directly logged as-is
     expect(allLogArgs).not.toContain('sk_live_abc123xyz');
   });
+
+  describe('DW-1793623465895-F20Q — Scoped Key (cst-help-read) & Fail-Closed Behavior', () => {
+    it('verifies outbound x-api-key sends BHARAG_CLUSTER_KEY (cst-help-read) without fallback to unscoped key', async () => {
+      let capturedHeaders: any = null;
+      globalThis.fetch = vi.fn().mockImplementation(async (_url, options) => {
+        capturedHeaders = options?.headers;
+        return {
+          ok: true,
+          json: async () => ({ answer: 'Verified help guidance for vFarm.' }),
+        } as Response;
+      });
+
+      await BharagRagConnector.askKnowledge('How do I clean the sensor filter?');
+
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders['x-api-key']).toBe(process.env.BHARAG_CLUSTER_KEY || 'test-cluster-key');
+      expect(capturedHeaders['accept']).toBe('application/json');
+    });
+
+    it('fails closed with general guidance when BHARAG cluster returns 401 Unauthorized (invalid key)', async () => {
+      const infraSpy = vi.spyOn(Logger, 'infra');
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        return {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          json: async () => ({ error: 'Invalid API key' }),
+        } as Response;
+      });
+
+      const response = await BharagRagConnector.askKnowledge('How do I balance pH?');
+
+      expect(response).toContain('vFarm support (CST general guidance — the BHARAG knowledge base is unavailable');
+      expect(response).toContain('target pH depends on the crop and growth stage');
+      expect(infraSpy).toHaveBeenCalled();
+    });
+
+    it('fails closed with general guidance when BHARAG cluster returns 403 Forbidden (unauthorized scope)', async () => {
+      const infraSpy = vi.spyOn(Logger, 'infra');
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        return {
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          json: async () => ({ error: 'Cluster key does not have access to requested workspace' }),
+        } as Response;
+      });
+
+      const response = await BharagRagConnector.askKnowledge('What is the lighting cycle?');
+
+      expect(response).toContain('vFarm support (CST general guidance — the BHARAG knowledge base is unavailable');
+      expect(response).toContain('lighting cycles are configured per installation');
+      expect(infraSpy).toHaveBeenCalled();
+    });
+
+    it('never falls back to an alternate workspace or broad search on upstream failure', async () => {
+      let callCount = 0;
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        callCount++;
+        return {
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+        } as Response;
+      });
+
+      const response = await BharagRagConnector.askKnowledge('How do I run irrigation?');
+
+      // Exactly 1 call was attempted (fail-closed, no silent fallback calls to secondary endpoints)
+      expect(callCount).toBe(1);
+      expect(response).toContain('irrigation rules vary by crop type and growth stage');
+    });
+  });
 });

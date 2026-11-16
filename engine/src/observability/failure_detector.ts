@@ -1,4 +1,5 @@
 import { Logger } from '../config/logger.js';
+import { ResearchTwinBridge, type FailureContext } from '../research_twin/bridge.js';
 
 export interface WebhookMetrics {
   total_received: number;
@@ -93,6 +94,7 @@ export class FailureDetector {
   };
 
   static reset(): void {
+    ResearchTwinBridge.reset();
     this.webhookMetrics = {
       total_received: 0,
       authenticated_success: 0,
@@ -137,29 +139,33 @@ export class FailureDetector {
     this.webhookMetrics.authenticated_success++;
   }
 
-  static recordWebhookAuthFailure(reason?: string): void {
+  static recordWebhookAuthFailure(reason?: string, context?: FailureContext): void {
     this.webhookMetrics.auth_failures++;
     Logger.warn(`FailureDetector: webhook authentication failed`, { reason });
+    ResearchTwinBridge.reportFailureAsync('webhook_auth_failure', reason, context, this.webhookMetrics.auth_failures);
   }
 
-  static recordWebhookValidationFailure(details?: unknown): void {
+  static recordWebhookValidationFailure(details?: unknown, context?: FailureContext): void {
     this.webhookMetrics.validation_failures++;
     Logger.warn(`FailureDetector: webhook payload validation failed`, { details });
+    ResearchTwinBridge.reportFailureAsync('payload_validation_failure', JSON.stringify(details), context, this.webhookMetrics.validation_failures);
   }
 
   static recordWebhookProcessingSuccess(): void {
     this.webhookMetrics.last_successful_timestamp = new Date().toISOString();
   }
 
-  static recordWebhookProcessingFailure(error?: string): void {
+  static recordWebhookProcessingFailure(error?: string, context?: FailureContext): void {
     this.webhookMetrics.processing_failures++;
     this.webhookMetrics.pending_retries++;
     Logger.error(`FailureDetector: webhook processing failure: ${error}`);
+    ResearchTwinBridge.reportFailureAsync('webhook_processing_failure', error, context, this.webhookMetrics.processing_failures);
   }
 
-  static recordWebhookPersistenceFailure(error?: string): void {
+  static recordWebhookPersistenceFailure(error?: string, context?: FailureContext): void {
     this.webhookMetrics.persistence_failures++;
     Logger.error(`FailureDetector: webhook database persistence failure: ${error}`);
+    ResearchTwinBridge.reportFailureAsync('database_persistence_failure', error, context, this.webhookMetrics.persistence_failures);
   }
 
   static recordWebhookDuplicate(): void {
@@ -180,10 +186,11 @@ export class FailureDetector {
     }
   }
 
-  static recordSlackFailure(error?: string): void {
+  static recordSlackFailure(error?: string, context?: FailureContext): void {
     this.slackMetrics.failed_deliveries++;
     this.slackMetrics.pending_retries++;
     Logger.error(`FailureDetector: Slack delivery failed: ${error}`);
+    ResearchTwinBridge.reportFailureAsync('slack_delivery_failure', error, context, this.slackMetrics.failed_deliveries);
   }
 
   static recordSlackRateLimit(): void {
@@ -204,23 +211,26 @@ export class FailureDetector {
     this.twilioMetrics.last_callback_timestamp = new Date().toISOString();
   }
 
-  static recordTwilioSignature(valid: boolean): void {
+  static recordTwilioSignature(valid: boolean, context?: FailureContext): void {
     if (valid) {
       this.twilioMetrics.signature_valid++;
     } else {
       this.twilioMetrics.signature_invalid++;
       Logger.warn(`FailureDetector: Twilio signature validation failed`);
+      ResearchTwinBridge.reportFailureAsync('twilio_callback_failure', 'Invalid Twilio signature', context, this.twilioMetrics.signature_invalid);
     }
   }
 
-  static recordTwilioUnmatchedSid(sid: string): void {
+  static recordTwilioUnmatchedSid(sid: string, context?: FailureContext): void {
     this.twilioMetrics.unmatched_sids++;
     Logger.warn(`FailureDetector: Twilio callback SID ${sid} not found in database records`);
+    ResearchTwinBridge.reportFailureAsync('twilio_callback_failure', `Twilio callback SID ${sid} not found in database records`, context, this.twilioMetrics.unmatched_sids);
   }
 
-  static recordTwilioUnresolvedAttribution(sid: string): void {
+  static recordTwilioUnresolvedAttribution(sid: string, context?: FailureContext): void {
     this.twilioMetrics.unresolved_attributions++;
     Logger.warn(`FailureDetector: Twilio callback SID ${sid} missing tenant/project attribution`);
+    ResearchTwinBridge.reportFailureAsync('twilio_callback_failure', `Twilio callback SID ${sid} missing tenant/project attribution`, context, this.twilioMetrics.unresolved_attributions);
   }
 
   static recordTwilioInvalidTransition(sid: string, fromState: string, toState: string): void {

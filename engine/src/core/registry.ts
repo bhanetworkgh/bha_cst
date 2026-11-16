@@ -42,7 +42,7 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
     if (!baseUrl) return {};
     return {
       baseUrl,
-      apiKey: env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      apiKey: (env as any).VFARM_SERVICE_KEY || process.env.VFARM_SERVICE_KEY || env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
       apiToken: env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
       timeoutMs: env.VFARM_API_TIMEOUT_MS || (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
       tenantOrgId: process.env.VFARM_TENANT_ORG_ID,
@@ -54,7 +54,7 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
     if (!baseUrl) return {};
     return {
       baseUrl,
-      apiKey: process.env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      apiKey: process.env.VFARM_SERVICE_KEY || process.env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
       apiToken: process.env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
       timeoutMs: process.env.VFARM_API_TIMEOUT_MS
         ? Number(process.env.VFARM_API_TIMEOUT_MS)

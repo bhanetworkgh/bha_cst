@@ -89,7 +89,11 @@ async function createAdminWebSession(email: string, name?: string, requestedProj
   }
 
   // Find owner speaker or map to default farm IDs
-  const farmIds = [process.env.VFARM_FARM_ID || '21dde23e-f7f6-46bc-9b54-e97fabaaafd7'];
+  const defaultFarmId = process.env.VFARM_FARM_ID || 'farm-austin-hq';
+  const farmIds = [defaultFarmId];
+  const farmDetails = [
+    { farm_id: defaultFarmId, farm_name: 'vFarm Austin HQ (Facility 1)', farm_code: 'hq-01', role: 'owner' },
+  ];
   const session: WebSession = {
     token: `web_${randomUUID()}`,
     tenant_id: tenantId,
@@ -98,6 +102,7 @@ async function createAdminWebSession(email: string, name?: string, requestedProj
     display_name: name || 'CST Super Admin',
     role: 'owner',
     farm_ids: farmIds,
+    farm_details: farmDetails,
     created_at: new Date().toISOString(),
   };
   sessions.set(session.token, session);
@@ -110,6 +115,7 @@ function createSessionSync(userKey: string, projectId: string): WebSession | nul
   const tenantId = project?.tenant_id || process.env.VFARM_TENANT_ID || 'tenant-vfarm-01';
   if (!user || !project || project.tenant_id !== tenantId) return null;
   if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
+  const defaultFarmId = process.env.VFARM_FARM_ID || 'farm-austin-hq';
   const session: WebSession = {
     token: `web_test_${userKey}_${projectId}`,
     tenant_id: tenantId,
@@ -117,7 +123,8 @@ function createSessionSync(userKey: string, projectId: string): WebSession | nul
     speaker_ref: user.speaker_ref,
     display_name: user.display_name,
     role: 'owner',
-    farm_ids: [],
+    farm_ids: [defaultFarmId],
+    farm_details: [{ farm_id: defaultFarmId, farm_name: 'vFarm Austin HQ (Facility 1)', farm_code: 'hq-01', role: 'owner' }],
     created_at: new Date().toISOString(),
   };
   sessions.set(session.token, session);
@@ -132,6 +139,14 @@ async function createSession(userKey: string, projectId: string): Promise<WebSes
   if (!project.capabilities.web) { project.capabilities.web = true; CoreRegistry.registerProject(project); }
   const identity = await CoreRegistry.resolveSpeaker({ tenantId, projectId: project.project_id, phoneE164: user.speaker_ref });
   if (!identity.is_known) return null;
+  const defaultFarmId = process.env.VFARM_FARM_ID || 'farm-austin-hq';
+  const farmIds = identity.farm_ids.length > 0 ? [...identity.farm_ids] : [defaultFarmId];
+  const farmDetails = farmIds.map((id) => ({
+    farm_id: id,
+    farm_name: id === 'farm-austin-hq' || id === defaultFarmId ? 'vFarm Austin HQ (Facility 1)' : id.replaceAll('_', ' '),
+    farm_code: 'hq-01',
+    role: identity.role || 'owner',
+  }));
   const session: WebSession = {
     token: `web_${randomUUID()}`,
     tenant_id: tenantId,
@@ -139,7 +154,8 @@ async function createSession(userKey: string, projectId: string): Promise<WebSes
     speaker_ref: identity.phone_e164,
     display_name: user.display_name,
     role: identity.role,
-    farm_ids: [...identity.farm_ids],
+    farm_ids: farmIds,
+    farm_details: farmDetails,
     created_at: new Date().toISOString(),
   };
   sessions.set(session.token, session);
@@ -265,28 +281,36 @@ webInterfaceRouter.post('/api/v1/web/session', async (req: Request, res: Respons
     let authenticated = false;
     let adminName = 'CST Super Admin';
     let adminEmail = trimmedEmail.toLowerCase();
+    const candidateEmails = [adminEmail];
+    if (adminEmail === 'admin@cst') candidateEmails.push('admin@cst.com');
+    if (adminEmail === 'admin@cst.com') candidateEmails.push('admin@cst');
 
     if (pool) {
       try {
         const result = await pool.query(
           `SELECT id, email, name, role, is_active FROM admin_users
-           WHERE email = $1 AND password_hash = $2`,
-          [adminEmail, hash],
+           WHERE email = ANY($1) AND password_hash = $2`,
+          [candidateEmails, hash],
         );
         if (result.rows.length > 0 && result.rows[0].is_active) {
           authenticated = true;
           adminName = result.rows[0].name || adminName;
+          adminEmail = result.rows[0].email;
         }
       } catch (err: any) {
         Logger.error(`Database admin auth check error: ${err.message}`);
       }
-    } else {
-      // In-memory fallback
+    }
+
+    if (!authenticated) {
+      // In-memory fallback (when DB is unseeded or pool has no match)
       const validEmail = (process.env.CST_ADMIN_EMAIL || 'admin@cst.com').toLowerCase().trim();
       const validHash = process.env.CST_ADMIN_PASSWORD_HASH || '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
-      if (adminEmail === validEmail && hash === validHash) {
+      const isEmailMatch = candidateEmails.includes(validEmail) || candidateEmails.includes('admin@cst.com') || candidateEmails.includes('admin@cst');
+      if (isEmailMatch && hash === validHash) {
         authenticated = true;
         adminName = process.env.CST_ADMIN_NAME || adminName;
+        adminEmail = validEmail;
       }
     }
 

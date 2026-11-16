@@ -28,6 +28,7 @@ const vfarmApiEnvShape = {
   VFARM_API_BASE_URL:   optionalEnv(z.string().url()),
   VFARM_API_JWT:        optionalEnv(z.string().min(1)),
   VFARM_API_FARM_KEY:   optionalEnv(z.string().min(1)),
+  VFARM_SERVICE_KEY:    optionalEnv(z.string().min(1)),
   VFARM_API_TIMEOUT_MS: optionalEnv(z.coerce.number().int().positive()),
 };
 
