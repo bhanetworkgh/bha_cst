@@ -476,10 +476,10 @@ export class WebInterface {
         is_known: true,
         role: (session.role as any) || baseSpeaker?.role || 'owner',
         permissions: baseSpeaker?.permissions?.length ? baseSpeaker.permissions : ['read', 'status', 'chat', 'query'],
-        farm_ids: session.farm_ids.length > 0 ? [...session.farm_ids] : (baseSpeaker?.farm_ids || []),
+        farm_ids: [...session.farm_ids],
         unit_context: {
-          farm_id: session.farm_ids[0] || baseSpeaker?.farm_ids?.[0],
-          granted_farms: session.farm_ids.length > 0 ? session.farm_ids : (baseSpeaker?.farm_ids || []),
+          farm_id: session.farm_ids[0],
+          granted_farms: [...session.farm_ids],
           role: session.role || baseSpeaker?.role || 'owner',
         },
       };
