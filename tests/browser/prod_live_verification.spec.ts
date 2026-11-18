@@ -22,14 +22,11 @@ test.describe('Production Live UI Acceptance Tests — Chrome Verification', () 
     // Validate page structure
     await expect(page).toHaveTitle(/CST \| Customer Service Twin/i);
     await expect(page.locator('#login-view')).toBeVisible();
+    // Verify login form requires email and password only (project is auto-resolved)
     await expect(page.locator('#email-input')).toBeVisible();
     await expect(page.locator('#password-input')).toBeVisible();
-    await expect(page.locator('#project-select')).toBeVisible();
-
-    // Verify project selector received live projects from production API
-    const projectSelect = page.locator('#project-select');
-    await expect(projectSelect).toHaveValue('proj-vfarm-main');
-    await expect(page.locator('#project-select option').first()).toHaveText('vFarm Austin HQ');
+    await expect(page.locator('#project-select')).toHaveCount(0);
+    await expect(page.locator('#login-form button[type="submit"]')).toBeVisible();
 
     // Capture visual screenshot
     await captureProdEvidence(page, testInfo, 'prod-live-login-view');

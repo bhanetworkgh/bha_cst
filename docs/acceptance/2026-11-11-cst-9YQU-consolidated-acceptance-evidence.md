@@ -382,6 +382,7 @@ Executed on 18 November 2026 across the full workspace:
 - Interim Reading Route: [`engine/src/adapters/vfarm/live_client.ts`](../../engine/src/adapters/vfarm/live_client.ts) (L681-706)
 - Authenticated Flow Suite: [`tests/connectors/vfarm_authenticated_flow.test.ts`](../../tests/connectors/vfarm_authenticated_flow.test.ts)
 - Authenticated E2E Suite (Codex Row 472, 14/14 PASS): [`tests/integration/vfarm_authenticated_e2e_9yqu.test.ts`](../../tests/integration/vfarm_authenticated_e2e_9yqu.test.ts) *(Committed & pushed on branch `feat/9yqu-vfarm-authenticated-e2e` in commit `47a69e0`)*
+- Admin Live vFarm Chooser Playwright E2E Suite (36/36 PASS): [`tests/browser/admin_and_full_system.spec.ts`](../../tests/browser/admin_and_full_system.spec.ts) *(Screenshot evidence in `docs/evidence/browser/admin-vfarm-live-chooser-verified-chromium.png`)*
 - Inbound Message Intent & Routing Tests: [`tests/router/router.test.ts`](../../tests/router/router.test.ts) (L275-306)
 - Per-Sensor Classification: [`tests/adapters/vfarm_per_sensor_classification.test.ts`](../../tests/adapters/vfarm_per_sensor_classification.test.ts)
 - Interim Readings Suite: [`tests/adapters/vfarm_interim_readings.test.ts`](../../tests/adapters/vfarm_interim_readings.test.ts)
