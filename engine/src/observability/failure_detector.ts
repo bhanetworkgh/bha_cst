@@ -157,9 +157,9 @@ export class FailureDetector {
     Logger.error(`FailureDetector: webhook processing failure: ${error}`);
   }
 
-  static recordWebhookPersistenceFailure(error?: string): void {
+  static recordWebhookPersistenceFailure(error?: string, notify = true): void {
     this.webhookMetrics.persistence_failures++;
-    Logger.error(`FailureDetector: webhook database persistence failure: ${error}`);
+    Logger.error(`FailureDetector: webhook database persistence failure: ${error}`, undefined, notify);
   }
 
   static recordWebhookDuplicate(): void {
@@ -272,7 +272,7 @@ export class FailureDetector {
     }
 
     const readiness: 'ready' | 'degraded' | 'unready' =
-      webhookStatus === 'failing' || twilioStatus === 'failing'
+      webhookStatus === 'failing' || twilioStatus === 'failing' || slackStatus === 'failing'
         ? 'unready'
         : (webhookStatus === 'degraded' || slackStatus === 'degraded' || twilioStatus === 'degraded')
           ? 'degraded'

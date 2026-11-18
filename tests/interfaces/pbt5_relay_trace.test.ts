@@ -53,7 +53,7 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     network = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
     vi.stubGlobal('fetch', network);
     query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
-    DbClient.setPool({ query } as any);
+    DbClient.setPool({ query, connect: async () => ({ query, release: vi.fn() }) } as any);
     DbClient.clearInMemory();
     ErrorRouter.reset();
     ElevenLabsWebhookService.reset();
@@ -84,7 +84,7 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     expect(attempt.webhook_receive_id).toBe(response.headers['x-cst-webhook-receive-id']);
     expect(attempt.committed_rows).toHaveLength(4); // 3 internal events + dashboard outcome
     expect(rows.filter((r) => r.stage === 'db_write').every((r) => r.persistence === 'committed')).toBe(true);
-    const sqlIds = query.mock.calls.map(([, args]) => args[0]);
+    const sqlIds = query.mock.calls.filter(([, args]) => args).map(([, args]) => args[0]);
     expect(attempt.committed_rows.every((r: any) => sqlIds.includes(r.db_row_id))).toBe(true);
     const slackCall = network.mock.calls.find(([url]) => url === 'https://slack.invalid/webhook');
     const slackBody = JSON.parse(slackCall![1].body);
@@ -107,15 +107,16 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     expect(JSON.stringify(rows)).not.toContain('https://slack.invalid');
   });
 
-  it('does not mistake failed or memory-only writes for committed rows, without changing webhook handling', async () => {
+  it('rejects failed required writes and never mistakes memory-only writes for committed rows', async () => {
+    ErrorRouter.setMockHandler(vi.fn().mockResolvedValue(true));
     query.mockRejectedValue(new Error('test DB failure'));
     const failed = await post('conv_failed');
-    expect(failed.status).toBe(200); // Existing behavior intentionally retained.
-    expect(failed.body.slack_delivered).toBe(true);
+    expect(failed.status).toBe(500);
+    expect(traces().filter((r) => r.stage === 'db_write')).toHaveLength(3);
     expect(traces().filter((r) => r.stage === 'db_write').every((r) => r.persistence === 'failed')).toBe(true);
     const attempt = traces().find((r) => r.stage === 'slack_dispatch_attempt');
-    expect(attempt.committed_rows).toEqual([]);
-    expect(() => readDispatchEvidence(traces().map((r) => JSON.stringify(r)).join('\n'), attempt.dispatch_id)).toThrow('Committed DB');
+    expect(attempt).toBeUndefined();
+    expect(network).not.toHaveBeenCalled();
     log.mockClear(); DbClient.setPool(null);
     await post('conv_memory');
     expect(traces().filter((r) => r.stage === 'db_write').every((r) => r.persistence === 'memory_only')).toBe(true);

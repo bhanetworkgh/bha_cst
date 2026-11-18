@@ -9,6 +9,12 @@ describe('Failure Detection, Health Checks & Forward-Only Cut-Over (Deliverable 
   });
 
   describe('1. Failure Detection & Health Transitions', () => {
+    it('keeps readiness unready when Slack escalates from degraded to failing', () => {
+      for (let i=0;i<6;i++) FailureDetector.recordSlackFailure('synthetic failure');
+      const report=FailureDetector.getHealthReport();
+      expect(report.subsystems.slack_notifications.status).toBe('failing');
+      expect(report.readiness).toBe('unready');
+    });
     it('reports healthy readiness when no failures exist', () => {
       const report = FailureDetector.getHealthReport();
       expect(report.liveness).toBe('healthy');
