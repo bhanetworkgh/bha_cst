@@ -1,7 +1,9 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import path from 'node:path';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const PROD_URL = 'https://bha-cst-7u9e.onrender.com/web';
+const PROD_URL = process.env.PROD_URL || 'https://bha-cst-7u9e.onrender.com/web';
 
 async function captureProdEvidence(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   const screenshotPath = path.resolve(
@@ -71,5 +73,54 @@ test.describe('Production Live UI Acceptance Tests — Chrome Verification', () 
 
     // Capture accessibility landmark view
     await captureProdEvidence(page, testInfo, 'prod-live-a11y-landmarks');
+  });
+
+  /**
+   * Tests 7 & 8 (Chromium & Mobile Chrome): Exercises the post-login workspace state machine beyond authentication:
+   * verifies session unlock, validates multi-tenant scoping ('vFarm Organization' / 'vFarm Austin HQ'), asserts
+   * authorized farm isolation ('2 farms in scope' with 'v-farm' & 'Test 001'), tests responsive navigation drawer
+   * toggling (#mobile-menu), and confirms clean transition to the interactive chat interface (#chat-view).
+   */
+  test('executes successful live authenticated production login and verifies authorized farm scope', async ({ page }, testInfo) => {
+    const email = process.env.VFARM_ADMIN_EMAIL;
+    const password = process.env.VFARM_ADMIN_PASSWORD;
+    if (!email || !password) {
+      test.skip(true, 'VFARM_ADMIN credentials missing from environment');
+      return;
+    }
+
+    await page.goto(PROD_URL, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Fill valid credentials and submit
+    await page.locator('#email-input').fill(email);
+    await page.locator('#password-input').fill(password);
+    await page.locator('#login-form button[type="submit"]').click();
+
+    // Verify successful authentication and unlock of workspace overview
+    const overviewView = page.locator('#overview-view');
+    await expect(overviewView).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#login-view')).toHaveClass(/hidden/);
+
+    // Verify authorized user, tenant, project, and farm scope
+    await expect(page.locator('#tenant-name')).toContainText(/vFarm Organization/i);
+    await expect(page.locator('#project-name')).toContainText(/vFarm Austin HQ/i);
+    await expect(page.locator('#scope-label')).toContainText(/2 farms in scope/i);
+    await expect(page.locator('#farm-list')).toContainText(/v-farm/i);
+    await expect(page.locator('#farm-list')).toContainText(/Test 001/i);
+
+    // Switch to chat view and verify chat interface unlocks
+    const overviewChatBtn = page.locator('#overview-chat-button');
+    if (await overviewChatBtn.isVisible()) {
+      await overviewChatBtn.click();
+    } else {
+      if (await page.locator('#mobile-menu').isVisible()) {
+        await page.locator('#mobile-menu').click();
+      }
+      await page.locator('#chat-nav').click({ force: true });
+    }
+    await expect(page.locator('#chat-view')).toBeVisible({ timeout: 10000 });
+
+    // Capture visual screenshot proof of live authenticated session
+    await captureProdEvidence(page, testInfo, 'prod-live-authenticated-session');
   });
 });
