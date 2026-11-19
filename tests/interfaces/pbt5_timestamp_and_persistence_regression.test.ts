@@ -279,7 +279,7 @@ describe('PBT5 Task 2 Timestamp Semantics & Persistence Regressions', () => {
       expect(ElevenLabsWebhookService.getPersistedEvents().length).toBe(countAfterFirst);
     });
 
-    it('Handles database failure gracefully without breaking customer response', async () => {
+    it('Fails closed on database failure to allow provider redelivery (IWKX PR #55)', async () => {
       const mockPool = {
         query: vi.fn().mockRejectedValue(new Error('connection timeout to postgres')),
       };
@@ -303,10 +303,9 @@ describe('PBT5 Task 2 Timestamp Semantics & Persistence Regressions', () => {
         .set('elevenlabs-signature', sign(payload))
         .send(payload);
 
-      // Webhook should process with status 200, logging DB failure via FailureDetector
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('processed');
-      expect(ElevenLabsWebhookService.getPersistedEvents().length).toBe(3);
+      // Webhook fails closed with HTTP 500 so provider redelivers; memory-only writes withheld
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('PROCESSING_FAILED');
     });
 
     it('Rejects request with missing or invalid caller identity (anti-fabrication)', async () => {
