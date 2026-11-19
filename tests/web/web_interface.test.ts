@@ -282,9 +282,10 @@ describe('CST Web Interface sessions and isolation', () => {
         .set('Content-Type', 'text/plain')
         .send(JSON.stringify({ email: 'farmer@example.com', password: 'secretpassword' }));
 
-      // In production without application/json header, body is not parsed so credentials are lost, resulting in AUTH_REQUIRED
-      expect(res.status).toBe(401);
-      expect(res.body.error).toBe('AUTH_REQUIRED');
+      // With strict Content-Type enforcement (LOOP-1795035800169-NVLF),
+      // requests with text/plain are rejected early with HTTP 400 UNSUPPORTED_MEDIA_TYPE
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('UNSUPPORTED_MEDIA_TYPE');
     } finally {
       process.env.NODE_ENV = originalEnv;
     }
