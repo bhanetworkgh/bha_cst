@@ -271,5 +271,23 @@ describe('CST Web Interface sessions and isolation', () => {
     expect(res.body.tenant_id).toBe('tenant-vfarm-01');
     expect(res.body.project_id).toBe('proj-vfarm-main');
   });
+
+  it('rejects login requests when Content-Type is not application/json or body is unparsed', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'production';
+      // When Content-Type is text/plain instead of application/json, express.json() leaves req.body unparsed
+      const res = await request(app)
+        .post('/api/v1/web/session')
+        .set('Content-Type', 'text/plain')
+        .send(JSON.stringify({ email: 'farmer@example.com', password: 'secretpassword' }));
+
+      // In production without application/json header, body is not parsed so credentials are lost, resulting in AUTH_REQUIRED
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('AUTH_REQUIRED');
+    } finally {
+      process.env.NODE_ENV = originalEnv;
+    }
+  });
 });
 

@@ -48,6 +48,7 @@ elevenlabsWebhookRouter.post('/post-call', async (req: Request, res: Response): 
         traceRelay('webhook_result', {
           processing_status: result.status,
           event_ids: result.event_ids,
+          turn_event_id: result.turn_event_id ?? null,
           slack_delivered: result.slack_delivered,
           dashboard_published: result.dashboard_published ?? null,
           response_status: result.status === 'failed' ? 500 : 200,

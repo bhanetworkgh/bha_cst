@@ -10,6 +10,7 @@ import {
   type ResearchTwinOutboundPayload,
 } from './schemas.js';
 import { classifyResearchTwinError, ResearchTwinHttpError } from './errors.js';
+import { findPatterns, type ResearchPattern } from './patterns.js';
 
 export interface ResearchTwinClientOptions {
   endpointUrl?: string;
@@ -166,6 +167,116 @@ export class ResearchTwinClient implements ProvisionalResearchTwinTransport {
     return {
       investigation_id: parseResult.data.investigation_id,
     };
+  }
+
+  /**
+   * Check connection and reachability to the configured Research Twin endpoint.
+   */
+  async checkHealth(): Promise<{ ok: boolean; status?: number; error?: string; latencyMs: number }> {
+    if (!this.endpointUrl) {
+      return { ok: false, error: 'RT_ENDPOINT_URL is not configured', latencyMs: 0 };
+    }
+
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3_000);
+
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (this.apiKey) {
+        headers['Authorization'] = `Bearer ${this.apiKey}`;
+        headers['X-Service-Key'] = this.apiKey;
+      }
+
+      // Try health subpath first, or endpoint itself
+      const healthUrl = this.endpointUrl.replace(/\/webhook.*$/i, '/health');
+      const res = await this.fetchFn(healthUrl, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      }).catch(async () => {
+        // Fall back to OPTIONS/HEAD on endpointUrl
+        return this.fetchFn(this.endpointUrl!, {
+          method: 'OPTIONS',
+          headers,
+          signal: controller.signal,
+        });
+      });
+
+      return {
+        ok: res.ok || res.status === 405 || res.status === 204,
+        status: res.status,
+        latencyMs: Date.now() - start,
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err.message,
+        latencyMs: Date.now() - start,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Search for prior resolved failure patterns.
+   * Attempts remote search if configured, falling back seamlessly to canonical patterns.
+   */
+  async searchPatterns(options: { category?: string; query?: string } = {}): Promise<ResearchPattern[]> {
+    if (this.endpointUrl && this.apiKey) {
+      try {
+        const patternsUrl = new URL('/patterns', this.endpointUrl).toString();
+        const res = await this.fetchFn(patternsUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+            'X-Service-Key': this.apiKey,
+          },
+          body: JSON.stringify(options),
+          signal: AbortSignal.timeout(3_000),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          if (Array.isArray(data?.patterns)) {
+            return data.patterns;
+          }
+        }
+      } catch {
+        // Gracefully fall back to local canonical catalog
+      }
+    }
+
+    return findPatterns(options);
+  }
+
+  /**
+   * Retrieve investigation details by ID.
+   */
+  async getInvestigation(investigationId: string): Promise<Record<string, unknown> | null> {
+    if (!this.endpointUrl) return null;
+
+    try {
+      const url = `${this.endpointUrl.replace(/\/$/, '')}/${encodeURIComponent(investigationId)}`;
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (this.apiKey) {
+        headers['Authorization'] = `Bearer ${this.apiKey}`;
+        headers['X-Service-Key'] = this.apiKey;
+      }
+
+      const res = await this.fetchFn(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(5_000),
+      });
+
+      if (!res.ok) return null;
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
 }
 

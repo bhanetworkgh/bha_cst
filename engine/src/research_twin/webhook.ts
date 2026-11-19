@@ -1,11 +1,20 @@
 import { Router, Request, Response } from 'express';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { Logger } from '../config/logger.js';
+import { DbClient } from '../db/client.js';
 import { ResearchTwinInboundCallbackSchema } from './schemas.js';
 
 export const researchTwinWebhookRouter = Router();
 
 const MAX_TIMESTAMP_DRIFT_SECONDS = 300;
+const processedCallbackEventIds = new Set<string>();
+
+/**
+ * Reset callback idempotency cache (for testing).
+ */
+export function resetCallbackDeduplication(): void {
+  processedCallbackEventIds.clear();
+}
 
 export function verifyResearchTwinSignature(
   rawBody: string,
@@ -25,7 +34,7 @@ export function verifyResearchTwinSignature(
   }
 }
 
-researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
+researchTwinWebhookRouter.post('/callback', async (req: Request, res: Response): Promise<void> => {
   const secret = process.env.RT_CALLBACK_SIGNING_SECRET;
   if (!secret) {
     Logger.error('Research Twin webhook called but RT_CALLBACK_SIGNING_SECRET is not configured');
@@ -45,7 +54,7 @@ researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
     return;
   }
 
-  const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+  const rawBody = (req as any).rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
   const isValid = verifyResearchTwinSignature(rawBody, sigHeader, secret);
   if (!isValid) {
     Logger.warn('Research Twin webhook rejected: invalid HMAC signature');
@@ -78,6 +87,47 @@ researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
   const callbackData = parsed.success ? parsed.data : rawPayload;
   const investigationId = callbackData.investigation_id || callbackData.id || 'unknown';
   const status = callbackData.lifecycle_status || callbackData.status || 'updated';
+  const externalEventId = callbackData.external_event_id || `evt_${randomUUID()}`;
+
+  // Idempotency: check duplicate callback event ID
+  if (processedCallbackEventIds.has(externalEventId)) {
+    Logger.info(`Research Twin callback: duplicate external event ${externalEventId} ignored`);
+    res.status(200).json({
+      status: 'received',
+      investigation_id: investigationId,
+      duplicate: true,
+      verified: true,
+      processed_at: new Date().toISOString(),
+    });
+    return;
+  }
+  processedCallbackEventIds.add(externalEventId);
+
+  // Durable persistence into dashboard_publish_outcomes
+  const callbackRowId = `dpo_rt_cb_${randomUUID()}`;
+  try {
+    await DbClient.recordDashboardPublishOutcome({
+      id: callbackRowId,
+      event_id: externalEventId,
+      event_type: 'cst.research_twin.callback',
+      specversion: 'cst.event.v1',
+      correlation_id: investigationId,
+      tenant_id: callbackData.tenant_id || 'tenant-vfarm-01',
+      project_id: callbackData.project_id || 'proj-vfarm-main',
+      status: 'internal_only',
+      attempts: 1,
+      payload: {
+        investigation_id: investigationId,
+        lifecycle_status: status,
+        assignment: callbackData.assignment ?? null,
+        notes: callbackData.notes ?? null,
+        observed_at: callbackData.observed_at,
+        details: callbackData.details ?? null,
+      },
+    });
+  } catch (dbErr: any) {
+    Logger.warn(`Research Twin callback: failed to persist outcome: ${dbErr?.message}`);
+  }
 
   Logger.info(`Research Twin callback verified: investigation ${investigationId} status ${status}`);
 
@@ -88,4 +138,3 @@ researchTwinWebhookRouter.post('/callback', (req: Request, res: Response) => {
     processed_at: new Date().toISOString(),
   });
 });
-

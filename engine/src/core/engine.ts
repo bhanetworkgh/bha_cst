@@ -687,8 +687,8 @@ export class CoreEngine {
         replyText =
           statusRes?.text ||
           (boundUnitId
-            ? `Farm ${primaryFarmId} (Unit ${boundUnitId}): Telemetry currently normal.`
-            : `Farm ${primaryFarmId}: Telemetry currently normal.`);
+            ? `Farm ${primaryFarmId} (Unit ${boundUnitId}): Telemetry currently unavailable.`
+            : `Farm ${primaryFarmId}: Telemetry currently unavailable.`);
       } else {
         replyText = await BharagRagConnector.askKnowledge(
           text,

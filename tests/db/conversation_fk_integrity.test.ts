@@ -24,7 +24,7 @@ import pg from 'pg';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DbClient, ConversationPersistenceError, VoiceDeliveryPersistenceError } from '../../engine/src/db/client.js';
+import { DbClient, ConversationPersistenceError, TranscriptPersistenceError, VoiceDeliveryPersistenceError } from '../../engine/src/db/client.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -210,7 +210,7 @@ if (!ENABLED) {
         tenant_id: TENANT,
         project_id: PROJECT,
         direction: 'inbound',
-        from_e164: '+15551234567',
+        from_e164: '+923082113844',
         to_e164: '+19715885823',
         body: 'conversation persistence regression check',
         provider_sid: `SM_${messageId}`,
@@ -267,7 +267,7 @@ if (!ENABLED) {
         tenant_id: TENANT,
         project_id: PROJECT,
         direction: 'inbound',
-        from_e164: '+15551234567',
+        from_e164: '+923082113844',
         to_e164: '+19715885823',
         body: 'survives restart',
         provider_sid: `SM_${messageId}`,
@@ -291,6 +291,58 @@ if (!ENABLED) {
         after.rows[0].system_id,
       ]);
       expect(sys.rows, 'system_id must still resolve after restart').toHaveLength(1);
+    });
+
+    it('negative: rejects transcript insert referencing a nonexistent conversation ID with TranscriptPersistenceError', async () => {
+      const nonExistentConversationId = `conv_fake_fk_${suffix}`;
+      const messageId = `msg_fake_${suffix}`;
+
+      let caughtErr: any = null;
+      try {
+        await DbClient.addMessageToTranscript({
+          message_id: messageId,
+          conversation_id: nonExistentConversationId,
+          tenant_id: TENANT,
+          project_id: PROJECT,
+          direction: 'inbound',
+          from_e164: '+923082113844',
+          to_e164: '+19715885823',
+          body: 'must fail with FK violation',
+        });
+      } catch (err: any) {
+        caughtErr = err;
+      }
+
+      expect(caughtErr).toBeInstanceOf(TranscriptPersistenceError);
+      expect(caughtErr?.message).toMatch(/messages_conversation_id_fkey|foreign key/);
+
+      // Verify no invalid transcript is cached in memory
+      expect(DbClient.getAllTranscripts().some((m: any) => m.message_id === messageId)).toBe(false);
+
+      // Verify no record in Postgres
+      const checkDb = await pool.query('SELECT message_id FROM messages WHERE message_id = $1', [messageId]);
+      expect(checkDb.rows).toHaveLength(0);
+    });
+
+    it('negative: surfaces ConversationPersistenceError when system parent is missing', async () => {
+      const invalidTenant = `tenant-no-system-${suffix}`;
+
+      let caughtErr: any = null;
+      try {
+        await DbClient.getOrCreateConversation(
+          invalidTenant,
+          'nonexistent-system-id',
+          `cust_no_sys_${suffix}`,
+          invalidTenant,
+          undefined,
+          PROJECT,
+        );
+      } catch (err: any) {
+        caughtErr = err;
+      }
+
+      expect(caughtErr).toBeInstanceOf(ConversationPersistenceError);
+      expect(caughtErr?.message).toMatch(/conversations_system_id_fkey|foreign key/);
     });
   });
 }
@@ -383,5 +435,28 @@ describe('LOOP-1790985133890-XKWD — conversation persistence: durability (no d
     // write must fail the caller instead of silently leaving an in-memory row.
     expect(calls.some((c) => c.includes('INSERT INTO voice_deliveries'))).toBe(false);
     expect(DbClient.getAllVoiceDeliveries()).toHaveLength(0);
+  });
+
+  it('negative: rejects transcript write with TranscriptPersistenceError when query rejects and does not cache in memory', async () => {
+    stubPool.query.mockRejectedValue(
+      new Error('insert or update on table "messages" violates foreign key constraint "messages_conversation_id_fkey"')
+    );
+
+    const messageId = 'msg_stub_fk_fail';
+    await expect(
+      DbClient.addMessageToTranscript({
+        message_id: messageId,
+        conversation_id: 'conv_nonexistent',
+        tenant_id: TENANT,
+        project_id: PROJECT,
+        direction: 'inbound',
+        from_e164: '+923082113844',
+        to_e164: '+19715885823',
+        body: 'negative stub test',
+      })
+    ).rejects.toBeInstanceOf(TranscriptPersistenceError);
+
+    // Verify transcript is not cached in transcriptsStore
+    expect(DbClient.getAllTranscripts().some((m: any) => m.message_id === messageId)).toBe(false);
   });
 });

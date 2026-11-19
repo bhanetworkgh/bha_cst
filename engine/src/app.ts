@@ -262,10 +262,14 @@ export function createApp(): Express {
         const auth = req.vfarmAuth;
         const jwt = auth?.mode === 'caller_jwt' ? auth.jwt : undefined;
         const farms = await adapter.discoverFarms(jwt);
+        const activeFarm = farms.find((f: any) => (f.farm_id || f.id) === adapter.getActiveFarmId());
+        const activeFarmId = auth?.mode === 'caller_jwt'
+          ? (activeFarm ? (activeFarm.farm_id || activeFarm.id) : (farms[0]?.id ?? (farms[0] as any)?.farm_id ?? null))
+          : adapter.getActiveFarmId();
         res.status(200).json({
           farms,
           total: farms.length,
-          active_farm_id: adapter.getActiveFarmId(),
+          active_farm_id: activeFarmId,
         });
       } catch (err: any) {
         // An upstream 401/403 on a caller-supplied JWT must surface as 401, not

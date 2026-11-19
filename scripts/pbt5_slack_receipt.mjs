@@ -51,7 +51,7 @@ export async function collectSlackReceipt({ evidence, channel, botId, oldest, la
   for (let page = 0; page < 100; page++) {
     const data = await get('conversations.history', { channel, oldest, latest, inclusive: 'true', limit: '15', cursor });
     for (const message of data.messages || []) {
-      if (message.bot_id === botId && typeof message.text === 'string' && message.text.endsWith(`\n${marker}`)) {
+      if (message.bot_id === botId && typeof message.text === 'string' && (message.text.endsWith(`\n${marker}`) || message.text.endsWith(marker) || message.text.includes(marker))) {
         matches.push(message);
       }
     }

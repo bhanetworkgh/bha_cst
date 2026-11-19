@@ -22,12 +22,15 @@ import { FailureDetector } from '../../observability/failure_detector.js';
 import { CutOverManager } from '../../observability/cut_over.js';
 import { getDashboardPublisher } from '../../publishers/dashboard.js';
 import { currentRelayTrace, traceId, traceRelay } from '../../observability/relay_trace.js';
+import { resolveCallStartTimestamp } from './timestamp.js';
 
 export interface WebhookProcessResult {
   status: 'processed' | 'already_processed' | 'ignored_pre_cutover' | 'failed';
   conversation_id: string;
   events_count: number;
   event_ids: string[];
+  /** The specific event ID generated for the dashboard cst.turn, if created. */
+  turn_event_id?: string;
   slack_delivered: boolean;
   escalation_created: boolean;
   escalation_id?: string;
@@ -114,8 +117,12 @@ export class ElevenLabsWebhookService {
       };
     }
 
-    // 2. Forward-Only Cut-Over Check
-    const startUnix = payload.start_time_unix_secs || d?.start_time_unix_secs || payload.event_timestamp || Math.floor(Date.now() / 1000);
+    // 2. Resolve Call-Start Timestamp & Forward-Only Cut-Over Check
+    const resolvedTimestamp = resolveCallStartTimestamp(payload);
+    const startUnix = resolvedTimestamp.unix_secs;
+    if (resolvedTimestamp.is_fallback) {
+      Logger.info(`ElevenLabsWebhookService: provider call-start timestamp unavailable for ${conversationId}; derived via ${resolvedTimestamp.source} (${resolvedTimestamp.iso})`);
+    }
     const eligibility = CutOverManager.isEventEligible(startUnix, conversationId);
     if (!eligibility.eligible) {
       Logger.info(`ElevenLabsWebhookService: event ${conversationId} ignored by forward-only cutover policy (${eligibility.reason})`);
@@ -196,37 +203,49 @@ export class ElevenLabsWebhookService {
 
     try {
       // 4A. Normalize Interaction Start Event
-      if (startUnix) {
-        const startIso = new Date(startUnix * 1000).toISOString();
-        const startEventId = lifecycleId('start');
-        const startEvent = createCstInteractionStartEventV1({
-          id: startEventId,
-          source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
-          time: startIso,
-          tenant_id: tenantId,
-          project_id: projectId,
-          correlation_id: conversationId,
+      const startIso = resolvedTimestamp.iso;
+      const startEventId = lifecycleId('start');
+      const startEvent = createCstInteractionStartEventV1({
+        id: startEventId,
+        source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
+        time: startIso,
+        tenant_id: tenantId,
+        project_id: projectId,
+        correlation_id: conversationId,
+        channel,
+        customer: customerPayload,
+        start: {
+          interaction_id: conversationId,
           channel,
-          customer: customerPayload,
-          start: {
-            interaction_id: conversationId,
-            channel,
-            direction: 'inbound',
-            started_at: startIso,
-            metadata: { agent_id: agentId },
+          direction: 'inbound',
+          started_at: startIso,
+          metadata: {
+            agent_id: agentId,
+            start_time_source: resolvedTimestamp.source,
+            start_time_is_fallback: resolvedTimestamp.is_fallback,
+            start_time_unavailable: resolvedTimestamp.start_time_unavailable,
+            timestamp_unverified: resolvedTimestamp.timestamp_unverified,
+            provider_start_time_unix_secs: resolvedTimestamp.source === 'provider_call_start' ? resolvedTimestamp.unix_secs : null,
+            provider_event_timestamp: typeof payload.event_timestamp === 'number' ? payload.event_timestamp : null,
           },
-        });
-        generatedEvents.push(startEvent);
-        eventIds.push(startEventId);
-      }
+        },
+      });
+      generatedEvents.push(startEvent);
+      eventIds.push(startEventId);
 
       // 4B. Normalize Transcript Event
-      const transcriptMessages = transcriptList.map((m) => ({
-        role: (m.role === 'agent' || m.role === 'assistant' ? 'agent' : m.role === 'system' ? 'system' : 'user') as 'user' | 'agent' | 'system',
-        message: m.message,
-        time_in_call_secs: m.time_in_call_secs,
-        timestamp: nowIso,
-      }));
+      const transcriptMessages = transcriptList.map((m) => {
+        let messageTimestamp = nowIso;
+        if (!resolvedTimestamp.is_fallback && typeof m.time_in_call_secs === 'number' && m.time_in_call_secs >= 0) {
+          messageTimestamp = new Date((resolvedTimestamp.unix_secs + m.time_in_call_secs) * 1000).toISOString();
+        }
+        return {
+          role: (m.role === 'agent' || m.role === 'assistant' ? 'agent' : m.role === 'system' ? 'system' : 'user') as 'user' | 'agent' | 'system',
+          message: m.message,
+          time_in_call_secs: m.time_in_call_secs,
+          timestamp: messageTimestamp,
+        };
+      });
 
       const transcriptEventId = lifecycleId('trsc');
       const transcriptEvent = createCstTranscriptEventV1({
@@ -382,9 +401,10 @@ export class ElevenLabsWebhookService {
         channel,
         whatsapp_call: isWhatsAppCall,
       });
+      const turnEventId = `turn_evt_${randomUUID()}`;
       const turnEvent = {
         specversion: 'cst.event.v1',
-        id: `turn_evt_${randomUUID()}`,
+        id: turnEventId,
         source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
         time: callTime,
         tenant_id: tenantId,
@@ -439,6 +459,7 @@ export class ElevenLabsWebhookService {
           conversation_id: conversationId,
           events_count: generatedEvents.length,
           event_ids: eventIds,
+          turn_event_id: turnEventId,
           slack_delivered: false,
           escalation_created: escalationCreated,
           escalation_id: escalationId,
@@ -490,6 +511,7 @@ export class ElevenLabsWebhookService {
         conversation_id: conversationId,
         events_count: generatedEvents.length,
         event_ids: eventIds,
+        turn_event_id: turnEventId,
         slack_delivered: slackDelivered,
         escalation_created: escalationCreated,
         escalation_id: escalationId,

@@ -335,8 +335,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     // upstream 401/403 instead of silently escalating to CST's farm scope.
     if (jwt) {
       const list = await this.liveClient.listFarms(jwt);
-      this.recordDiscoveredFarms(list.farms || []);
-      return this.discoveredFarms;
+      return (list.farms || []) as FarmResponse[];
     }
 
     // CST-owned credential path (Admin Panel / no caller JWT): resolve a token,

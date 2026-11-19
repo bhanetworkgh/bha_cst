@@ -329,7 +329,22 @@ export class CallLogPoster {
     try {
       if (token) {
         const card = await slackApi('chat.postMessage', token, { channel, text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false });
-        traceRelay('slack_dispatch_result', { ...traceFields, http_ok: Boolean(card.ok), http_status: null, slack_message_id: card.ok ? card.ts : null });
+        let permalink: string | null = null;
+        if (trace && card.ok && card.ts) {
+          try {
+            const linkRes = await slackApi('chat.getPermalink', token, { channel, message_ts: card.ts });
+            if (linkRes && linkRes.ok && typeof linkRes.permalink === 'string') {
+              permalink = linkRes.permalink;
+            }
+          } catch { /* getPermalink is best-effort */ }
+        }
+        traceRelay('slack_dispatch_result', {
+          ...traceFields,
+          http_ok: Boolean(card.ok),
+          http_status: null,
+          slack_message_id: card.ok ? card.ts : null,
+          slack_permalink: permalink,
+        });
         if (!card.ok) return { posted: false, via: 'bot', transcript: 'none', error: `chat.postMessage: ${card.error}` };
 
         const file = await uploadTranscript(token, channel, card.ts, input).catch((e: any) => ({ ok: false, error: e?.message }));
