@@ -46,7 +46,7 @@ Automated regression execution across both KMG9 test suites:
 - [tests/regression/kmg9_farm_isolation.test.ts](../../tests/regression/kmg9_farm_isolation.test.ts) (11 tests)
 
 ```
- RUN  v4.1.12 /Users/HaMi/Documents/Jason/customer twin
+ RUN  v4.1.12 bhanetworkgh/bha_cst
 
  ✓ tests/regression/kmg9_phase3_additional.test.ts (5 tests) 11ms
    ✓ KMG9 Phase 3: Additional boundary verification

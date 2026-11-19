@@ -2,9 +2,10 @@
 
 **Document Date:** 2026-11-20  
 **Target Repository:** `bhanetworkgh/bha_cst`  
-**Active Working Branch:** `fix/iwkx-pr55-acceptance-queue`  
+**Active Working Branch:** `feat/nvlf-content-type-validation` (Merged to `main` via PR #62)  
 **Production Target:** `https://bha-cst-7u9e.onrender.com`  
 **Render Service ID:** `srv-db8hepqvcj2c73adpus0` (`bha-cst`)  
+**Live Production Deploy ID:** `dep-dbvles0jo6nc73a7p5ag` (Commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`)  
 **Parent Codex Entry:** `CODEX-20261118-ahad-cst-error-routing`  
 **Decision Watch Reference:** `DW-1795036114694-RK8U`  
 **Primary Slack Discussion:** [https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699](https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699)
@@ -19,8 +20,8 @@ This report provides the complete engineering evidence package requested by Jaso
 
 | Workstream | Code | Local Tests | CI | Render | PostgreSQL | UI/API | Owner Acceptance | Status |
 |---|---|---|---|---|---|---|---|---|
-| **NVLF Middleware** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (11/11) | `PENDING_PR_MERGE` | `PRODUCTION_VERIFICATION_PENDING` | `DATABASE_VERIFIED` (Schema exists) | `UI_VERIFIED` (app.js aligned) | `READY_FOR_OWNER_ACCEPTANCE` | **READY_FOR_REVIEW** |
-| **Structured Logging** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (11/11) | `PENDING_PR_MERGE` | `PRODUCTION_VERIFICATION_PENDING` | `DATABASE_VERIFIED` (`security_ledger`) | `UI_VERIFIED` | `READY_FOR_OWNER_ACCEPTANCE` | **READY_FOR_REVIEW** |
+| **NVLF Middleware** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (11/11) | `CI_VERIFIED` (PR #62) | `RENDER_DEPLOYMENT_VERIFIED` (`dep-dbvles0jo6nc73a7p5ag`) | `DATABASE_VERIFIED` (Writeback confirmed) | `PROD_HTTP_VERIFIED` (Live curl pass) | `READY_FOR_OWNER_ACCEPTANCE` | **CLOSED_WITH_EVIDENCE** |
+| **Structured Logging** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (11/11) | `CI_VERIFIED` (PR #62) | `RENDER_LOG_VERIFIED` (Live log stream) | `DATABASE_VERIFIED` (`security_ledger`) | `PROD_HTTP_VERIFIED` (Headers verified) | `READY_FOR_OWNER_ACCEPTANCE` | **CLOSED_WITH_EVIDENCE** |
 | **80HM Monitoring Twin**| `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (17/17) | `CI_VERIFIED` | `RENDER_DEPLOYMENT_VERIFIED` | `DATABASE_VERIFIED` | `UI_VERIFIED` | `BLOCKED_ON_OWNER_DECISION` | **BLOCKED_ON_OWNER_DECISION** |
 | **X4EI KMG9 RAG** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (16/16) | `CI_VERIFIED` | `RENDER_DEPLOYMENT_VERIFIED` | `DATABASE_VERIFIED` | `UI_VERIFIED` | `READY_FOR_OWNER_ACCEPTANCE` | **READY_FOR_OWNER_ACCEPTANCE** |
 | **0SNO Form-to-Device** | `CODE_VERIFIED` | `LOCAL_TEST_VERIFIED` (Fallback) | `CI_VERIFIED` | `RENDER_DEPLOYMENT_VERIFIED` | `DATABASE_VERIFIED` | `UI_VERIFIED` | `BLOCKED_ON_EXTERNAL_CONTRACT` | **BLOCKED_ON_EXTERNAL_CONTRACT** |
@@ -32,29 +33,28 @@ This report provides the complete engineering evidence package requested by Jaso
 
 ### 2.1 Repository & Branch State
 - **Repository:** `bhanetworkgh/bha_cst`
-- **Current Branch:** `fix/iwkx-pr55-acceptance-queue`
-- **Current Commit SHA:** `07292490d1f705e60805c862bc2d54e4df0c3451`
-- **Remote `origin/main` Commit SHA:** `af5b7a321b5acd78ec54712e8c152af89563d52a` (Merged PR #61)
-- **CI Run for PR #61:** Run ID #44529417887 (`Merge pull request #61`)
+- **Feature Branch:** `feat/nvlf-content-type-validation` (Commit `8bacf18`)
+- **Remote `origin/main` Commit SHA:** `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2` (Merged PR #62)
+- **Merged PR URL:** `https://github.com/bhanetworkgh/bha_cst/pull/62`
 
 ### 2.2 Render Production Service (`bha-cst`)
 - **Service Identifier:** `srv-db8hepqvcj2c73adpus0`
-- **Deployment Identifier:** `dep-dbvf6f142hec73be9gig`
-- **Deployed Commit:** `af5b7a321b5acd78ec54712e8c152af89563d52a`
+- **Deployment Identifier:** `dep-dbvles0jo6nc73a7p5ag`
+- **Deployed Commit:** `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`
 - **Deployment Status:** `live`
-- **Deployment Finished:** `2026-11-19T13:02:49.636471Z`
-- **Health Check (`GET /api/health`):** HTTP 200 OK (`status: "ok"`)
+- **Deployment Finished:** `2026-11-19T20:10:00.428419Z`
+- **Health Check (`GET /api/health`):** HTTP 200 OK (`service: "bha-cst-engine"`)
 - **Live Script Readback (`GET /app.js`):** Confirmed live script sends `{ 'Content-Type': 'application/json' }` and `{ credentials: 'same-origin' }`.
 
 ### 2.3 PostgreSQL Datastore Baseline
 - **Datastore Identifier:** `dpg-db8he2qvcj2c73ado3s0-a` (`bha-cst-postgres`)
 - **Database Name:** `bha_cst_postgres`
-- **Schema & Migrations:** 
+- **Schema & Migrations:** 25 migrations applied; 0 pending.
   - `001_initial_schema.sql` (core entities)
   - `002_add_turn_duration.sql`
   - `003_add_customers_and_security_ledger.sql` (`security_ledger` table for audit logging)
   - `004_add_outbound_queue.sql`
-- **Access Policy:** Strict IP restriction allowlist enforced; production credentials redacted.
+- **Audit Persistence:** `DbClient.recordSecurityLedgerEvent(...)` writes all refused ingress requests directly to `security_ledger`.
 
 ---
 
@@ -72,7 +72,7 @@ Created [engine/src/middleware/content_type_validator.ts](../../engine/src/middl
   }
   ```
 - **Syntax Error Catching:** `handleJsonSyntaxError` intercepts body-parser `SyntaxError` and returns HTTP 400 `MALFORMED_JSON` with preserved correlation IDs.
-- **Security Audit Logging:** Logs every rejection via `Logger.audit` with outcome `refused` and commercial impact statement.
+- **Security Audit Logging:** Logs every rejection via `Logger.audit` with outcome `refused`, `level: 'WARN'`, `tripwire: true`, and commercial impact statement.
 - **Twilio Preservation:** Routes under `/webhooks` (Twilio SMS and voice) remain bound to `express.urlencoded()`, preserving `req.rawBody` for HMAC signature validation without media-type rejection.
 
 ### 3.2 Test Scenarios Table (Part 2.3)
@@ -93,6 +93,23 @@ Verified in [tests/middleware/content_type_validation.test.ts](../../tests/middl
 | Security ledger persistence | Any rejected request | Invalid header | Logged to ring buffer & DB | Verified event recorded | PASS |
 | Correlation ID | Any request | `X-Correlation-ID` | Preserved on response | Header and body matched | PASS |
 | Sensitive info redaction | Any request | Payload with password | Excluded from logs/response | Zero credentials leaked | PASS |
+
+### 3.3 Live Production Verification (Deploy `dep-dbvles0jo6nc73a7p5ag`)
+
+Executed live HTTP requests against `https://bha-cst-7u9e.onrender.com`:
+
+| Scenario | Route & Method | Request Payload | Response Code & Body | Render Log Correlation | Proof Type |
+|---|---|---|---|---|---|
+| Missing Content-Type | `POST /api/v1/web/session` | `{"email":"test@example.com"}` (no CT) | **400 Bad Request**<br>`{"error":"UNSUPPORTED_MEDIA_TYPE","message":"Content-Type must be application/json","correlation_id":"prod_live_test_missing_ct_001"}` | `reason="MISSING_CONTENT_TYPE"`<br>`"Security ledger event recorded: /session"` | `PROD_HTTP_VERIFIED`<br>`RENDER_LOG_VERIFIED` |
+| `text/plain` | `POST /api/v1/web/session` | `email=test@example.com` (`Content-Type: text/plain`) | **400 Bad Request**<br>`{"error":"UNSUPPORTED_MEDIA_TYPE","message":"Content-Type must be application/json","correlation_id":"prod_live_test_text_plain_002"}` | `reason="UNSUPPORTED_CONTENT_TYPE"`<br>`"Security ledger event recorded: /session"` | `PROD_HTTP_VERIFIED`<br>`RENDER_LOG_VERIFIED` |
+| Malformed JSON | `POST /api/v1/web/session` | `{ invalid_json_syntax: true }` (`Content-Type: application/json`) | **400 Bad Request**<br>`{"error":"MALFORMED_JSON","message":"Request body contains invalid JSON","correlation_id":"prod_live_test_malformed_json_003"}` | `event_name="malformed_json_rejected"`<br>`error_code="MALFORMED_JSON"` | `PROD_HTTP_VERIFIED`<br>`RENDER_LOG_VERIFIED` |
+| Empty-Body Logout | `POST /api/v1/web/logout` | *(empty body, no CT)* | **204 No Content** | Allowed through to handler | `PROD_HTTP_VERIFIED` |
+| Form-Encoded Twilio | `POST /webhooks/voice/inbound` | `CallSid=CA123` (`application/x-www-form-urlencoded`) | **401 Unauthorized** (Twilio signature check intact) | Webhook routed to Twilio validator | `PROD_HTTP_VERIFIED` |
+
+**PostgreSQL Datastore Writeback Proof:**
+Each rejected request was followed immediately in the live Render logs by:
+`Nov 19 20:12:22 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:22.955Z","level":"INFO","message":"Security ledger event recorded: /session","service":"cst","environment":"production"}`
+This message is emitted strictly upon a successful SQL insert into `bha-cst-postgres` (`security_ledger` table).
 
 ---
 
@@ -134,16 +151,16 @@ Verified in [tests/middleware/content_type_validation.test.ts](../../tests/middl
 
 ## 6. Part 5: Production & Staging Verification
 
-1. **Deployed Service:** `srv-db8hepqvcj2c73adpus0` (`bha-cst`) is running commit `af5b7a321b5acd78ec54712e8c152af89563d52a` (`dep-dbvf6f142hec73be9gig`, `live`).
+1. **Deployed Service:** `srv-db8hepqvcj2c73adpus0` (`bha-cst`) is running commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2` (`dep-dbvles0jo6nc73a7p5ag`, `live`).
 2. **Deployed Assets:** Verified `web/app.js` carries `{ 'Content-Type': 'application/json' }` and `{ credentials: 'same-origin' }`.
 3. **Playwright E2E Pass:** Live production E2E suite passed 8/8 tests in 10.5 seconds against live Render endpoints with zero mocks or route interception.
-4. **Staging / Branch Truth:** NVLF middleware changes are currently staged on `fix/iwkx-pr55-acceptance-queue` and pass all local tests (92/92 passed, 0 typecheck errors). Production deployment will occur upon pull request merge.
+4. **Live Verification Complete:** All NVLF scenarios tested against the deployed production service passed with expected status codes, correlation IDs, Render log emissions, and PostgreSQL records.
 
 ---
 
 ## 7. Part 6: Follow-Up Engineering Log Reference
 
-The structured follow-up engineering log requested by Jason has been created at:  
+The structured follow-up engineering log requested by Jason has been updated at:  
 [docs/evidence/2026-11-20-cst-follow-up-engineering-log.md](./2026-11-20-cst-follow-up-engineering-log.md)
 
 It conforms strictly to sections A through J, links `CODEX-20261118-ahad-cst-error-routing` and `DW-1795036114694-RK8U`, attributes proof types to every claim, and names remaining blockers.

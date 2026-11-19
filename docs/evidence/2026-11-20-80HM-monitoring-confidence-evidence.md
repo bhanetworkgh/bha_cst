@@ -49,7 +49,7 @@ Implemented in `computeDependentDeviceStatus` and tested in [tests/regression/se
 Execution results from [tests/regression/sensor_status_semantics.test.ts](../../tests/regression/sensor_status_semantics.test.ts):
 
 ```
- RUN  v4.1.12 /Users/HaMi/Documents/Jason/customer twin
+ RUN  v4.1.12 bhanetworkgh/bha_cst
 
  ✓ tests/regression/sensor_status_semantics.test.ts (17 tests) 3ms
    ✓ mapLatestReadingToTelemetry — missing values cannot default to normal
