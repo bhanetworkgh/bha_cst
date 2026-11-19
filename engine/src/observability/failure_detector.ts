@@ -162,9 +162,11 @@ export class FailureDetector {
     ResearchTwinBridge.reportFailureAsync('webhook_processing_failure', error, context, this.webhookMetrics.processing_failures);
   }
 
-  static recordWebhookPersistenceFailure(error?: string, context?: FailureContext): void {
+  static recordWebhookPersistenceFailure(error?: string, contextOrNotify?: FailureContext | boolean, notify = true): void {
+    const context = typeof contextOrNotify === 'object' && contextOrNotify !== null ? contextOrNotify : undefined;
+    const shouldNotify = typeof contextOrNotify === 'boolean' ? contextOrNotify : notify;
     this.webhookMetrics.persistence_failures++;
-    Logger.error(`FailureDetector: webhook database persistence failure: ${error}`);
+    Logger.error(`FailureDetector: webhook database persistence failure: ${error}`, undefined, shouldNotify);
     ResearchTwinBridge.reportFailureAsync('database_persistence_failure', error, context, this.webhookMetrics.persistence_failures);
   }
 
@@ -282,7 +284,7 @@ export class FailureDetector {
     }
 
     const readiness: 'ready' | 'degraded' | 'unready' =
-      webhookStatus === 'failing' || twilioStatus === 'failing'
+      webhookStatus === 'failing' || twilioStatus === 'failing' || slackStatus === 'failing'
         ? 'unready'
         : (webhookStatus === 'degraded' || slackStatus === 'degraded' || twilioStatus === 'degraded')
           ? 'degraded'

@@ -836,6 +836,34 @@ export class VoiceEventCaptureService {
       }
     }
 
+    // From 15 Nov 2026 (SI5J) the BHA CST Monitoring app posts this itself,
+    // into #bha-customer-service-twin where the call log goes, and reads
+    // Slack's answer: an HTTP 200 with ok:false is a failure. The incoming
+    // webhook below is only the fallback when the service has no bot token.
+    const botToken = process.env.SLACK_BOT_TOKEN;
+    if (botToken) {
+      const channel = process.env.CST_HANDOFF_CHANNEL_ID || process.env.CST_CALL_LOG_CHANNEL_ID || 'C0BD6D53HAM';
+      try {
+        const res = await fetch('https://slack.com/api/chat.postMessage', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${botToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ ...slackBody, channel, unfurl_links: false }),
+        });
+        const answer: any = await res.json().catch(() => ({ ok: false, error: `http_${res.status}` }));
+        if (answer.ok) {
+          FailureDetector.recordSlackSuccess();
+          return true;
+        }
+        FailureDetector.recordSlackFailure(`chat.postMessage: ${answer.error}`);
+        this.failedSlackDeliveries.push(notification);
+        return false;
+      } catch (err: any) {
+        FailureDetector.recordSlackFailure(err.message);
+        this.failedSlackDeliveries.push(notification);
+        return false;
+      }
+    }
+
     // Resolve webhook URL
     let webhookUrl =
       process.env.SLACK_CUSTOMER_SERVICE_WEBHOOK_URL ||

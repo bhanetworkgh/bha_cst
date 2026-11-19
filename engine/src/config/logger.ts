@@ -50,8 +50,10 @@ export class Logger {
     console.warn(this.formatLog('WARN', message, meta));
   }
 
-  static error(message: string, meta?: Record<string, unknown>): void {
+  static error(message: string, meta?: Record<string, unknown>, notify = true): void {
     console.error(this.formatLog('ERROR', message, meta));
+    // Callers with a class-specific alert route must not also send a generic alert.
+    if (!notify) return;
     // Asynchronously dispatch Slack error alert
     SlackNotifier.sendErrorAlert({
       title: 'System Error',

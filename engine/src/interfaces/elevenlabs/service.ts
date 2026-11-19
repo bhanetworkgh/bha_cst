@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import { Logger } from '../../config/logger.js';
 import { DbClient } from '../../db/client.js';
@@ -197,11 +197,14 @@ export class ElevenLabsWebhookService {
     const generatedEvents: CstEventV1[] = [];
     const eventIds: string[] = [];
     const nowIso = new Date().toISOString();
+    // Provider conversation identity, never timing, keys required lifecycle rows.
+    const lifecycleId = (kind: string) => `evt_${kind}_${createHash('sha256')
+      .update(JSON.stringify(['elevenlabs', tenantId, projectId, conversationId, kind])).digest('hex')}`;
 
     try {
       // 4A. Normalize Interaction Start Event
       const startIso = resolvedTimestamp.iso;
-      const startEventId = `evt_start_${randomUUID()}`;
+      const startEventId = lifecycleId('start');
       const startEvent = createCstInteractionStartEventV1({
         id: startEventId,
         source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
@@ -244,7 +247,7 @@ export class ElevenLabsWebhookService {
         };
       });
 
-      const transcriptEventId = `evt_trsc_${randomUUID()}`;
+      const transcriptEventId = lifecycleId('trsc');
       const transcriptEvent = createCstTranscriptEventV1({
         id: transcriptEventId,
         source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
@@ -268,7 +271,7 @@ export class ElevenLabsWebhookService {
 
       // 4C. Normalize Outcome Event
       const isCallSuccess = analysis.call_successful === true || analysis.call_successful === 'success';
-      const outcomeEventId = `evt_outc_${randomUUID()}`;
+      const outcomeEventId = lifecycleId('outc');
       const outcomeEvent = createCstOutcomeEventV1({
         id: outcomeEventId,
         source: channel === 'whatsapp' ? 'cst/whatsapp/elevenlabs' : 'cst/voice/elevenlabs',
@@ -307,7 +310,7 @@ export class ElevenLabsWebhookService {
 
       if (escalationRequested) {
         escalationId = `escl_${randomUUID()}`;
-        const escalationEventId = `evt_escl_${randomUUID()}`;
+        const escalationEventId = lifecycleId('escl');
         const firstUserQuestion = transcriptList.find((m) => m.role === 'user')?.message || 'Customer requested human assistance';
 
         const escalationEvent = createCstEscalationEventV1({
@@ -336,8 +339,33 @@ export class ElevenLabsWebhookService {
         });
         generatedEvents.push(escalationEvent);
         eventIds.push(escalationEventId);
+      }
 
-        // Durable persistence into escalations table
+      // Required lifecycle evidence must commit before any downstream publication.
+      try {
+        await DbClient.recordRequiredDashboardOutcomes(generatedEvents.map(event => ({
+          event_id: event.id, event_type: event.type, specversion: event.specversion,
+          correlation_id: event.correlation_id, tenant_id: event.tenant_id,
+          project_id: event.project_id, status: 'internal_only' as const,
+          attempts: 0, payload: event as any,
+        })));
+        for (const event of generatedEvents) this.persistedEvents.set(event.id, event);
+      } catch (dbErr: any) {
+        FailureDetector.recordWebhookPersistenceFailure(dbErr?.message, false);
+        await ErrorRouter.route({
+          service: 'CST', category: 'webhook_persistence', severity: 'ERROR',
+          message: 'Post-call lifecycle persistence failed; customer dispatch withheld for redelivery',
+          tenant_id: tenantId, project_id: projectId, correlation_id: conversationId,
+        });
+        return {
+          status: 'failed', conversation_id: conversationId, events_count: 0,
+          event_ids: [], slack_delivered: false, escalation_created: false,
+          error: 'POST_CALL_PERSISTENCE_FAILED',
+        };
+      }
+
+      if (escalationRequested) {
+        // Only create the escalation after lifecycle persistence succeeds.
         try {
           const persistedEscalationId = await DbClient.createEscalationRecord({
             caller_phone: callerPhone,
@@ -360,30 +388,6 @@ export class ElevenLabsWebhookService {
         }
       }
 
-      // 5. Durable Event Persistence (dashboard_publish_outcomes).
-      // These four are CST's own record: the dashboard takes cst.turn and
-      // cst.delivery only, so they are never sent and are not marked published.
-      // What reaches the dashboard is the one cst.turn built below.
-      for (const event of generatedEvents) {
-        this.persistedEvents.set(event.id, event);
-        try {
-          await DbClient.recordDashboardPublishOutcome({
-            event_id: event.id,
-            event_type: event.type,
-            specversion: event.specversion,
-            correlation_id: event.correlation_id,
-            tenant_id: event.tenant_id,
-            project_id: event.project_id,
-            status: 'internal_only',
-            attempts: 0,
-            payload: event as any,
-          });
-        } catch (dbErr: any) {
-          FailureDetector.recordWebhookPersistenceFailure(dbErr.message);
-          Logger.warn(`ElevenLabsWebhookService: could not persist event ${event.id}: ${dbErr.message}`);
-        }
-      }
-
       // 5b. The call on the dashboard: one cst.turn, awaited, read from the
       // publisher's own answer. Its outcome row says what really happened, and a
       // failure is replayed at boot. It never fails the webhook.
@@ -394,7 +398,6 @@ export class ElevenLabsWebhookService {
       const ended = endedRecord({
         termination_reason: typeof metadata.termination_reason === 'string' ? metadata.termination_reason : undefined,
         data_collection: dataCollection,
-        handed_to_person: escalationRequested,
         channel,
         whatsapp_call: isWhatsAppCall,
       });

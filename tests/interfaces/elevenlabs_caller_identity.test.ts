@@ -4,6 +4,7 @@ import { DbClient } from '../../engine/src/db/client.js';
 import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
 
 vi.mock('../../engine/src/db/client.js', () => ({ DbClient: {
+  recordRequiredDashboardOutcomes: vi.fn().mockResolvedValue(undefined),
   recordDashboardPublishOutcome: vi.fn().mockResolvedValue(undefined),
   createEscalationRecord: vi.fn().mockResolvedValue('escl_test'),
 } }));
@@ -39,6 +40,12 @@ describe('SO8M provider caller identity', () => {
     expect((await ElevenLabsWebhookService.process(payload(metadata))).status).toBe('processed');
     const events = ElevenLabsWebhookService.getPersistedEvents();
     expect(events).toHaveLength(3);
+    expect(DbClient.recordRequiredDashboardOutcomes).toHaveBeenCalledOnce();
+    const [outcomes] = vi.mocked(DbClient.recordRequiredDashboardOutcomes).mock.calls[0];
+    expect(outcomes).toHaveLength(3);
+    for (const outcome of outcomes) {
+      expect((outcome.payload as any).customer.phone_e164).toBe('+12025550123');
+    }
     for (const event of events) expect(event.customer?.phone_e164).toBe('+12025550123');
     expect(publish).toHaveBeenCalledOnce();
     expect(ErrorRouter.route).toHaveBeenCalledOnce();
@@ -52,6 +59,7 @@ describe('SO8M provider caller identity', () => {
       expect(result.event_ids).toEqual([]);
       expect(ElevenLabsWebhookService.getPersistedEvents()).toEqual([]);
       expect(DbClient.recordDashboardPublishOutcome).not.toHaveBeenCalled();
+      expect(DbClient.recordRequiredDashboardOutcomes).not.toHaveBeenCalled();
       expect(DbClient.createEscalationRecord).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
       expect(ErrorRouter.route).not.toHaveBeenCalled();
@@ -70,6 +78,7 @@ describe('SO8M provider caller identity', () => {
     const corrected = payload({ caller_id: '+12025550123' });
     expect((await ElevenLabsWebhookService.process(corrected)).status).toBe('processed');
     expect((await ElevenLabsWebhookService.process(corrected)).status).toBe('already_processed');
+    expect(DbClient.recordRequiredDashboardOutcomes).toHaveBeenCalledOnce();
     expect(ErrorRouter.route).toHaveBeenCalledOnce();
   });
 });
