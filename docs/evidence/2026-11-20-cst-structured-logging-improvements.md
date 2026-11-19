@@ -1,13 +1,15 @@
 # CST Structured Logging & Silent-Failure Elimination Report
 
-**Document Date:** 2026-11-20  
-**Context:** CST Observability Hardening & Telemetry Standardization  
-**Related Loops:** `LOOP-1795035800169-NVLF`, `LOOP-1794902688969-80HM`  
-**Parent Codex Entry:** `CODEX-20261118-ahad-cst-error-routing`  
-**Decision Watch Reference:** `DW-1795036114694-RK8U`  
-**Production Target:** `https://bha-cst-7u9e.onrender.com` (`srv-db8hepqvcj2c73adpus0`)  
-**Live Production Deploy ID:** `dep-dbvles0jo6nc73a7p5ag` (Commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`, PR #62)  
-**Status:** `CLOSED_WITH_EVIDENCE` / `RENDER_LOG_VERIFIED` / `DATABASE_VERIFIED`
+**Document Date:** 2026-11-20
+**Context:** CST Observability Hardening & Telemetry Standardization
+**Related Loops:** `LOOP-1795035800169-NVLF`, `LOOP-1794902688969-80HM`
+**Parent Codex Entry:** `CODEX-20261118-ahad-cst-error-routing`
+**Decision Watch Reference:** `DW-1795036114694-RK8U`
+**Production Target:** `https://bha-cst-7u9e.onrender.com` (`srv-db8hepqvcj2c73adpus0`)
+**Live Production Deploy ID:** `dep-dbvles0jo6nc73a7p5ag` (Commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`, PR #62)
+**Implementation Status:** `COMPLETED`
+**Evidence Status:** `VERIFIED` (Telemetry schema, console WARN logs, and application log write path verified; direct database inspection NOT INDEPENDENTLY VERIFIED)
+**Owner Acceptance Status:** `READY_FOR_OWNER_ACCEPTANCE`
 
 ---
 
@@ -23,7 +25,7 @@ This workstream eliminates these silent-failure paths and standardizes structure
 
 ## 2. Standardized Telemetry Schema
 
-Structured events emitted by CST gateways and middleware are standardized around the following fields:
+Structured events emitted by CST gateways and middleware are standardized around the following 17 fields:
 
 | Field | Type | Description | Example |
 |---|---|---|---|
@@ -63,7 +65,7 @@ Structured events emitted by CST gateways and middleware are standardized around
 
 ### 3.4 Data Privacy & Redaction Requirements
 To prevent credential leaks:
-- Request bodies, passwords, auth tokens, and Twilio/ElevenLabs HMAC signatures are **strictly excluded** from log payloads.
+- Request bodies, passwords, auth tokens, and Twilio/ElevenLabs HMAC signatures are strictly excluded from log payloads.
 - Verified in tests and production: requests containing sensitive parameters are rejected with zero credential leakage into response bodies or audit logs.
 
 ---
@@ -104,7 +106,7 @@ The following logs were captured via `render logs --resources srv-db8hepqvcj2c73
   "event_name": "request_rejected",
   "event_type": "security_audit",
   "route": "/session",
-  "method": "POST",
+  "method":"POST",
   "http_status": 400,
   "error_code": "UNSUPPORTED_MEDIA_TYPE",
   "failure_stage": "pre_route_media_validation",
@@ -115,7 +117,7 @@ The following logs were captured via `render logs --resources srv-db8hepqvcj2c73
   "tripwire": true
 }
 ```
-**Follow-up database persistence log:**
+**Follow-up application log write path:**
 ```json
 {
   "timestamp": "2026-11-19T20:12:22.955Z",
@@ -157,7 +159,7 @@ The following logs were captured via `render logs --resources srv-db8hepqvcj2c73
   "tripwire": true
 }
 ```
-**Follow-up database persistence log:**
+**Follow-up application log write path:**
 ```json
 {
   "timestamp": "2026-11-19T20:12:30.942Z",
@@ -190,7 +192,9 @@ The following logs were captured via `render logs --resources srv-db8hepqvcj2c73
 }
 ```
 
-### 5.4 Database Writeback & Reliability Summary
-1. Every rejected request triggers an asynchronous SQL `INSERT INTO security_ledger (...)` statement into the PostgreSQL datastore (`bha-cst-postgres`).
-2. Log verification confirms `Security ledger event recorded: /session` for each event within 4 milliseconds of rejection.
-3. Structured correlation IDs are preserved across HTTP responses, console WARN alerts, and PostgreSQL audit rows, delivering 100% end-to-end traceability for ingress rejections.
+---
+
+## 6. Distinguishing Application Log Evidence from Direct Database Inspection
+
+- **Application-Reported Write Path (`VERIFIED`):** The application logs explicitly confirm that `DbClient.recordSecurityLedgerEvent(...)` executed its write routine for each rejected request, emitting `Security ledger event recorded: /session` within 4ms.
+- **Direct Database Datastore Verification (`NOT INDEPENDENTLY VERIFIED`):** Direct SQL query verification (e.g. `SELECT * FROM security_ledger WHERE correlation_id = ...`) against PostgreSQL datastore `bha-cst-postgres` (`dpg-db8he2qvcj2c73ado3s0-a`) was not performed because direct psql access is restricted by private network boundaries. The evidence confirms the application's reported write execution path, but direct datastore inspection remains not independently verified.
