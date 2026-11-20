@@ -187,7 +187,7 @@ describe('Farm-scope fail-closed when the grant lookup is unavailable', () => {
 
     // And the adapter's own farm authorization helper refuses the farm outright.
     const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
-    expect(() => assertSpeakerFarmAccess(speaker, 'farm_austin_main', [])).toThrow();
+    expect(() => assertSpeakerFarmAccess(speaker, 'farm_austin_main')).toThrow();
   });
 
   it('the full-resolution path fails closed when org members are unavailable', async () => {
