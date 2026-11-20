@@ -309,7 +309,10 @@ export class ElevenLabsWebhookService {
       let escalationCreated = false;
 
       if (escalationRequested) {
-        escalationId = `escl_${randomUUID()}`;
+        escalationId = `esc_${createHash('sha256')
+          .update(JSON.stringify(['escalation', tenantId, projectId, conversationId]))
+          .digest('hex')
+          .slice(0, 32)}`;
         const escalationEventId = lifecycleId('escl');
         const firstUserQuestion = transcriptList.find((m) => m.role === 'user')?.message || 'Customer requested human assistance';
 
@@ -368,6 +371,7 @@ export class ElevenLabsWebhookService {
         // Only create the escalation after lifecycle persistence succeeds.
         try {
           const persistedEscalationId = await DbClient.createEscalationRecord({
+            id: escalationId,
             caller_phone: callerPhone,
             tenant_id: tenantId,
             project_id: projectId,
@@ -383,8 +387,8 @@ export class ElevenLabsWebhookService {
             escalationCreated = true;
           }
         } catch (dbErr: any) {
-          FailureDetector.recordWebhookPersistenceFailure(dbErr.message);
-          Logger.error(`ElevenLabsWebhookService: failed to persist escalation record: ${dbErr.message}`);
+          FailureDetector.recordWebhookPersistenceFailure(dbErr.message, false);
+          Logger.error(`ElevenLabsWebhookService: failed to persist escalation record: ${dbErr.message}`, undefined, false);
         }
       }
 
@@ -486,7 +490,7 @@ export class ElevenLabsWebhookService {
         FailureDetector.recordSlackSuccess();
       } else {
         FailureDetector.recordSlackFailure(callLog.error);
-        Logger.error(`ElevenLabsWebhookService: call log for ${conversationId} ${callLog.posted ? 'posted without a transcript file' : 'did not post'}: ${callLog.error}`);
+        Logger.error(`ElevenLabsWebhookService: call log for ${conversationId} ${callLog.posted ? 'posted without a transcript file' : 'did not post'}: ${callLog.error}`, undefined, false);
         await ErrorRouter.route({
           service: 'CST',
           category: 'call_log',
@@ -500,6 +504,14 @@ export class ElevenLabsWebhookService {
           timestamp: nowIso,
           meta: { interaction_id: conversationId, via: callLog.via, transcript: callLog.transcript, duration_secs: durationSecs },
         });
+      }
+
+      if (escalationCreated && escalationId && !callLog.posted && callLog.error && callLog.via !== 'none') {
+        try {
+          await DbClient.updateEscalationSlackStatus(escalationId, false, callLog.error);
+        } catch (updateErr: any) {
+          Logger.warn(`ElevenLabsWebhookService: failed to update escalation Slack error status for ${escalationId}: ${updateErr?.message}`);
+        }
       }
 
       // 7. Mark Idempotency Key Complete

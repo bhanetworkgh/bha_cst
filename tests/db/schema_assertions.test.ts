@@ -198,4 +198,16 @@ describe('Schema assertions — required database state (read-only, from migrati
     expect(sql006).not.toContain("Support. I'm here");
     expect(sql010).not.toContain("Support. I'm here");
   });
+
+  // ── Migration 025: escalations acknowledgement columns and full status lifecycle ──
+
+  it('adds acknowledged_by, acknowledged_at, and full 5-status check constraint to escalations (025)', () => {
+    const sql025 = byName('025_escalations_acknowledgement_and_status_lifecycle.sql');
+    expect(sql025).toMatch(/ADD COLUMN IF NOT EXISTS acknowledged_by VARCHAR\(255\)/i);
+    expect(sql025).toMatch(/ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ/i);
+    expect(sql025).toMatch(/DROP CONSTRAINT IF EXISTS ck_escalation_status/i);
+    expect(sql025).toMatch(
+      /ADD CONSTRAINT ck_escalation_status CHECK\s*\(\s*status IN \('pending',\s*'sent',\s*'notified',\s*'acknowledged',\s*'failed'\)\s*\)/i,
+    );
+  });
 });

@@ -61,6 +61,8 @@ describe('migration_effect_checks against an already-applied consent schema', ()
       expect(await migrationEffectChecks['021_repair_service_number_bindings.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['024_add_consent_exempt_to_messages_out.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['025_escalations_acknowledgement_and_status_lifecycle.sql'](client)).toBe(true);
     } finally {
       client.release();
       await pool.end();
@@ -136,15 +138,19 @@ describe('migration ledger adoption defect (LOOP-HOFE)', () => {
       expect(await migrationEffectChecks['021_repair_service_number_bindings.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['024_add_consent_exempt_to_messages_out.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['025_escalations_acknowledgement_and_status_lifecycle.sql'](client)).toBe(true);
 
       const ledger = await client.query(
-        'SELECT filename FROM schema_migrations WHERE filename IN ($1,$2,$3,$4,$5) ORDER BY filename',
+        'SELECT filename FROM schema_migrations WHERE filename IN ($1,$2,$3,$4,$5,$6,$7) ORDER BY filename',
         [
           '016_sms_consent_spine.sql',
           '017_sms_consent_audit_fk.sql',
           '018_sms_consent_prompts.sql',
           '022_add_escalations_table.sql',
           '023_reconcile_duplicate_003_and_schema_drift.sql',
+          '024_add_consent_exempt_to_messages_out.sql',
+          '025_escalations_acknowledgement_and_status_lifecycle.sql',
         ],
       );
       expect(ledger.rows.map((r) => r.filename)).toEqual([
@@ -153,6 +159,8 @@ describe('migration ledger adoption defect (LOOP-HOFE)', () => {
         '018_sms_consent_prompts.sql',
         '022_add_escalations_table.sql',
         '023_reconcile_duplicate_003_and_schema_drift.sql',
+        '024_add_consent_exempt_to_messages_out.sql',
+        '025_escalations_acknowledgement_and_status_lifecycle.sql',
       ]);
     } finally {
       client.release();
@@ -187,7 +195,7 @@ describe('fresh database migration & duplicate-003 / 022 reconciliation', () => 
     if (ENABLED) run(`psql -d '${base.replace(/\/[^/]+$/, '/postgres')}' -c "DROP DATABASE IF EXISTS ${freshName}" -q`, { stdio: 'pipe' });
   });
 
-  it('executes full migration sequence 001..023 on a fresh database with zero drifted files', async () => {
+  it('executes full migration sequence 001..025 on a fresh database with zero drifted files', async () => {
     if (!ENABLED) {
       expect(true).toBe(true);
       return;
@@ -197,6 +205,8 @@ describe('fresh database migration & duplicate-003 / 022 reconciliation', () => 
     expect(out).toContain('Successfully applied: 003_customers_table.sql');
     expect(out).toContain('Successfully applied: 022_add_escalations_table.sql');
     expect(out).toContain('Successfully applied: 023_reconcile_duplicate_003_and_schema_drift.sql');
+    expect(out).toContain('Successfully applied: 024_add_consent_exempt_to_messages_out.sql');
+    expect(out).toContain('Successfully applied: 025_escalations_acknowledgement_and_status_lifecycle.sql');
     expect(out).not.toContain('drifted');
   });
 
@@ -209,6 +219,31 @@ describe('fresh database migration & duplicate-003 / 022 reconciliation', () => 
     try {
       expect(await migrationEffectChecks['022_add_escalations_table.sql'](client)).toBe(true);
       expect(await migrationEffectChecks['023_reconcile_duplicate_003_and_schema_drift.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['024_add_consent_exempt_to_messages_out.sql'](client)).toBe(true);
+      expect(await migrationEffectChecks['025_escalations_acknowledgement_and_status_lifecycle.sql'](client)).toBe(true);
+
+      // Verify all 5 escalation statuses ('pending', 'sent', 'notified', 'acknowledged', 'failed') and acknowledgement columns
+      for (const st of ['pending', 'sent', 'notified', 'acknowledged', 'failed'] as const) {
+        const escId = `esc_fresh_${st}`;
+        await client.query(
+          `INSERT INTO escalations (id, caller_phone, tenant_id, project_id, correlation_id, status, acknowledged_by, acknowledged_at)
+           VALUES ($1, '+15550001111', 'tenant-vfarm-01', 'proj-vfarm-main', $2, $3, $4, $5)`,
+          [
+            escId,
+            `corr_${st}`,
+            st,
+            st === 'acknowledged' ? 'Destiny Arupi (U0AEW3TBYH1)' : null,
+            st === 'acknowledged' ? '2026-11-20T18:00:00.000Z' : null,
+          ],
+        );
+      }
+      const escRows = await client.query(
+        `SELECT id, status, acknowledged_by, acknowledged_at FROM escalations WHERE id LIKE 'esc_fresh_%' ORDER BY id`,
+      );
+      expect(escRows.rows).toHaveLength(5);
+      const ackRow = escRows.rows.find((r) => r.status === 'acknowledged');
+      expect(ackRow?.acknowledged_by).toBe('Destiny Arupi (U0AEW3TBYH1)');
+      expect(ackRow?.acknowledged_at).toBeTruthy();
 
       // Verify same phone can be registered in two projects of the same tenant
       // (previously blocked by leftover customers_pkey (tenant_id, phone_e164) from 003_add_customers_and_security_ledger.sql)

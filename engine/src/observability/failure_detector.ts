@@ -188,10 +188,10 @@ export class FailureDetector {
     }
   }
 
-  static recordSlackFailure(error?: string, context?: FailureContext): void {
+  static recordSlackFailure(error?: string, context?: FailureContext, notify = false): void {
     this.slackMetrics.failed_deliveries++;
     this.slackMetrics.pending_retries++;
-    Logger.error(`FailureDetector: Slack delivery failed: ${error}`);
+    Logger.error(`FailureDetector: Slack delivery failed: ${error}`, undefined, notify);
     ResearchTwinBridge.reportFailureAsync('slack_delivery_failure', error, context, this.slackMetrics.failed_deliveries);
   }
 

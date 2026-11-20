@@ -279,12 +279,12 @@ export class ErrorRouter {
         }
         this.recentAlerts.delete(dedupKey);
         this.failedDeliveries.push(classified);
-        Logger.error(`ErrorRouter: CS Twin could not post a ${classified.error_class} alert to ${classified.destination_channel}: ${answer.error}`);
+        Logger.error(`ErrorRouter: CS Twin could not post a ${classified.error_class} alert to ${classified.destination_channel}: ${answer.error}`, undefined, false);
         return { dispatched: false, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'failed', error: `chat.postMessage: ${answer.error}` };
       } catch (err: any) {
         this.recentAlerts.delete(dedupKey);
         this.failedDeliveries.push(classified);
-        Logger.error(`ErrorRouter: CS Twin error post threw: ${err?.message}`);
+        Logger.error(`ErrorRouter: CS Twin error post threw: ${err?.message}`, undefined, false);
         return { dispatched: false, error_class: classified.error_class, destination_channel: classified.destination_channel, status: 'failed', error: err?.message };
       }
     }
@@ -311,6 +311,15 @@ export class ErrorRouter {
     }
 
     if (!targetUrl) {
+      Logger.warn(
+        `ErrorRouter: destination unconfigured for class ${classified.error_class} -> ${classified.destination_channel} (missing ${classified.webhook_env_var})`,
+        {
+          error_class: classified.error_class,
+          destination_channel: classified.destination_channel,
+          webhook_env_var: classified.webhook_env_var,
+          correlation_id: classified.correlation_id,
+        },
+      );
       traceRelay('slack_dispatch_deferred', { destination_channel: classified.destination_channel });
       return {
         dispatched: false,

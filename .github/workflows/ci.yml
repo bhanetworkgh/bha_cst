@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'fix/**'
+      - 'feat/**'
       - 'feature/**'
   pull_request:
     branches:
@@ -14,6 +15,21 @@ jobs:
   test:
     name: Typecheck, Build & Unit/Integration Tests
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bha_cst
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     strategy:
       matrix:
@@ -35,6 +51,11 @@ jobs:
       - name: Setup Environment Configuration
         run: cp .env.example .env
 
+      - name: Run PostgreSQL Schema Migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bha_cst
+        run: npm run db:migrate
+
       - name: TypeScript Compilation Check
         run: npm run typecheck
 
@@ -43,4 +64,10 @@ jobs:
 
       - name: Execute Vitest Test Suites
         run: npm test
+
+      - name: Execute Real PostgreSQL Integration Suites
+        env:
+          CST_DB_TESTS: '1'
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bha_cst
+        run: npx vitest run tests/interfaces/iwkx_persistence.test.ts tests/escalation/escalation_service.test.ts tests/db/db_client_persistence.test.ts tests/db/conversation_fk_integrity.test.ts tests/db/schema_assertions.test.ts tests/transport/delivery_persistence.test.ts
 

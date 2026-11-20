@@ -179,6 +179,24 @@ export const migrationEffectChecks = {
     if (lenRes.rows.length !== 2) return false;
     return lenRes.rows.every((row) => Number(row.character_maximum_length) === 128);
   },
+
+  '024_add_consent_exempt_to_messages_out.sql': async (client) =>
+    (await tableExists(client, 'messages_out')) &&
+    (await columnExists(client, 'messages_out', 'consent_exempt')),
+
+  '025_escalations_acknowledgement_and_status_lifecycle.sql': async (client) => {
+    if (!(await tableExists(client, 'escalations'))) return false;
+    if (!(await columnExists(client, 'escalations', 'acknowledged_by'))) return false;
+    if (!(await columnExists(client, 'escalations', 'acknowledged_at'))) return false;
+    const r = await client.query(
+      `SELECT pg_get_constraintdef(oid) AS def
+         FROM pg_constraint
+        WHERE conrelid = to_regclass('public.escalations')
+          AND conname = 'ck_escalation_status'`,
+    );
+    const def = r.rows[0]?.def || '';
+    return def.includes('acknowledged') && def.includes('sent');
+  },
 };
 
 /** Human-readable summary of which migrations in `files` lack an explicit check. */
