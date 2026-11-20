@@ -34,6 +34,7 @@
  * emits through the existing Logger. It does not poll, sleep, or schedule.
  */
 import { Logger } from '../config/logger.js';
+import { MonitoringSlackService } from '../notifications/monitoring_slack_service.js';
 
 /** How many failures in the window before the tracker triggers. */
 export const SELF_HEALING_THRESHOLD = 3;
@@ -206,6 +207,22 @@ export function recordFailure(input: {
         failure_count: failureCount,
       },
     });
+
+    MonitoringSlackService.sendIncidentNotification({
+      title: `Repeat Failure Threshold Crossed (${input.category})`,
+      severity: 'CRITICAL',
+      system: 'vFarm',
+      reason: `Category ${input.category} failed ${failureCount} times in ${SELF_HEALING_WINDOW_MS / 60000}m for tenant ${input.tenantId} project ${input.projectId}`,
+      correlation_id: input.correlationRef,
+      tenant_id: input.tenantId,
+      project_id: input.projectId,
+      diagnostic_info: {
+        failure_category: input.category,
+        failure_count: failureCount,
+        threshold: SELF_HEALING_THRESHOLD,
+        window_ms: SELF_HEALING_WINDOW_MS,
+      },
+    }).catch(() => {});
   }
 
   return { thresholdCrossed, failureCount, incidentEmitted };
@@ -278,6 +295,16 @@ export async function attemptRecovery(input: {
         capability_state: 'healthy',
       },
     });
+
+    MonitoringSlackService.sendRecoveryNotification({
+      system: 'vFarm',
+      previous_state: 'degraded',
+      current_state: 'healthy',
+      recovery_reason: `Self-healing recovery succeeded for tenant ${input.tenantId} project ${input.projectId} (${input.category}) after ${state.recheck_count} recheck(s)`,
+      correlation_id: `${input.tenantId}:${input.projectId}:${input.category}`,
+      tenant_id: input.tenantId,
+      project_id: input.projectId,
+    }).catch(() => {});
   } else {
     state.capability_state = 'degraded';
     state.recovery_result = 'failed';

@@ -4,6 +4,7 @@ import type { IdentityContext } from '../transport/twilio/types.js';
 import { CoreRegistry } from '../core/registry.js';
 import { VfarmTenantAdapter, VfarmAuthorizationError } from '../adapters/vfarm/index.js';
 import { recordFailure, isCapabilityDegraded, attemptRecovery } from '../recovery/self_healing_tracker.js';
+import { MonitoringSlackService, SlackDeliveryResult } from '../notifications/monitoring_slack_service.js';
 
 export interface VfarmUnitStatus {
   unit_id: string;
@@ -40,6 +41,120 @@ export interface VfarmUnitStatus {
   ph_unit?: string | null;
   co_unit?: string | null;
   values?: Record<string, { unit?: string | null; value?: unknown; status?: string | null }>;
+}
+
+export type SensorState = 'online' | 'offline' | 'missing' | 'stale' | 'timed_out' | 'degraded';
+export type DependentDeviceStatus = 'NORMAL' | 'DEGRADED';
+
+/**
+ * Computes the operational status of a dependent device (e.g. relay, actuator, pump)
+ * based on the health states of its required upstream sensors.
+ *
+ * Requirements (80HM / Monitoring Twin Gate):
+ * 1. A dependent device must NOT be NORMAL when any required sensor is
+ *    offline, missing, stale, degraded, or timed out.
+ * 2. It evaluates to NORMAL only when ALL required sensors are online.
+ * 3. Empty or undefined sensor state arrays evaluate to DEGRADED (fail-safe).
+ */
+export function computeDependentDeviceStatus(
+  sensorStates?: (SensorState | string | null | undefined)[] | null,
+): DependentDeviceStatus {
+  if (!Array.isArray(sensorStates) || sensorStates.length === 0) {
+    return 'DEGRADED';
+  }
+  const allOnline = sensorStates.every((s) => s === 'online');
+  return allOnline ? 'NORMAL' : 'DEGRADED';
+}
+
+/**
+ * Emits an operational monitoring alert to Slack when a dependent device or sensor is degraded/offline.
+ * Operational side-effect: never throws or blocks caller execution.
+ */
+export async function notifyDeviceHealthStatus(params: {
+  system?: string;
+  farmId: string;
+  deviceId: string;
+  status: DependentDeviceStatus;
+  sensorStates?: (SensorState | string | null | undefined)[] | null;
+  correlationId?: string;
+  tenantId?: string | null;
+  projectId?: string | null;
+  channelId?: string;
+}): Promise<SlackDeliveryResult | undefined> {
+  try {
+    if (params.status === 'DEGRADED') {
+      return await MonitoringSlackService.sendMonitoringAlert({
+        type: 'device_degraded',
+        severity: 'HIGH',
+        system: params.system || 'vFarm',
+        farm_id: params.farmId,
+        device_id: params.deviceId,
+        reason: `Dependent device ${params.deviceId} evaluated to DEGRADED based on required upstream sensors: [${(params.sensorStates || []).join(', ')}]`,
+        correlation_id: params.correlationId,
+        tenant_id: params.tenantId,
+        project_id: params.projectId,
+        channel_id: params.channelId,
+        meta: { sensor_states: params.sensorStates },
+      });
+    }
+  } catch (err: any) {
+    Logger.warn(`notifyDeviceHealthStatus failed (non-blocking): ${err?.message}`);
+  }
+  return undefined;
+}
+
+/**
+ * Emits an operational monitoring alert to Slack when a sensor reading is stale (>24h) or offline.
+ */
+export async function notifySensorHealthStatus(params: {
+  system?: string;
+  farmId: string;
+  sensorId: string;
+  isStale?: boolean;
+  status?: string;
+  lastReadingAt?: string | null;
+  correlationId?: string;
+  tenantId?: string | null;
+  projectId?: string | null;
+  channelId?: string;
+}): Promise<SlackDeliveryResult | undefined> {
+  try {
+    if (params.isStale) {
+      return await MonitoringSlackService.sendMonitoringAlert({
+        type: 'sensor_stale',
+        severity: 'WARN',
+        system: params.system || 'vFarm',
+        farm_id: params.farmId,
+        sensor_id: params.sensorId,
+        device_id: params.sensorId,
+        reason: `Sensor readings are stale (>24h). Last updated: ${params.lastReadingAt || 'unavailable'}`,
+        last_reading_at: params.lastReadingAt,
+        correlation_id: params.correlationId,
+        tenant_id: params.tenantId,
+        project_id: params.projectId,
+        channel_id: params.channelId,
+      });
+    }
+    if (params.status === 'fault' || params.status === 'offline') {
+      return await MonitoringSlackService.sendMonitoringAlert({
+        type: 'sensor_offline',
+        severity: 'HIGH',
+        system: params.system || 'vFarm',
+        farm_id: params.farmId,
+        sensor_id: params.sensorId,
+        device_id: params.sensorId,
+        reason: `Sensor is in ${params.status.toUpperCase()} state`,
+        last_reading_at: params.lastReadingAt,
+        correlation_id: params.correlationId,
+        tenant_id: params.tenantId,
+        project_id: params.projectId,
+        channel_id: params.channelId,
+      });
+    }
+  } catch (err: any) {
+    Logger.warn(`notifySensorHealthStatus failed (non-blocking): ${err?.message}`);
+  }
+  return undefined;
 }
 
 /**
