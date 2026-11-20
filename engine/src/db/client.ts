@@ -281,6 +281,7 @@ export class DbClient {
   private static bindingsStore:         Map<string, ServiceNumberBinding>= new Map();
   private static tenantsStore:          Map<string, Tenant>              = new Map();
   private static alertAuditStore:       AlertAuditRow[]                  = [];
+  private static securityLedgerStore:   any[]                            = [];
   private static smsConsentsStore:      Map<string, SmsConsentRecord>    = new Map();
   private static smsConsentAuditStore:  SmsConsentAuditRow[]             = [];
   /**
@@ -1116,6 +1117,119 @@ export class DbClient {
     } else {
       Logger.info(`Security ledger event (in-memory only): ${event.tool_or_route}`);
     }
+
+    // Always maintain in-memory store for local testing and ring-buffer lookups
+    const inMemRow = {
+      id: event.id || `ledger_${randomUUID()}`,
+      timestamp: event.timestamp || new Date().toISOString(),
+      tenant_id: event.tenant_id,
+      actor: event.actor,
+      role: event.role,
+      entry_point: event.entry_point,
+      tool_or_route: event.tool_or_route,
+      outcome: event.outcome,
+      reason: event.reason || `security ledger ${event.outcome}`,
+      correlation_id: event.correlation_id || null,
+      tripwire: event.outcome === 'refused',
+      level: event.outcome === 'refused' ? 'WARN' : event.outcome === 'error' ? 'ERROR' : 'INFO',
+    };
+    this.securityLedgerStore.push(inMemRow);
+    if (this.securityLedgerStore.length > 500) {
+      this.securityLedgerStore.shift();
+    }
+  }
+
+  /**
+   * Retrieve security ledger events with filtering and pagination.
+   * Queries PostgreSQL `security_ledger` when pool is configured, or
+   * falls back to in-memory store in test/development mode.
+   */
+  static async getSecurityLedgerEvents(options: {
+    limit?: number;
+    offset?: number;
+    correlation_id?: string;
+    tool_or_route?: string;
+    outcome?: string;
+    tenant_id?: string;
+  } = {}): Promise<{ total: number; events: any[] }> {
+    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
+    const offset = Math.max(Number(options.offset) || 0, 0);
+    const pool = this.getPool();
+
+    if (pool) {
+      try {
+        const conditions: string[] = [];
+        const params: any[] = [];
+        let paramIdx = 1;
+
+        if (options.correlation_id) {
+          conditions.push(`correlation_id = $${paramIdx++}`);
+          params.push(options.correlation_id);
+        }
+        if (options.tool_or_route) {
+          conditions.push(`tool_or_route = $${paramIdx++}`);
+          params.push(options.tool_or_route);
+        }
+        if (options.outcome) {
+          conditions.push(`outcome = $${paramIdx++}`);
+          params.push(options.outcome);
+        }
+        if (options.tenant_id) {
+          conditions.push(`tenant_id = $${paramIdx++}`);
+          params.push(options.tenant_id);
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+        const countRes = await pool.query(`SELECT count(*)::int AS count FROM security_ledger ${whereClause}`, params);
+        const total = countRes.rows[0]?.count || 0;
+
+        params.push(limit);
+        const limitParam = `$${paramIdx++}`;
+        params.push(offset);
+        const offsetParam = `$${paramIdx++}`;
+
+        const query = `
+          SELECT id, timestamp, tenant_id, actor, role, entry_point, tool_or_route, outcome, reason, correlation_id, tripwire, level
+          FROM security_ledger
+          ${whereClause}
+          ORDER BY timestamp DESC
+          LIMIT ${limitParam} OFFSET ${offsetParam}
+        `;
+        const res = await pool.query(query, params);
+
+        return {
+          total,
+          events: res.rows.map((row) => ({
+            ...row,
+            timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
+          })),
+        };
+      } catch (err: any) {
+        Logger.error(`DbClient.getSecurityLedgerEvents Postgres Error: ${err.message}`);
+      }
+    }
+
+    // In-memory fallback
+    let filtered = [...this.securityLedgerStore];
+    if (options.correlation_id) {
+      filtered = filtered.filter((e) => e.correlation_id === options.correlation_id);
+    }
+    if (options.tool_or_route) {
+      filtered = filtered.filter((e) => e.tool_or_route === options.tool_or_route);
+    }
+    if (options.outcome) {
+      filtered = filtered.filter((e) => e.outcome === options.outcome);
+    }
+    if (options.tenant_id) {
+      filtered = filtered.filter((e) => e.tenant_id === options.tenant_id);
+    }
+
+    const total = filtered.length;
+    const sorted = filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    const paginated = sorted.slice(offset, offset + limit);
+
+    return { total, events: paginated };
   }
 
   /**
@@ -1388,6 +1502,7 @@ export class DbClient {
     this.customersStore.clear();
     this.voiceDeliveriesStore.clear();
     this.alertAuditStore = [];
+    this.securityLedgerStore = [];
     this.smsConsentsStore.clear();
     this.smsConsentAuditStore.splice(0);
     this.smsConsentPromptsStore.clear();
