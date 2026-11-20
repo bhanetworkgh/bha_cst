@@ -203,4 +203,78 @@ describe('CS Twin posts its own Twilio and CST errors (8 Nov 2026)', () => {
     expect(res.status).toBe('deferred');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('routes CS_HANDOFF via bot token to #bha-customer-service-twin (C0BD6D53HAM) when SLACK_BOT_TOKEN is configured', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test');
+    vi.stubEnv('CST_HANDOFF_CHANNEL_ID', 'C0BD6D53HAM');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.2' })));
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await ErrorRouter.route({
+      service: 'CS_HANDOFF',
+      category: 'escalation',
+      message: 'Caller requested human support',
+      correlation_id: 'conv_handoff_01',
+    });
+    expect(res).toMatchObject({
+      dispatched: true,
+      status: 'sent',
+      error_class: 'CS_HANDOFF',
+      destination_channel: '#bha-customer-service-twin',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://slack.com/api/chat.postMessage');
+    expect(JSON.parse(init.body).channel).toBe('C0BD6D53HAM');
+  });
+
+  it('visibly defers vFarm and NS errors with structured warning when SLACK_VFARM_MONITORING_WEBHOOK_URL and SLACK_NS_WEBHOOK_URL are unconfigured', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test');
+    vi.stubEnv('SLACK_VFARM_MONITORING_WEBHOOK_URL', '');
+    vi.stubEnv('SLACK_NS_WEBHOOK_URL', '');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const vfarmRes = await ErrorRouter.route({
+      service: 'VFARM',
+      category: 'sensor_timeout',
+      message: 'vFarm sensor timeout',
+    });
+    expect(vfarmRes).toMatchObject({
+      dispatched: false,
+      error_class: 'vFarm',
+      destination_channel: '#vfarm-monitoring',
+      status: 'deferred',
+    });
+    expect(vfarmRes.error).toContain('SLACK_VFARM_MONITORING_WEBHOOK_URL');
+
+    const nsRes = await ErrorRouter.route({
+      service: 'NS',
+      source: 'north_star',
+      message: 'North Star sync alert',
+    });
+    expect(nsRes).toMatchObject({
+      dispatched: false,
+      error_class: 'NS',
+      destination_channel: '#northstar-alerts',
+      status: 'deferred',
+    });
+    expect(nsRes.error).toContain('SLACK_NS_WEBHOOK_URL');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('dispatches vFarm and NS errors to their dedicated incoming webhooks when configured and reports HTTP failures honestly', async () => {
+    vi.stubEnv('SLACK_VFARM_MONITORING_WEBHOOK_URL', 'https://hooks.slack.invalid/vfarm');
+    vi.stubEnv('SLACK_NS_WEBHOOK_URL', 'https://hooks.slack.invalid/ns');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }))
+      .mockResolvedValueOnce(new Response('channel_not_found', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const vfarmOk = await ErrorRouter.route({ service: 'VFARM', message: 'vFarm 422 response' });
+    expect(vfarmOk).toMatchObject({ dispatched: true, status: 'sent', error_class: 'vFarm', destination_channel: '#vfarm-monitoring' });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.invalid/vfarm');
+
+    const nsFail = await ErrorRouter.route({ service: 'NS', message: 'North Star tripwire' });
+    expect(nsFail).toMatchObject({ dispatched: false, status: 'failed', error_class: 'NS', destination_channel: '#northstar-alerts' });
+    expect(nsFail.error).toContain('HTTP 404');
+  });
 });

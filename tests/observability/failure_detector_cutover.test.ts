@@ -1,8 +1,11 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import request from 'supertest';
+import { createApp } from '../../engine/src/app.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
 import { CutOverManager } from '../../engine/src/observability/cut_over.js';
 
 describe('Failure Detection, Health Checks & Forward-Only Cut-Over (Deliverable F)', () => {
+  const app = createApp();
   beforeEach(() => {
     FailureDetector.reset();
     CutOverManager.reset();
@@ -71,9 +74,81 @@ describe('Failure Detection, Health Checks & Forward-Only Cut-Over (Deliverable 
       expect(report.subsystems.twilio_callbacks.metrics.failed_delivery_count).toBe(1);
       expect(report.readiness).toBe('unready'); // Signature invalid is high severity
     });
+
+    it('returns HTTP 200 on /health/reliability and /webhooks/elevenlabs/health when healthy, and HTTP 503 when Slack, Webhook, or Twilio fails', async () => {
+      // 1. Healthy baseline -> HTTP 200
+      FailureDetector.recordSlackAttempt();
+      FailureDetector.recordSlackSuccess();
+      const healthyRel = await request(app).get('/health/reliability');
+      expect(healthyRel.status).toBe(200);
+      expect(healthyRel.body.readiness).toBe('ready');
+      expect(healthyRel.body.subsystems.slack_notifications.status).toBe('healthy');
+
+      // 2. Repeated Slack failures (>5) -> HTTP 503 on both /health/reliability and /webhooks/elevenlabs/health
+      for (let i = 0; i < 6; i++) {
+        FailureDetector.recordSlackFailure(`Slack HTTP 500 failure #${i + 1}`);
+      }
+      const failingSlackRel = await request(app).get('/health/reliability');
+      expect(failingSlackRel.status).toBe(503);
+      expect(failingSlackRel.body.readiness).toBe('unready');
+      expect(failingSlackRel.body.subsystems.slack_notifications.status).toBe('failing');
+      expect(failingSlackRel.body.subsystems.slack_notifications.metrics.failed_deliveries).toBe(6);
+
+      const failingWhHealth = await request(app).get('/webhooks/elevenlabs/health');
+      expect(failingWhHealth.status).toBe(503);
+      expect(failingWhHealth.body.overall_readiness).toBe('unready');
+
+      // 3. Ensure a subsequent Slack success does NOT reset failed_deliveries or falsely mask the failure
+      FailureDetector.recordSlackSuccess();
+      const afterOneSuccess = FailureDetector.getHealthReport();
+      expect(afterOneSuccess.subsystems.slack_notifications.metrics.failed_deliveries).toBe(6);
+      expect(afterOneSuccess.subsystems.slack_notifications.status).toBe('failing');
+      expect(afterOneSuccess.readiness).toBe('unready');
+
+      // 4. Reset and verify Twilio signature failure triggers HTTP 503 on /health/reliability
+      FailureDetector.reset();
+      FailureDetector.recordTwilioSignature(false);
+      const twilioFailRel = await request(app).get('/health/reliability');
+      expect(twilioFailRel.status).toBe(503);
+      expect(twilioFailRel.body.subsystems.twilio_callbacks.status).toBe('failing');
+
+      // 5. Reset and verify Webhook persistence failure triggers HTTP 503 on /health/reliability
+      FailureDetector.reset();
+      FailureDetector.recordWebhookPersistenceFailure('Postgres connection refused');
+      const whFailRel = await request(app).get('/health/reliability');
+      expect(whFailRel.status).toBe(503);
+      expect(whFailRel.body.subsystems.elevenlabs_webhook.status).toBe('failing');
+    });
   });
 
   describe('2. Forward-Only Cut-Over Boundary Enforcement', () => {
+    it('allows events exactly AT the boundary timestamp (>= start_timestamp) and confirms CST_CUTOVER_APPROVED does not block runtime ingestion', () => {
+      const boundaryIso = '2026-11-03T00:00:00.000Z';
+      CutOverManager.configure({
+        start_timestamp: boundaryIso,
+        is_approved: false,
+      });
+
+      const cfg = CutOverManager.getConfig();
+      expect(cfg.is_approved).toBe(false);
+      expect(cfg.timezone).toBe('UTC');
+      expect(cfg.start_timestamp).toBe(boundaryIso);
+
+      // Before boundary -> dropped
+      const before = CutOverManager.isEventEligible('2026-11-02T23:59:59.999Z', 'evt_before_boundary');
+      expect(before.eligible).toBe(false);
+      expect(before.reason).toBe('historical_event_pre_cutover');
+
+      // Exactly AT boundary -> eligible even when is_approved is false
+      const atBoundary = CutOverManager.isEventEligible(boundaryIso, 'evt_at_boundary');
+      expect(atBoundary.eligible).toBe(true);
+      expect(atBoundary.reason).toBe('approved_forward_event');
+
+      // After boundary -> eligible even when is_approved is false
+      const after = CutOverManager.isEventEligible('2026-11-03T00:00:01.000Z', 'evt_after_boundary');
+      expect(after.eligible).toBe(true);
+      expect(after.reason).toBe('approved_forward_event');
+    });
     it('ignores pre-cutover historical events to prevent replay', () => {
       CutOverManager.configure({
         start_timestamp: '2026-11-03T12:00:00.000Z',

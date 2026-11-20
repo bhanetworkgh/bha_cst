@@ -16,6 +16,7 @@
 import { DbClient } from '../db/client.js';
 import { Logger } from '../config/logger.js';
 import { maskPhone } from '../util/privacy.js';
+import { ErrorRouter } from '../notifications/error_router.js';
 import { SlackNotifier } from '../notifications/slack.js';
 import type {
   EscalationRequest,
@@ -110,10 +111,31 @@ export class EscalationService {
         },
       };
 
-      slackNotified = await SlackNotifier.sendErrorAlert(slackPayload);
+      const routeRes = await ErrorRouter.route({
+        service: 'CS_HANDOFF',
+        category: 'escalation',
+        source: 'cst_escalation_service',
+        message: slackPayload.message,
+        severity: 'WARN',
+        tenant_id,
+        project_id,
+        correlation_id,
+        meta: slackPayload.meta,
+      }, true);
+
+      if (routeRes.dispatched) {
+        slackNotified = true;
+      } else if (routeRes.status === 'failed') {
+        slackError = routeRes.error || 'CS_HANDOFF notification dispatch failed';
+      } else {
+        // Fallback to SlackNotifier if CS_HANDOFF was deferred and legacy error/webhook mock or URL is active
+        slackNotified = await SlackNotifier.sendErrorAlert(slackPayload);
+      }
 
       if (slackNotified) {
         Logger.info(`EscalationService: Slack notification sent for escalation ${escalationId}`);
+      } else if (slackError) {
+        Logger.warn(`EscalationService: Slack notification failed for escalation ${escalationId}: ${slackError}`);
       } else {
         // Slack not configured (no webhook URL) — the escalation record exists,
         // notification simply hasn't been sent yet. This is not an escalation
@@ -122,7 +144,7 @@ export class EscalationService {
       }
     } catch (err: any) {
       slackError = err.message;
-      Logger.error(`EscalationService: Slack notification failed for escalation ${escalationId}: ${err.message}`, { errorStack: err.stack?.split('\n').slice(0, 3) });
+      Logger.error(`EscalationService: Slack notification failed for escalation ${escalationId}: ${err.message}`, { errorStack: err.stack?.split('\n').slice(0, 3) }, false);
     }
 
     // ── 3. Record Slack outcome on the escalation record ─────────────────
@@ -175,6 +197,31 @@ export class EscalationService {
     } catch (err: any) {
       Logger.error(`EscalationService: failed to capture email for escalation ${escalationId}: ${err.message}`);
       return { updated: false, error: err.message };
+    }
+  }
+
+  /**
+   * Record human acknowledgement on an escalation record.
+   */
+  static async acknowledgeEscalation(
+    escalationId: string,
+    acknowledgedBy: string,
+  ): Promise<{ acknowledged: boolean; record?: EscalationRecord | null; error?: string }> {
+    const cleanActor = (acknowledgedBy || '').trim();
+    if (!cleanActor) {
+      return { acknowledged: false, error: 'acknowledged_by is required' };
+    }
+    try {
+      const updated = await DbClient.acknowledgeEscalationRecord(escalationId, cleanActor);
+      if (!updated) {
+        return { acknowledged: false, error: 'Escalation record not found' };
+      }
+      Logger.info(`EscalationService: escalation ${escalationId} acknowledged by ${cleanActor}`);
+      const record = await DbClient.getEscalationRecord(escalationId);
+      return { acknowledged: true, record };
+    } catch (err: any) {
+      Logger.error(`EscalationService: failed to acknowledge escalation ${escalationId}: ${err.message}`, undefined, false);
+      return { acknowledged: false, error: err.message };
     }
   }
 

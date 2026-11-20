@@ -374,6 +374,7 @@ export class DbClient {
     // Publish outcomes are test-visible state: leaving them behind lets one
     // test file's publishes surface in the next file's dead-letter view.
     this.dashboardOutcomeStore.clear();
+    this.escalationsStore.clear();
   }
 
   /**
@@ -1393,6 +1394,7 @@ export class DbClient {
     // Publish outcomes are test-visible state: leaving them behind lets one
     // test file's publishes surface in the next file's dead-letter view.
     this.dashboardOutcomeStore.clear();
+    this.escalationsStore.clear();
   }
 
   static resetDurableStores(): void {
@@ -2373,6 +2375,7 @@ export class DbClient {
    * Postgres mode: inserts into escalations table.
    */
   static async createEscalationRecord(params: {
+    id?: string;
     caller_phone: string;
     tenant_id: string;
     project_id: string;
@@ -2381,10 +2384,17 @@ export class DbClient {
     caller_email?: string;
     reason?: string;
     transcript?: string[];
-    status?: 'pending' | 'notified' | 'failed';
+    status?: 'pending' | 'sent' | 'notified' | 'acknowledged' | 'failed';
+    acknowledged_by?: string;
+    acknowledged_at?: string;
   }): Promise<string> {
-    const id = `esc_${randomUUID()}`;
+    const scopeKey = params.conversation_id || params.correlation_id;
+    const id = params.id || (scopeKey
+      ? `esc_${createHash('sha256').update(JSON.stringify(['escalation', params.tenant_id, params.project_id, scopeKey])).digest('hex').slice(0, 32)}`
+      : `esc_${randomUUID()}`);
     const now = new Date().toISOString();
+    const status = params.status || 'pending';
+    const slackNotified = status === 'sent' || status === 'notified' || status === 'acknowledged';
     const record: EscalationRecord = {
       id,
       caller_phone: params.caller_phone,
@@ -2395,27 +2405,32 @@ export class DbClient {
       caller_email: params.caller_email || undefined,
       reason: params.reason || undefined,
       transcript: params.transcript || undefined,
-      slack_notified: false,
-      slack_notified_at: undefined,
+      slack_notified: slackNotified,
+      slack_notified_at: slackNotified ? now : undefined,
       slack_error: undefined,
       created_at: now,
-      status: params.status || 'pending',
+      status,
+      acknowledged_by: params.acknowledged_by || undefined,
+      acknowledged_at: params.acknowledged_at || undefined,
     };
-
-    this.escalationsStore.set(id, record);
 
     const pool = this.getPool();
     if (!pool) {
-      Logger.info(`DbClient.createEscalationRecord (in-memory): id=${id} caller=${maskPhone(params.caller_phone)}`);
+      if (!this.escalationsStore.has(id)) {
+        this.escalationsStore.set(id, record);
+        Logger.info(`DbClient.createEscalationRecord (in-memory): id=${id} caller=${maskPhone(params.caller_phone)}`);
+      }
       return id;
     }
     try {
-      await pool.query(
+      const res = await pool.query(
         `INSERT INTO escalations
           (id, caller_phone, tenant_id, project_id, conversation_id, correlation_id,
            caller_email, reason, transcript, slack_notified, slack_notified_at,
-           slack_error, created_at, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+           slack_error, created_at, status, acknowledged_by, acknowledged_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id`,
         [
           id,
           params.caller_phone,
@@ -2426,16 +2441,24 @@ export class DbClient {
           params.caller_email || null,
           params.reason || null,
           params.transcript ? JSON.stringify(params.transcript) : null,
-          false,
-          null,
+          record.slack_notified,
+          record.slack_notified_at || null,
           null,
           now,
-          record.status,
+          status,
+          record.acknowledged_by || null,
+          record.acknowledged_at || null,
         ],
       );
+      if ((res.rowCount ?? 0) > 0) {
+        this.escalationsStore.set(id, record);
+      } else if (!this.escalationsStore.has(id)) {
+        const existing = await this.getEscalationRecord(id);
+        if (existing) this.escalationsStore.set(id, existing);
+      }
       return id;
     } catch (err: any) {
-      Logger.error(`DbClient.createEscalationRecord Postgres Error: ${err.message}`);
+      Logger.error(`DbClient.createEscalationRecord Postgres Error: ${err.message}`, undefined, false);
       throw err;
     }
   }
@@ -2450,16 +2473,20 @@ export class DbClient {
   ): Promise<void> {
     const record = this.escalationsStore.get(escalationId);
     if (record) {
-      record.slack_notified = notified;
-      record.slack_notified_at = notified ? new Date().toISOString() : undefined;
+      record.slack_notified = record.status === 'acknowledged' ? true : notified;
+      record.slack_notified_at = record.status === 'acknowledged'
+        ? (record.slack_notified_at || new Date().toISOString())
+        : (notified ? new Date().toISOString() : undefined);
       record.slack_error = error || undefined;
       // Only mark 'failed' when there's an actual error. When Slack is simply
       // not configured (notified === false, no error), the escalation remains
       // 'pending' — the record exists, notification hasn't been sent yet.
-      if (notified) {
-        record.status = 'notified';
-      } else if (error) {
-        record.status = 'failed';
+      if (record.status !== 'acknowledged') {
+        if (notified) {
+          record.status = 'notified';
+        } else if (error) {
+          record.status = 'failed';
+        }
       }
       this.escalationsStore.set(escalationId, record);
     }
@@ -2467,14 +2494,59 @@ export class DbClient {
     const pool = this.getPool();
     if (!pool) return;
     try {
+      const nextStatus = notified ? 'notified' : error ? 'failed' : 'pending';
       await pool.query(
         `UPDATE escalations
-          SET slack_notified = $1, slack_notified_at = $2, slack_error = $3, status = $4
+          SET slack_notified = CASE WHEN status = 'acknowledged' THEN TRUE ELSE $1 END,
+              slack_notified_at = CASE
+                WHEN status = 'acknowledged' THEN COALESCE(slack_notified_at, $2::timestamptz)
+                ELSE $2::timestamptz
+              END,
+              slack_error = $3,
+              status = CASE WHEN status = 'acknowledged' THEN 'acknowledged' ELSE $4 END
           WHERE id = $5`,
-        [notified, notified ? new Date().toISOString() : null, error || null, notified ? 'notified' : error ? 'failed' : 'pending', escalationId],
+        [notified, notified ? new Date().toISOString() : null, error || null, nextStatus, escalationId],
       );
     } catch (err: any) {
-      Logger.error(`DbClient.updateEscalationSlackStatus Postgres Error: ${err.message}`);
+      Logger.error(`DbClient.updateEscalationSlackStatus Postgres Error: ${err.message}`, undefined, false);
+      throw err;
+    }
+  }
+
+  /**
+   * Mark an escalation record as acknowledged by a human operator.
+   */
+  static async acknowledgeEscalationRecord(
+    escalationId: string,
+    acknowledgedBy: string,
+    acknowledgedAt = new Date().toISOString(),
+  ): Promise<boolean> {
+    const record = this.escalationsStore.get(escalationId);
+    if (record) {
+      record.status = 'acknowledged';
+      record.acknowledged_by = acknowledgedBy;
+      record.acknowledged_at = acknowledgedAt;
+      record.slack_notified = true;
+      record.slack_notified_at = record.slack_notified_at || acknowledgedAt;
+      this.escalationsStore.set(escalationId, record);
+    }
+
+    const pool = this.getPool();
+    if (!pool) return Boolean(record);
+    try {
+      const res = await pool.query(
+        `UPDATE escalations
+          SET status = 'acknowledged',
+              acknowledged_by = $2,
+              acknowledged_at = $3::timestamptz,
+              slack_notified = TRUE,
+              slack_notified_at = COALESCE(slack_notified_at, $3::timestamptz)
+          WHERE id = $1`,
+        [escalationId, acknowledgedBy, acknowledgedAt],
+      );
+      return (res.rowCount ?? 0) > 0 || Boolean(record);
+    } catch (err: any) {
+      Logger.error(`DbClient.acknowledgeEscalationRecord Postgres Error: ${err.message}`, undefined, false);
       throw err;
     }
   }
@@ -2503,39 +2575,46 @@ export class DbClient {
    * Get an escalation record by ID.
    */
   static async getEscalationRecord(escalationId: string): Promise<EscalationRecord | null> {
-    const record = this.escalationsStore.get(escalationId);
-    if (record) return { ...record };
-
     const pool = this.getPool();
-    if (!pool) return null;
+    if (!pool) {
+      const record = this.escalationsStore.get(escalationId);
+      return record ? { ...record } : null;
+    }
     try {
       const res = await pool.query(
         `SELECT id, caller_phone, tenant_id, project_id, conversation_id, correlation_id,
                 caller_email, reason, transcript, slack_notified, slack_notified_at,
-                slack_error, created_at, status
+                slack_error, created_at, status, acknowledged_by, acknowledged_at
          FROM escalations WHERE id = $1`,
         [escalationId],
       );
-      if (res.rows.length === 0) return null;
+      if (res.rows.length === 0) {
+        const record = this.escalationsStore.get(escalationId);
+        return record ? { ...record } : null;
+      }
       const row = res.rows[0];
-      return {
+      const mapped: EscalationRecord = {
         id: row.id,
         caller_phone: row.caller_phone,
         tenant_id: row.tenant_id,
         project_id: row.project_id,
-        conversation_id: row.conversation_id,
+        conversation_id: row.conversation_id || undefined,
         correlation_id: row.correlation_id,
-        caller_email: row.caller_email,
-        reason: row.reason,
-        transcript: typeof row.transcript === 'string' ? JSON.parse(row.transcript) : row.transcript,
+        caller_email: row.caller_email || undefined,
+        reason: row.reason || undefined,
+        transcript: typeof row.transcript === 'string' ? JSON.parse(row.transcript) : (row.transcript ?? undefined),
         slack_notified: row.slack_notified,
         slack_notified_at: row.slack_notified_at ? new Date(row.slack_notified_at).toISOString() : undefined,
         slack_error: row.slack_error || undefined,
         created_at: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
         status: row.status,
+        acknowledged_by: row.acknowledged_by || undefined,
+        acknowledged_at: row.acknowledged_at ? new Date(row.acknowledged_at).toISOString() : undefined,
       };
+      this.escalationsStore.set(escalationId, mapped);
+      return { ...mapped };
     } catch (err: any) {
-      Logger.error(`DbClient.getEscalationRecord Postgres Error: ${err.message}`);
+      Logger.error(`DbClient.getEscalationRecord Postgres Error: ${err.message}`, undefined, false);
       throw err;
     }
   }

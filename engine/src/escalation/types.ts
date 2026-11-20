@@ -45,6 +45,8 @@ export interface EscalationResult {
   error?: string;
 }
 
+export type EscalationStatus = 'pending' | 'sent' | 'notified' | 'acknowledged' | 'failed';
+
 export interface EscalationRecord {
   id: string;
   caller_phone: string;
@@ -58,6 +60,8 @@ export interface EscalationRecord {
   slack_notified: boolean;
   slack_notified_at?: string;
   slack_error?: string;
+  acknowledged_by?: string;
+  acknowledged_at?: string;
   created_at: string;
-  status: 'pending' | 'notified' | 'failed';
+  status: EscalationStatus;
 }

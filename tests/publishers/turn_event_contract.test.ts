@@ -7,11 +7,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CoreEngine } from '../../engine/src/core/engine.js';
 import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { DbClient } from '../../engine/src/db/client.js';
-import { CstDashboardPublisher } from '../../engine/src/publishers/dashboard.js';
+import { CstDashboardPublisher, serializeForDashboard } from '../../engine/src/publishers/dashboard.js';
 import type { CstTurnEventV1 } from '../../engine/src/contracts/index.js';
 import type { MessageEnvelope, EnvelopeResponse } from '../../engine/src/core/envelope.js';
 import type { SpeakerIdentity } from '../../engine/src/core/types.js';
-import { REQUIRED_TURN_STATUSES, isRequiredTurnStatus } from '../../engine/src/contracts/index.js';
+import {
+  REQUIRED_TURN_STATUSES,
+  isRequiredTurnStatus,
+  createCstTurnEventV1,
+  safeParseCstEventV1,
+  CstTurnEventV1Schema,
+} from '../../engine/src/contracts/index.js';
 
 const TENANT = 'tenant-cst-turn';
 const PROJECT = 'proj-cst-turn';
@@ -254,4 +260,225 @@ describe('cst.turn — fire-and-forget never blocks the customer', () => {
     const res = await CoreEngine.processEnvelope(envelope, speaker);
     expect(res).toBeTruthy();
   }, 30_000);
+});
+
+describe('Stage S1 — cst.event.v1 to docs/contracts/cst-events.md Dashboard Ingestion Mapping', () => {
+  const baseCustomer = {
+    customer_ref: 'cust_debf555c-b37d-4e92-bb15-597e169f1b38',
+    phone_e164: '+923082113844',
+    role: 'owner' as const,
+    is_known: true,
+    tenant_id: 'tenant-vfarm-01',
+    project_id: 'proj-vfarm-main',
+    person_id: 'debf555c-b37d-4e92-bb15-597e169f1b38',
+    farm_ids: ['21dde23e-f7f6-46bc-9b54-e97fabaaafd7'],
+  };
+
+  it('1. validates and serializes a complete event with all optional fields (intent, incident_id, duration_ms)', () => {
+    const event = createCstTurnEventV1({
+      id: 'turn_evt_s1_complete_01',
+      source: 'cst/voice/elevenlabs',
+      time: '2026-11-20T12:00:00.000Z',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
+      correlation_id: 'conv_s1_complete_01',
+      channel: 'voice',
+      customer: baseCustomer,
+      turn: {
+        turn_id: 'conv_s1_complete_01',
+        conversation_id: 'conv_s1_complete_01',
+        direction: 'inbound',
+        channel: 'voice',
+        status: 'ok',
+        intent: 'escalate',
+        text: 'I need a human operator',
+        message: 'I need a human operator',
+        reply_text: 'I have escalated your request.',
+        reply: 'I have escalated your request.',
+        duration: { total_ms: 42000 },
+        duration_ms: 42000,
+        incident_id: 'esc_s1_001',
+        occurred_at: '2026-11-20T12:00:00.000Z',
+        event_type: 'cst.turn',
+      },
+    });
+
+    const flat = serializeForDashboard(event);
+    expect(flat.specversion).toBe('cst.event.v1');
+    expect(flat.event_type).toBe('cst.turn');
+    expect(flat.id).toBe('turn_evt_s1_complete_01');
+    expect(flat.intent).toBe('escalate');
+    expect(flat.incident_id).toBe('esc_s1_001');
+    expect(flat.duration_ms).toBe(42000);
+    expect(flat.latency_ms).toBe(42000);
+    expect(flat.customer_ref).toBe(baseCustomer.customer_ref);
+    expect(flat.phone_e164).toBe(baseCustomer.phone_e164);
+    expect(flat.role).toBe('owner');
+    expect(flat.farm_ids).toEqual(['21dde23e-f7f6-46bc-9b54-e97fabaaafd7']);
+    expect(flat.person_id).toBe('debf555c-b37d-4e92-bb15-597e169f1b38');
+  });
+
+  it('2. validates and serializes a valid event when optional fields (intent, incident_id, duration_ms) are omitted', () => {
+    const event = createCstTurnEventV1({
+      id: 'turn_evt_s1_minimal_02',
+      source: 'cst/engine',
+      time: '2026-11-20T12:05:00.000Z',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
+      correlation_id: 'corr_s1_minimal_02',
+      channel: 'web',
+      customer: {
+        customer_ref: 'cust_min_01',
+        phone_e164: '+15551234567',
+        role: 'unknown',
+        is_known: false,
+        tenant_id: 'tenant-vfarm-01',
+        project_id: 'proj-vfarm-main',
+      },
+      turn: {
+        turn_id: 'turn_min_01',
+        direction: 'inbound',
+        channel: 'web',
+        status: 'ok',
+      },
+    });
+
+    expect(event.data.intent).toBeUndefined();
+    expect(event.data.incident_id).toBeUndefined();
+    expect(event.data.duration_ms).toBeUndefined();
+
+    const flat = serializeForDashboard(event);
+    expect(flat.event_type).toBe('cst.turn');
+    expect(flat.turn_id).toBe('turn_min_01');
+    expect(flat.status).toBe('ok');
+    expect(flat.intent).toBeUndefined();
+    expect(flat.incident_id).toBeUndefined();
+    expect(flat.duration_ms).toBeUndefined();
+    expect(flat.latency_ms).toBeUndefined();
+  });
+
+  it('3, 4 & 5. rejects missing required fields, invalid types, and empty/null required strings', () => {
+    // Missing required turn_id
+    expect(
+      safeParseCstEventV1({
+        specversion: 'cst.event.v1',
+        id: 'evt_missing_turn_id',
+        source: 'cst/engine',
+        time: '2026-11-20T12:00:00.000Z',
+        tenant_id: 'tenant-vfarm-01',
+        project_id: 'proj-vfarm-main',
+        correlation_id: 'corr_1',
+        channel: 'sms',
+        customer: baseCustomer,
+        type: 'cst.turn',
+        data: { direction: 'inbound', channel: 'sms', status: 'ok' },
+      }).success,
+    ).toBe(false);
+
+    // Invalid types (negative duration_ms, non-ISO time)
+    expect(
+      safeParseCstEventV1({
+        specversion: 'cst.event.v1',
+        id: 'evt_bad_types',
+        source: 'cst/engine',
+        time: 'not-a-timestamp',
+        tenant_id: 'tenant-vfarm-01',
+        project_id: 'proj-vfarm-main',
+        correlation_id: 'corr_1',
+        channel: 'sms',
+        customer: baseCustomer,
+        type: 'cst.turn',
+        data: { turn_id: 't1', direction: 'inbound', channel: 'sms', status: 'ok', duration_ms: -50 },
+      }).success,
+    ).toBe(false);
+
+    // Empty required strings and null customer_ref
+    expect(
+      safeParseCstEventV1({
+        specversion: 'cst.event.v1',
+        id: '',
+        source: 'cst/engine',
+        time: '2026-11-20T12:00:00.000Z',
+        tenant_id: '',
+        project_id: 'proj-vfarm-main',
+        correlation_id: 'corr_1',
+        channel: 'sms',
+        customer: { ...baseCustomer, customer_ref: null },
+        type: 'cst.turn',
+        data: { turn_id: 't1', direction: 'inbound', channel: 'sms', status: 'ok' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('6 & 7. round-trip contract compatibility: reconstructs internal envelope from serialized dashboard shape', () => {
+    const internal = createCstTurnEventV1({
+      id: 'turn_evt_32fd6323-da9f-4037-b773-5e09059ad6f3',
+      source: 'cst/engine',
+      time: '2026-11-16T21:27:36.723Z',
+      tenant_id: 'tenant-vfarm-01',
+      project_id: 'proj-vfarm-main',
+      correlation_id: 'web_3ec1a8a1-9ff9-4c28-b5df-665b16fa2f8c',
+      channel: 'web',
+      customer: {
+        ...baseCustomer,
+        phone_e164: '+9230****3844',
+      },
+      turn: {
+        turn_id: 'web_3ec1a8a1-9ff9-4c28-b5df-665b16fa2f8c',
+        conversation_id: 'conv_ce5e9bf3-6975-43c3-bd05-dc876974b545',
+        direction: 'inbound',
+        channel: 'web',
+        status: 'ok',
+        intent: 'status',
+        text: 'What is the status of my farm?',
+        message: 'What is the status of my farm?',
+        reply_text: 'Your farm has 0 devices.',
+        reply: 'Your farm has 0 devices.',
+        duration: { total_ms: 1499 },
+        duration_ms: 1499,
+        occurred_at: '2026-11-16T21:27:36.723Z',
+        event_type: 'cst.turn',
+      },
+    });
+
+    const dashboardPayload = serializeForDashboard(internal) as Record<string, any>;
+    // Verify top-level flattened shape
+    expect(dashboardPayload.type).toBeUndefined();
+    expect(dashboardPayload.data).toBeUndefined();
+    expect(dashboardPayload.event_type).toBe('cst.turn');
+    expect(dashboardPayload.latency_ms).toBe(1499);
+
+    // Round-trip back to CstTurnEventV1Schema
+    const reconstructed = CstTurnEventV1Schema.parse({
+      specversion: dashboardPayload.specversion,
+      id: dashboardPayload.id,
+      source: dashboardPayload.source,
+      time: dashboardPayload.time,
+      tenant_id: dashboardPayload.tenant_id,
+      project_id: dashboardPayload.project_id,
+      correlation_id: dashboardPayload.correlation_id,
+      channel: dashboardPayload.channel,
+      customer: dashboardPayload.customer,
+      type: dashboardPayload.event_type,
+      data: {
+        turn_id: dashboardPayload.turn_id,
+        conversation_id: dashboardPayload.conversation_id,
+        direction: dashboardPayload.direction,
+        channel: dashboardPayload.channel,
+        status: dashboardPayload.status,
+        intent: dashboardPayload.intent,
+        text: dashboardPayload.text,
+        message: dashboardPayload.message,
+        reply_text: dashboardPayload.reply_text,
+        reply: dashboardPayload.reply,
+        duration: dashboardPayload.duration,
+        duration_ms: dashboardPayload.duration_ms,
+        occurred_at: dashboardPayload.occurred_at,
+        event_type: dashboardPayload.event_type,
+      },
+    });
+    expect(reconstructed.id).toBe(internal.id);
+    expect(reconstructed.data.turn_id).toBe(internal.data.turn_id);
+    expect(reconstructed.data.duration_ms).toBe(1499);
+  });
 });

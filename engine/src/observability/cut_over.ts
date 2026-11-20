@@ -22,13 +22,13 @@ export interface EligibilityResult {
 
 export class CutOverManager {
   private static config: CutOverConfiguration = {
-    // Configurable default baseline; production activation is blocked pending Jason's approval
+    // Configurable default baseline; CST_CUTOVER_APPROVED is approval metadata per Jason's ruling, not a runtime ingestion gate.
     start_timestamp: process.env.CST_CUTOVER_START_TIMESTAMP || '2026-11-03T00:00:00.000Z',
     timezone: 'UTC',
     is_approved: process.env.CST_CUTOVER_APPROVED === 'true',
     approved_by: process.env.CST_CUTOVER_APPROVED_BY,
     boundary_event_id: process.env.CST_CUTOVER_BOUNDARY_EVENT_ID || 'evt_boundary_pre_cutover_000',
-    notes: 'Configurable forward-only cutover gate. Production activation requires explicit Jason approval.',
+    notes: 'Forward-only cutover metadata. Ingestion processes all forward events >= start_timestamp without runtime blocking.',
   };
 
   private static ignoredHistoricalEvents: Array<{ event_id: string; timestamp: string; reason: string }> = [];
@@ -57,7 +57,7 @@ export class CutOverManager {
       is_approved: process.env.CST_CUTOVER_APPROVED === 'true',
       approved_by: process.env.CST_CUTOVER_APPROVED_BY,
       boundary_event_id: process.env.CST_CUTOVER_BOUNDARY_EVENT_ID || 'evt_boundary_pre_cutover_000',
-      notes: 'Configurable forward-only cutover gate. Production activation requires explicit Jason approval.',
+      notes: 'Forward-only cutover metadata. Ingestion processes all forward events >= start_timestamp without runtime blocking.',
     };
     this.ignoredHistoricalEvents = [];
   }
@@ -111,7 +111,9 @@ export class CutOverManager {
       };
     }
 
-    // 3. If cut-over is not approved for live production, log warning but allow forward processing in test/dev
+    // 3. Event timestamp is >= start_timestamp (at or after the cut-over boundary).
+    // CST_CUTOVER_APPROVED is approval metadata only (never a runtime ingestion gate),
+    // so forward events are eligible regardless of whether is_approved is true or false.
     return {
       eligible: true,
       reason: 'approved_forward_event',
