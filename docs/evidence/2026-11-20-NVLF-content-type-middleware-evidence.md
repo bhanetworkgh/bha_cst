@@ -177,3 +177,15 @@ Nov 19 20:12:36 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:36.438Z","level":"WA
 
 - **Application Log Write Path:** `VERIFIED`. The log line `{"message":"Security ledger event recorded: /session"}` is emitted by `DbClient.recordSecurityLedgerEvent(...)` upon execution of the SQL `INSERT INTO security_ledger ...` write path.
 - **Direct Database Inspection:** `NOT INDEPENDENTLY VERIFIED`. Direct read-only SQL querying of `security_ledger` rows in datastore `bha-cst-postgres` (`dpg-db8he2qvcj2c73ado3s0-a`) was not performed directly via psql due to private network isolation. The claim of database persistence is based strictly on application runtime logs reporting successful write execution.
+
+### 5.4 Verification of Historical Session Invalidation (`web_a8150cbe`)
+
+During the 18 November 2026 alignment review, session `web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` was issued on production during authentication testing (`docs/evidence/2026-11-18-15wv-relog-alignment-evidence.md`). Live HTTP probes were executed to confirm that this historical session token is strictly invalidated:
+
+| Probe Endpoint | Headers & Payload | Response Status | Response Body | Verification |
+|---|---|---|---|---|
+| `GET /api/v1/web/history` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` | **401 Unauthorized** | `{"error":"INVALID_SESSION"}` | `PROD_HTTP_VERIFIED` |
+| `POST /api/v1/web/message` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8`<br>`Content-Type: application/json`<br>`{"text":"hello"}` | **401 Unauthorized** | `{"error":"INVALID_SESSION","message":"A valid web session is required."}` | `PROD_HTTP_VERIFIED` |
+| `POST /api/v1/web/logout` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` | **204 No Content** | `set-cookie: cst_web_session=; Max-Age=0; Path=/` | `PROD_HTTP_VERIFIED` |
+
+**Architectural Confirmation:** CST sessions are tracked in an ephemeral in-memory map (`const sessions = new Map<string, WebSession>()` in `engine/src/interfaces/web/index.ts`). Container redeployments (`dep-dbvf6f142hec73be9gig` and `dep-dbvles0jo6nc73a7p5ag`) flushed all in-memory tokens. Both direct live HTTP probes and container memory architecture confirm that historical session `web_a8150cbe` is fully invalidated.
