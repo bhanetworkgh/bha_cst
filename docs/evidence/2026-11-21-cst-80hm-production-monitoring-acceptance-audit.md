@@ -153,11 +153,12 @@ The operational monitoring chain defined for 80HM consists of six stages:
 ### Reality Assessment: Test vs Live Event
 
 - **What has been proven in production:**
-  1. CST web service is live on Render (`9e399434d61a3a277467d19e5e9ae4b24ff4d489`, deploy `dep-dc0c21uk1f9s73figv70`) and healthy (`/health`, `/health/registry`).
+  1. CST web service is live on Render (`f46f56d3431dec81423c78422176fb2c5be549a8`, deploy `dep-dc0c4dh7lnhs73cnobmg`) and healthy (`/health`, `/health/registry`).
   2. Security ledger and PostgreSQL persistence are actively recording security and audit events.
   3. Direct outbound Slack communication from CST to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) is functional via direct Slack Web API calls without n8n.
   4. Live production alert dispatch (`POST /api/v1/alerts/test`) successfully delivered to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) with Slack message timestamp `1795211582.774859` and `1795211640.827119`.
   5. Multi-channel routing is verified live in production across monitoring (`#bha-vfarm-monitoring-twin`), cs_handoff (`#bha-customer-service-twin`), errors (`#bha-pipeline-errors`), and notifier.
+  6. Upstream vFarm credentials and authentication are **RESOLVED & VERIFIED**: Render `VFARM_ADMIN_EMAIL` and `VFARM_ADMIN_PASSWORD` successfully authenticated with upstream vFarm API; full production suite verified with **0 AUTH_BLOCKED** endpoints (down from 13). Live farm discovery returned 2 farms (`Test 001`, `v-farm`) and 25 devices (`GET /api/v1/admin/vfarm/devices`).
 - **What has NOT been proven in production:**
   1. A real physical sensor in vFarm transitioning to `offline` or `stale`.
   2. CST evaluating that real event and computing a dependent device as `DEGRADED`.
@@ -194,8 +195,7 @@ The operational monitoring chain defined for 80HM consists of six stages:
 
 **Do NOT close LOOP-1794902688969-80HM.**
 
-While the CST Slack integration, channel wiring (`C0B8JTE51PG`), and dependency evaluation logic are fully implemented and verified locally (60/60 tests passing), and outbound test alerts to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) are empirically verified live on production Render deploy `dep-dc0c21uk1f9s73figv70` (Slack timestamps `1795211582.774859` and `1795211640.827119`), the complete end-to-end chain cannot be verified in production until:
-1. Upstream vFarm credentials (`VFARM_ADMIN_EMAIL`/`VFARM_ADMIN_PASSWORD`) are refreshed on Render to resolve the 401 login failures.
-2. Upstream vFarm provides an authoritative device-to-sensor topology contract.
-3. `computeDependentDeviceStatus` is wired into a live runtime evaluation loop.
-4. An actual live hardware monitoring event executes end-to-end.
+While the CST Slack integration, channel wiring (`C0B8JTE51PG`), and dependency evaluation logic are fully implemented and verified locally (60/60 tests passing), outbound test alerts to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) are empirically verified live on production Render deploy `dep-dc0c21uk1f9s73figv70` (Slack timestamps `1795211582.774859` and `1795211640.827119`), and vFarm upstream credentials have been verified with **0 AUTH_BLOCKED** endpoints, the complete end-to-end chain cannot be verified in production until:
+1. Upstream vFarm team provides an authoritative device-to-sensor topology contract (specifying which sensors govern which pumps/relays).
+2. `computeDependentDeviceStatus` is wired into a live runtime telemetry polling/webhook loop.
+3. An actual live hardware monitoring event executes end-to-end.
