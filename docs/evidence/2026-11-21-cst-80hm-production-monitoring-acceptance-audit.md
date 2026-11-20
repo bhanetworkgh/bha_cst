@@ -153,10 +153,11 @@ The operational monitoring chain defined for 80HM consists of six stages:
 ### Reality Assessment: Test vs Live Event
 
 - **What has been proven in production:**
-  1. CST web service is live on Render (`e58f81a5445cec382f9c69c68dc80eb4686efab2`, deploy `dep-dc0bmletlv9c73equpgg`) and healthy (`/health`, `/health/reliability`).
+  1. CST web service is live on Render (`9e399434d61a3a277467d19e5e9ae4b24ff4d489`, deploy `dep-dc0c21uk1f9s73figv70`) and healthy (`/health`, `/health/registry`).
   2. Security ledger and PostgreSQL persistence are actively recording security and audit events.
-  3. Outbound Slack communication from CST to BHA Slack channels (`#bha-customer-service-twin`, `#bha-pipeline-errors`) is functional via direct Slack Web API calls without n8n.
-  4. Environment variable `SLACK_MONITORING_CHANNEL_ID=C0B8JTE51PG` is loaded in production.
+  3. Direct outbound Slack communication from CST to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) is functional via direct Slack Web API calls without n8n.
+  4. Live production alert dispatch (`POST /api/v1/alerts/test`) successfully delivered to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) with Slack message timestamp `1795211582.774859` and `1795211640.827119`.
+  5. Multi-channel routing is verified live in production across monitoring (`#bha-vfarm-monitoring-twin`), cs_handoff (`#bha-customer-service-twin`), errors (`#bha-pipeline-errors`), and notifier.
 - **What has NOT been proven in production:**
   1. A real physical sensor in vFarm transitioning to `offline` or `stale`.
   2. CST evaluating that real event and computing a dependent device as `DEGRADED`.
@@ -176,10 +177,10 @@ The operational monitoring chain defined for 80HM consists of six stages:
 | 5 | Authoritative vFarm dependency topology contract | `BLOCKED_EXTERNAL_DEPENDENCY` | `.openapi-vfarm.json` lacks device-to-sensor dependency mapping. Awaiting vFarm upstream team delivery. |
 | 6 | Direct Slack integration architecture (no n8n) | `VERIFIED_IN_PRODUCTION` | `MonitoringSlackService` dispatches directly via `fetch('https://slack.com/api/chat.postMessage')`. No n8n. |
 | 7 | Existing CST Monitoring Slack App identity reuse | `VERIFIED_IN_PRODUCTION` | Configured for App `A0CF23GMNHJ`, Bot User `U0CF23JSUG4`. |
-| 8 | Channel routing separation (monitoring vs escalations vs errors) | `VERIFIED_LOCALLY` | `MonitoringSlackService` routes monitoring to `#bha-vfarm-monitoring-twin`, escalations to `#bha-customer-service-twin`, errors to `#bha-pipeline-errors`. Verified in test 19. |
-| 9 | Production Slack test alert delivery | `VERIFIED_IN_PRODUCTION` | `POST /api/v1/alerts/test` returned HTTP 200 `status: "sent"` to `#bha-customer-service-twin` and `#bha-pipeline-errors`. |
+| 8 | Channel routing separation (monitoring vs escalations vs errors) | `VERIFIED_IN_PRODUCTION` | Verified live in production via `POST /api/v1/alerts/test` (test `alert_test_aeeb5d21-7042-4779-93e0-f8a730b61531`): monitoring routed to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`), cs_handoff to `#bha-customer-service-twin`, errors to `#bha-pipeline-errors`. |
+| 9 | Production Slack test alert delivery to #bha-vfarm-monitoring-twin | `VERIFIED_IN_PRODUCTION` | `POST /api/v1/alerts/test` returned HTTP 200 `status: "sent"` with Slack timestamps `1795211582.774859` and `1795211640.827119` directly to `C0B8JTE51PG`. |
 | 10 | Live automated sensor monitoring alert in production | `IMPLEMENTED_NOT_VERIFIED` | Synthetic alerts tested; zero live hardware-triggered alerts dispatched to Slack in production. |
-| 11 | Render environment variable `SLACK_MONITORING_CHANNEL_ID` / default channel | `VERIFIED_IN_PRODUCTION` | Configured on Render as `SLACK_MONITORING_CHANNEL_ID=C0B8JTE51PG`; default fallback wired in code and verified in `tests/notifications/monitoring_slack_service.test.ts:487`. |
+| 11 | Render environment variable `SLACK_MONITORING_CHANNEL_ID` / default channel | `VERIFIED_IN_PRODUCTION` | Resolved to `C0B8JTE51PG` on Render production; default fallback in code verified in tests and live execution. |
 | 12 | Sliding window deduplication & rate-limit handling | `VERIFIED_LOCALLY` | 60s dedup cache and HTTP 429 `Retry-After` verified in `tests/notifications/monitoring_slack_service.test.ts:74, 78`. |
 | 13 | PII masking and secret redaction in Slack payloads | `VERIFIED_LOCALLY` | Phone masking (`maskPhone`) and credential sanitization verified in `tests/notifications/monitoring_slack_service.test.ts:81`. |
 | 14 | Persisted audit evidence of failure & recovery in PostgreSQL | `VERIFIED_IN_PRODUCTION` | PostgreSQL table `security_ledger` actively populated and verified via `render psql`. |
@@ -193,9 +194,8 @@ The operational monitoring chain defined for 80HM consists of six stages:
 
 **Do NOT close LOOP-1794902688969-80HM.**
 
-While the CST Slack integration, channel wiring (`C0B8JTE51PG`), and dependency evaluation logic are fully implemented and verified locally (60/60 tests passing), the complete end-to-end chain cannot be verified in production until:
+While the CST Slack integration, channel wiring (`C0B8JTE51PG`), and dependency evaluation logic are fully implemented and verified locally (60/60 tests passing), and outbound test alerts to `#bha-vfarm-monitoring-twin` (`C0B8JTE51PG`) are empirically verified live on production Render deploy `dep-dc0c21uk1f9s73figv70` (Slack timestamps `1795211582.774859` and `1795211640.827119`), the complete end-to-end chain cannot be verified in production until:
 1. Upstream vFarm credentials (`VFARM_ADMIN_EMAIL`/`VFARM_ADMIN_PASSWORD`) are refreshed on Render to resolve the 401 login failures.
 2. Upstream vFarm provides an authoritative device-to-sensor topology contract.
 3. `computeDependentDeviceStatus` is wired into a live runtime evaluation loop.
-4. The updated `testAlertRouter` with `monitoring` kind is deployed so live verification to `C0B8JTE51PG` can be executed on production.
-5. An actual live hardware monitoring event executes end-to-end.
+4. An actual live hardware monitoring event executes end-to-end.
