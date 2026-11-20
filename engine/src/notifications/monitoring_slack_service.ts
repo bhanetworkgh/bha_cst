@@ -223,9 +223,9 @@ export class MonitoringSlackService {
 
     // Monitoring, incident, recovery
     const channelId = (
-      process.env.SLACK_MONITORING_CHANNEL_ID ||
-      process.env.SLACK_VFARM_MONITORING_CHANNEL_ID ||
-      ''
+      process.env.SLACK_MONITORING_CHANNEL_ID ??
+      process.env.SLACK_VFARM_MONITORING_CHANNEL_ID ??
+      'C0B8JTE51PG'
     ).trim();
     return {
       channelId,

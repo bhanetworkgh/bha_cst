@@ -45,8 +45,8 @@ The service checks the following environment variables (sourced from Render Dash
 | Variable | Required | Description | Example |
 |---|---|---|---|
 | `SLACK_BOT_TOKEN` | Yes | Bot User OAuth Token for App `A0CF23GMNHJ` | `xoxb-***` |
-| `SLACK_MONITORING_CHANNEL_ID` | Yes | Target channel ID for monitoring alerts, sensor stale/offline, device degraded, incidents | e.g. `C0...` |
-| `SLACK_VFARM_MONITORING_CHANNEL_ID` | Optional | Fallback alias for `SLACK_MONITORING_CHANNEL_ID` | e.g. `C0...` |
+| `SLACK_MONITORING_CHANNEL_ID` | Optional | Target channel ID for monitoring alerts, sensor stale/offline, device degraded, incidents (default: `C0B8JTE51PG`) | `C0B8JTE51PG` |
+| `SLACK_VFARM_MONITORING_CHANNEL_ID` | Optional | Fallback alias for `SLACK_MONITORING_CHANNEL_ID` | `C0B8JTE51PG` |
 | `SLACK_CS_CHANNEL_ID` | Optional | Channel ID for customer escalations (default: `C0BD6D53HAM`) | `C0BD6D53HAM` |
 | `SLACK_PIPELINE_ERRORS_CHANNEL_ID` | Optional | Channel ID for pipeline/transport errors (default: `C0ATC4CA3G9`) | `C0ATC4CA3G9` |
 | `SLACK_ALERTS_ENABLED` | Optional | Master kill-switch for Slack alerts (`true` by default) | `true` |
@@ -57,10 +57,10 @@ The service checks the following environment variables (sourced from Render Dash
 
 | Event Class | Scenario | Destination Channel | Channel ID Resolution Order |
 |---|---|---|---|
-| **Sensor Offline** | Sensor stopped reporting or in `fault`/`offline` status | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` |
-| **Sensor Stale** | Sensor reading timestamp > 24 hours old | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` |
-| **Device Degraded** | Dependent device status computed as `DEGRADED` from upstream sensors | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` |
-| **Farm Incident** | Critical farm-wide incident or repeat failure threshold crossed | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` |
+| **Sensor Offline** | Sensor stopped reporting or in `fault`/`offline` status | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` → `C0B8JTE51PG` |
+| **Sensor Stale** | Sensor reading timestamp > 24 hours old | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` → `C0B8JTE51PG` |
+| **Device Degraded** | Dependent device status computed as `DEGRADED` from upstream sensors | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` → `C0B8JTE51PG` |
+| **Farm Incident** | Critical farm-wide incident or repeat failure threshold crossed | `#bha-vfarm-monitoring-twin` | `SLACK_MONITORING_CHANNEL_ID` → `SLACK_VFARM_MONITORING_CHANNEL_ID` → `C0B8JTE51PG` |
 | **Customer Escalation** | Caller/texter requested human assistance | `#bha-customer-service-twin` | `SLACK_CS_CHANNEL_ID` → `CST_HANDOFF_CHANNEL_ID` → `C0BD6D53HAM` |
 | **Upstream API Failure** | Repeated vFarm API 5xx/422 or connection drops | `#bha-pipeline-errors` or Monitoring | `SLACK_PIPELINE_ERRORS_CHANNEL_ID` → `C0ATC4CA3G9` |
 | **Incident Recovery** | Degraded/offline incident restored to healthy/normal | Original Incident Channel | Uses channel recorded during original incident |

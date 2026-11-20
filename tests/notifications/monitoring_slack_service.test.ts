@@ -482,4 +482,18 @@ describe('CST Monitoring Slack App Integration (Deliverable & Evidence Gate)', (
     expect(res.status).toBe('disabled');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // Test default fallback channel C0B8JTE51PG
+  it('17. falls back to default channel C0B8JTE51PG when SLACK_MONITORING_CHANNEL_ID is unset', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test-cst-monitoring-bot-token');
+    vi.stubEnv('SLACK_ALERTS_ENABLED', 'true');
+    delete process.env.SLACK_MONITORING_CHANNEL_ID;
+    delete process.env.SLACK_VFARM_MONITORING_CHANNEL_ID;
+
+    const resolved = MonitoringSlackService.resolveChannel('monitoring');
+    expect(resolved.channelId).toBe('C0B8JTE51PG');
+    expect(resolved.channelName).toBe('#bha-vfarm-monitoring-twin');
+    expect(resolved.isConfigured).toBe(true);
+  });
 });
