@@ -26,6 +26,8 @@ export const CONTENT_TYPE_POLICY: ContentTypePolicyRule[] = [
   { prefix: '/webhooks/elevenlabs', expected: 'json', allowEmptyBody: false, description: 'ElevenLabs Post-Call Webhook' },
 
   // Voice Webhooks (supports both Twilio Form and ElevenLabs / CloudEvents JSON)
+  { prefix: '/webhooks/twilio/voice', expected: 'voice_webhook', allowEmptyBody: false, description: 'Twilio Voice Webhooks (Form or JSON)' },
+  { prefix: '/twilio/voice', expected: 'voice_webhook', allowEmptyBody: false, description: 'Twilio Voice Alternate Path (Form or JSON)' },
   { prefix: '/webhooks/voice', expected: 'voice_webhook', allowEmptyBody: false, description: 'Voice Webhook Ingress (Form or JSON)' },
 
   // Twilio Form Webhooks
