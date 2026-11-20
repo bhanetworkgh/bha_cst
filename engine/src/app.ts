@@ -32,18 +32,34 @@ import {
   type NormalizedFarmHealth,
 } from './adapters/vfarm/health.js';
 import {
+  createPreRouteContentTypeValidator,
   validateJsonContentType,
+  validateFormContentType,
   handleJsonSyntaxError,
+  handlePayloadTooLargeError,
+  CONTENT_TYPE_POLICY,
 } from './middleware/content_type_validator.js';
 
 export { mapFarmHealthStatus } from './adapters/vfarm/health.js';
-export { validateJsonContentType, handleJsonSyntaxError } from './middleware/content_type_validator.js';
+export {
+  createPreRouteContentTypeValidator,
+  validateJsonContentType,
+  validateFormContentType,
+  handleJsonSyntaxError,
+  handlePayloadTooLargeError,
+  CONTENT_TYPE_POLICY,
+} from './middleware/content_type_validator.js';
 
 export function createApp(): Express {
   const app = express();
 
   // Enable trust proxy for reverse proxies / AWS ALBs / Render SSL termination
   app.set('trust proxy', true);
+
+  // ── Pre-Route Content-Type Validation ───────────────────────────────────────
+  // Executes BEFORE body parsing and route handling (LOOP-1795035800169-NVLF).
+  // Strictly enforces media types per route before any body buffer is consumed.
+  app.use(createPreRouteContentTypeValidator());
 
   // ── Body Parsing ────────────────────────────────────────────────────────────
   // Twilio sends application/x-www-form-urlencoded webhooks or JSON CloudEvents.
@@ -72,6 +88,7 @@ export function createApp(): Express {
     },
   }));
   app.use(handleJsonSyntaxError);
+  app.use(handlePayloadTooLargeError);
 
   // ── Security Headers ────────────────────────────────────────────────────────
   app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -432,10 +449,11 @@ export function createApp(): Express {
   // Must have 4 parameters for Express to treat it as an error handler.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+    const anyErr = err as any;
     if (
       err instanceof SyntaxError &&
       ('status' in err || 'statusCode' in err) &&
-      ((err as any).status === 400 || (err as any).statusCode === 400) &&
+      (anyErr.status === 400 || anyErr.statusCode === 400) &&
       'body' in err
     ) {
       const correlationId =
@@ -446,6 +464,22 @@ export function createApp(): Express {
       res.status(400).json({
         error: 'MALFORMED_JSON',
         message: 'Request body contains invalid JSON',
+        correlation_id: correlationId,
+      });
+      return;
+    }
+    if (
+      anyErr &&
+      (anyErr.type === 'entity.too.large' || anyErr.status === 413 || anyErr.statusCode === 413)
+    ) {
+      const correlationId =
+        (req.headers['x-correlation-id'] as string) ||
+        (req.headers['x-request-id'] as string) ||
+        `oversized_${Date.now()}`;
+      res.setHeader('X-Correlation-ID', correlationId);
+      res.status(413).json({
+        error: 'PAYLOAD_TOO_LARGE',
+        message: 'Request entity exceeds maximum allowable size limit',
         correlation_id: correlationId,
       });
       return;
