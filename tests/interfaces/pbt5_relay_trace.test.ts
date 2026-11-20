@@ -46,6 +46,7 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
 
   beforeEach(() => {
     vi.stubEnv('ELEVENLABS_WEBHOOK_SECRET', 'test-secret');
+    vi.stubEnv('SLACK_BOT_TOKEN', '');
     vi.stubEnv('SLACK_CS_WEBHOOK_URL', 'https://slack.invalid/webhook');
     log = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});

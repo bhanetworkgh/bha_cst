@@ -30,12 +30,14 @@ import { randomUUID } from 'node:crypto';
 import { requireProgrammaticApiKey } from '../middleware/programmatic_api_key.js';
 import { ErrorRouter } from './error_router.js';
 import { SlackNotifier } from './slack.js';
+import { MonitoringSlackService } from './monitoring_slack_service.js';
 import { Logger } from '../config/logger.js';
 
 export const testAlertRouter = Router();
 
-type TestKind = 'error' | 'cs_handoff' | 'notifier';
-const ALL_KINDS: TestKind[] = ['error', 'cs_handoff', 'notifier'];
+type TestKind = 'error' | 'cs_handoff' | 'notifier' | 'monitoring';
+const DEFAULT_KINDS: TestKind[] = ['error', 'cs_handoff', 'notifier'];
+const ALL_KINDS: TestKind[] = ['error', 'cs_handoff', 'notifier', 'monitoring'];
 
 export interface AlertTestRecord {
   test_id: string;
@@ -86,7 +88,7 @@ export const AlertTestRecorder = {
 
 function requestedKinds(body: unknown): TestKind[] | null {
   const raw = (body as { kinds?: unknown } | undefined)?.kinds;
-  if (raw === undefined) return ALL_KINDS;
+  if (raw === undefined) return DEFAULT_KINDS;
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const kinds = raw.filter((k): k is TestKind => ALL_KINDS.includes(k as TestKind));
   return kinds.length === raw.length ? kinds : null;
@@ -118,6 +120,25 @@ testAlertRouter.post('/api/v1/alerts/test', requireProgrammaticApiKey, async (re
           correlation_id: testId,
         });
         results.push({ kind, path: 'SlackNotifier', status: sent ? 'sent' : 'not_sent' });
+      } else if (kind === 'monitoring') {
+        const monResult = await MonitoringSlackService.sendMonitoringAlert({
+          type: 'device_degraded',
+          severity: 'WARN',
+          system: 'vFarm',
+          farm_id: 'farm-21dde23e',
+          device_id: 'pump-primary',
+          reason: label,
+          correlation_id: testId,
+        });
+        results.push({
+          kind,
+          path: 'MonitoringSlackService',
+          destination_channel: monResult.channel_name || '#bha-vfarm-monitoring-twin',
+          channel_id: monResult.channel_id,
+          slack_ts: monResult.message_ts,
+          status: monResult.status,
+          ...(monResult.error ? { error: monResult.error } : {}),
+        });
       } else {
         const result = await ErrorRouter.route(
           {

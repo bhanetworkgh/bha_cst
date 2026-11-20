@@ -13,6 +13,7 @@ import {
 } from '../consent/service.js';
 import { getConsentWording, CONSENT_WORDING_VERSION } from '../consent/wording.js';
 import { getDashboardPublisher } from '../publishers/dashboard.js';
+import { evaluateFarmTopology } from '../connectors/vfarm_topology.js';
 
 export const adminRouter = Router();
 
@@ -900,16 +901,52 @@ adminRouter.delete('/speakers/:phoneE164', async (req: Request, res: Response) =
 adminRouter.get('/audit/logs', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 100);
-    const securityEvents = Logger.getRecentAuditEvents(limit);
+    const dbLedger = await DbClient.getSecurityLedgerEvents({ limit });
+    const inMemEvents = Logger.getRecentAuditEvents(limit);
+    // Combine database events with in-memory buffer if DB is empty, or prefer authoritative DB records
+    const securityEvents = dbLedger.events.length > 0 ? dbLedger.events : inMemEvents;
     const alertAudits = await DbClient.getRecentAlertAuditLogs(limit);
 
     res.status(200).json({
       status: 'ok',
+      total_security_events: dbLedger.total || securityEvents.length,
       security_events: securityEvents,
       alert_audits: alertAudits,
     });
   } catch (err: any) {
     Logger.error(`Admin GET audit logs error: ${err.message}`);
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
+  }
+});
+
+// ── 6b. Security Ledger Detailed Endpoint (/api/v1/admin/security-ledger) ─────
+adminRouter.get('/security-ledger', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const correlation_id = req.query.correlation_id as string | undefined;
+    const tool_or_route = req.query.tool_or_route as string | undefined;
+    const outcome = req.query.outcome as string | undefined;
+    const tenant_id = req.query.tenant_id as string | undefined;
+
+    const result = await DbClient.getSecurityLedgerEvents({
+      limit,
+      offset,
+      correlation_id,
+      tool_or_route,
+      outcome,
+      tenant_id,
+    });
+
+    res.status(200).json({
+      status: 'ok',
+      total: result.total,
+      limit,
+      offset,
+      events: result.events,
+    });
+  } catch (err: any) {
+    Logger.error(`Admin GET security-ledger error: ${err.message}`);
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message });
   }
 });
@@ -1119,7 +1156,7 @@ function getLiveClient(res: Response): import('../adapters/vfarm/live_client.js'
   }
   const client = adapter.getLiveClient();
   if (!client) {
-    res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client is not configured. Set VFARM_BASE_URL and VFARM_FARM_KEY in .env.' });
+    res.status(503).json({ error: 'NO_LIVE_CLIENT', message: 'vFarm live client is not configured. Set VFARM_BASE_URL and VFARM_SERVICE_KEY (or VFARM_FARM_KEY) in .env.' });
     return null;
   }
   return client;
@@ -1284,6 +1321,51 @@ adminRouter.get('/vfarm/devices', async (req: Request, res: Response) => {
     res.status(200).json(data);
   } catch (err: any) {
     sendProxyError(res, 'devices', err);
+  }
+});
+
+/**
+ * GET /api/v1/admin/vfarm/topology?farm_id=...
+ * Resolves the authoritative device dependency topology and evaluates health for all devices
+ * using the OpenAPI device hierarchy and computeDependentDeviceStatus.
+ *
+ * Persists an auditable verification entry into security_ledger.
+ */
+adminRouter.get('/vfarm/topology', async (req: Request, res: Response) => {
+  try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    await adapter.ensureAdminToken();
+    const client = getLiveClient(res);
+    if (!client) return;
+    const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
+    if (!farmId) {
+      res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
+      return;
+    }
+    const data = await client.listAllDevices(farmId);
+    const topologyReport = evaluateFarmTopology(data.devices || [], farmId);
+
+    // Persist auditable evidence to security_ledger
+    DbClient.recordSecurityLedgerEvent({
+      id: `topo_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      tenant_id: adapter.tenantId || 'tenant-vfarm-01',
+      actor: 'admin',
+      role: 'superadmin',
+      entry_point: 'api',
+      tool_or_route: '/api/v1/admin/vfarm/topology',
+      outcome: 'ok',
+      reason: `Topology evaluation completed for farm ${farmId}: ${topologyReport.dependent_devices_count} dependent devices evaluated (${topologyReport.normal_count} normal, ${topologyReport.degraded_count} degraded)`,
+      correlation_id: `topo_${Date.now()}`,
+    }).catch(() => {});
+
+    res.status(200).json(topologyReport);
+  } catch (err: any) {
+    sendProxyError(res, 'topology evaluation', err);
   }
 });
 
@@ -1578,7 +1660,7 @@ adminRouter.get(['/vfarm/customers', '/vfarm/users'], async (req: Request, res: 
     if (!client) {
       res.status(503).json({
         error: 'NO_LIVE_CLIENT',
-        message: 'vFarm live client not configured. Set VFARM_BASE_URL and VFARM_FARM_KEY in .env.',
+        message: 'vFarm live client not configured. Set VFARM_BASE_URL and VFARM_SERVICE_KEY (or VFARM_FARM_KEY) in .env.',
       });
       return;
     }

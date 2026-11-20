@@ -496,4 +496,105 @@ describe('CST Monitoring Slack App Integration (Deliverable & Evidence Gate)', (
     expect(resolved.channelName).toBe('#bha-vfarm-monitoring-twin');
     expect(resolved.isConfigured).toBe(true);
   });
+
+  // Test 3-tier precedence
+  it('18. adheres to 3-tier configuration precedence for Monitoring Twin channel', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test-token');
+    vi.stubEnv('SLACK_ALERTS_ENABLED', 'true');
+
+    // 1. Both set: SLACK_MONITORING_CHANNEL_ID wins
+    vi.stubEnv('SLACK_MONITORING_CHANNEL_ID', 'C0_PRIMARY_ID');
+    vi.stubEnv('SLACK_VFARM_MONITORING_CHANNEL_ID', 'C0_SECONDARY_ID');
+    expect(MonitoringSlackService.resolveChannel('monitoring').channelId).toBe('C0_PRIMARY_ID');
+
+    // 2. Primary unset: SLACK_VFARM_MONITORING_CHANNEL_ID wins
+    delete process.env.SLACK_MONITORING_CHANNEL_ID;
+    expect(MonitoringSlackService.resolveChannel('monitoring').channelId).toBe('C0_SECONDARY_ID');
+
+    // 3. Both unset: falls back to production default C0B8JTE51PG
+    delete process.env.SLACK_VFARM_MONITORING_CHANNEL_ID;
+    expect(MonitoringSlackService.resolveChannel('monitoring').channelId).toBe('C0B8JTE51PG');
+  });
+
+  // Test strict channel isolation
+  it('19. enforces strict channel isolation between monitoring, customer escalations, and pipeline errors', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test-token');
+    vi.stubEnv('SLACK_ALERTS_ENABLED', 'true');
+
+    const mon = MonitoringSlackService.resolveChannel('monitoring');
+    const inc = MonitoringSlackService.resolveChannel('incident');
+    const rec = MonitoringSlackService.resolveChannel('recovery');
+    const esc = MonitoringSlackService.resolveChannel('escalation');
+    const eng = MonitoringSlackService.resolveChannel('engineering');
+
+    // Monitoring, incident, and recovery all target #bha-vfarm-monitoring-twin
+    expect(mon.channelId).toBe('C0B8JTE51PG');
+    expect(mon.channelName).toBe('#bha-vfarm-monitoring-twin');
+    expect(inc.channelId).toBe('C0B8JTE51PG');
+    expect(inc.channelName).toBe('#bha-vfarm-monitoring-twin');
+    expect(rec.channelId).toBe('C0B8JTE51PG');
+    expect(rec.channelName).toBe('#bha-vfarm-monitoring-twin');
+
+    // Escalations isolate strictly to #bha-customer-service-twin
+    expect(esc.channelId).toBe('C0BD6D53HAM');
+    expect(esc.channelName).toBe('#bha-customer-service-twin');
+
+    // Engineering/pipeline errors isolate strictly to #bha-pipeline-errors
+    expect(eng.channelId).toBe('C0ATC4CA3G9');
+    expect(eng.channelName).toBe('#bha-pipeline-errors');
+  });
+
+  // Test degradation and recovery end-to-end
+  it('20. dispatches degraded alert and subsequent recovery notification to C0B8JTE51PG with matching correlation', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test-token');
+    vi.stubEnv('SLACK_ALERTS_ENABLED', 'true');
+
+    const dispatchedBodies: any[] = [];
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      dispatchedBodies.push(JSON.parse(init.body));
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true, channel: 'C0B8JTE51PG', ts: '1795000001.000100' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // 1. Send incident notification
+    const inc = await MonitoringSlackService.sendIncidentNotification({
+      title: 'Water Level Sensor Offline',
+      severity: 'HIGH',
+      system: 'vFarm',
+      farm_id: 'farm-101',
+      device_id: 'pump-01',
+      reason: 'Required upstream sensor water_level is offline',
+      correlation_id: 'corr-transition-test',
+    });
+
+    expect(inc.dispatched).toBe(true);
+    expect(inc.channel_id).toBe('C0B8JTE51PG');
+    expect(inc.channel_name).toBe('#bha-vfarm-monitoring-twin');
+
+    // 2. Send recovery notification
+    const rec = await MonitoringSlackService.sendRecoveryNotification({
+      system: 'vFarm',
+      farm_id: 'farm-101',
+      device_id: 'pump-01',
+      previous_state: 'degraded',
+      current_state: 'healthy',
+      recovery_reason: 'Sensor water_level reconnected and reporting online telemetry',
+      correlation_id: 'corr-transition-test',
+    });
+
+    expect(rec.dispatched).toBe(true);
+    expect(rec.channel_id).toBe('C0B8JTE51PG');
+    expect(dispatchedBodies).toHaveLength(2);
+    expect(dispatchedBodies[0].channel).toBe('C0B8JTE51PG');
+    expect(dispatchedBodies[1].channel).toBe('C0B8JTE51PG');
+    expect(JSON.stringify(dispatchedBodies[1])).toContain('RECOVERED');
+  });
 });

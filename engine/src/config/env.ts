@@ -25,10 +25,10 @@ const optionalEnv = <T extends z.ZodTypeAny>(schema: T) => z.preprocess(emptyToU
  *  a full endpoint URL + `x-api-key`, not a base URL / JWT / X-Farm-Key, so they are NOT reused.)
  */
 const vfarmApiEnvShape = {
-  VFARM_API_BASE_URL:   optionalEnv(z.string().url()),
-  VFARM_API_JWT:        optionalEnv(z.string().min(1)),
-  VFARM_API_FARM_KEY:   optionalEnv(z.string().min(1)),
-  VFARM_SERVICE_KEY:    optionalEnv(z.string().min(1)),
+  VFARM_API_BASE_URL: optionalEnv(z.string().url()),
+  VFARM_API_JWT: optionalEnv(z.string().min(1)),
+  VFARM_API_FARM_KEY: optionalEnv(z.string().min(1)),
+  VFARM_SERVICE_KEY: optionalEnv(z.string().min(1)),
   VFARM_API_TIMEOUT_MS: optionalEnv(z.coerce.number().int().positive()),
 };
 
@@ -37,8 +37,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
   // ── Twilio Transport Credentials ──────────────────────────────────────────
-  TWILIO_ACCOUNT_SID:           z.string().min(1),
-  TWILIO_AUTH_TOKEN:            z.string().min(1),
+  TWILIO_ACCOUNT_SID: z.string().min(1),
+  TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_MESSAGING_SERVICE_SID: z.string().min(1),
 
   // ── Database ───────────────────────────────────────────────────────────────
@@ -46,60 +46,68 @@ const envSchema = z.object({
 
   // ── System #1 (vFarm) Identity & Routing ──────────────────────────────────
   // Comma-separated E.164 numbers this system owns, e.g. +19715885823,+1999...
-  VFARM_SYSTEM_ID:        z.string().min(1),
-  VFARM_TENANT_ID:        z.string().min(1),
-  VFARM_SYSTEM_NAME:      z.string().min(1),
-  VFARM_PHONE_NUMBERS:    z.string().min(1),
+  VFARM_SYSTEM_ID: z.string().min(1),
+  VFARM_TENANT_ID: z.string().min(1),
+  VFARM_SYSTEM_NAME: z.string().min(1),
+  VFARM_PHONE_NUMBERS: z.string().min(1),
   VFARM_ONBOARDING_REPLY: z.string().min(1),
 
   // ── System #1 (vFarm) External API Seams ──────────────────────────────────
   // Full URL to vFarm identity resolution endpoint
   VFARM_RESOLVE_ENDPOINT: z.string().url(),
   // Service-to-service API key for CST -> vFarm resolve calls
-  VFARM_RESOLVE_API_KEY:  z.string().min(1),
+  VFARM_RESOLVE_API_KEY: z.string().min(1),
 
   // ── System #1 (vFarm) Management API — verified OpenAPI contract (all optional) ─
   ...vfarmApiEnvShape,
 
   // ── BHARAG Knowledge RAG & Incidents.v0 ───────────────────────────────────
   // Base URL of BHARAG API server, e.g. http://localhost:5000/api/v0
-  BHARAG_API_URL:       z.string().url(),
+  BHARAG_API_URL: z.string().url(),
   // Workspace-scoped key issued by BHARAG to CST for vFarm knowledge corpus
   BHARAG_WORKSPACE_KEY: z.string().min(1),
   // Unified BHARAG Cluster Ask API URL & Key
-  BHARAG_CLUSTER_URL:        z.string().url(),
-  BHARAG_CLUSTER_KEY:        z.string().min(1),
+  BHARAG_CLUSTER_URL: z.string().url(),
+  BHARAG_CLUSTER_KEY: z.string().min(1),
   BHARAG_CLUSTER_TIMEOUT_MS: z.coerce.number().default(10000),
 
   // Public webhook URL override for production reverse proxies / load balancers
-  PUBLIC_WEBHOOK_URL:        z.string().url().optional(),
+  PUBLIC_WEBHOOK_URL: z.string().url().optional(),
 
   // ── Media Server & AWS S3 Bucket Configuration ────────────────────────────
   // Base URL for signed S3 image captures from the vFarm media server
-  MEDIA_SERVER_URL:     z.string().url(),
+  MEDIA_SERVER_URL: z.string().url(),
   // Direct AWS S3 Bucket URL for MMS media file storage (Spec §3)
-  S3_MEDIA_BUCKET_URL:  z.string().url().default('https://vfarm-media-captures.s3.us-east-1.amazonaws.com'),
+  S3_MEDIA_BUCKET_URL: z.string().url().default('https://vfarm-media-captures.s3.us-east-1.amazonaws.com'),
   // AWS S3 Bucket Name where camera captures and MMS photos are uploaded
-  AWS_S3_BUCKET_NAME:   z.string().default('vfarm-media-captures'),
+  AWS_S3_BUCKET_NAME: z.string().default('vfarm-media-captures'),
   // AWS Region where the S3 bucket is hosted
-  AWS_REGION:           z.string().default('us-east-1'),
+  AWS_REGION: z.string().default('us-east-1'),
 
   // ── ElevenLabs Voice Clone Configuration ──────────────────────────────────
-  ELEVENLABS_API_KEY:        z.string().optional(),
-  ELEVENLABS_BASE_URL:       z.string().url().optional(),
-  ELEVENLABS_MODEL_ID:       z.string().optional(),
-  ELEVENLABS_VOICE_ID:       z.string().optional(),
+  ELEVENLABS_API_KEY: z.string().optional(),
+  ELEVENLABS_BASE_URL: z.string().url().optional(),
+  ELEVENLABS_MODEL_ID: z.string().optional(),
+  ELEVENLABS_VOICE_ID: z.string().optional(),
   VFARM_ELEVENLABS_VOICE_ID: z.string().optional(),
 
   // ── Engine Dashboard Event Publisher ──────────────────────────────────────
-  ENGINE_DASHBOARD_URL:      optionalEnv(z.string().url()),
-  ENGINE_DASHBOARD_KEY:      optionalEnv(z.string().min(1)),
+  ENGINE_DASHBOARD_URL: optionalEnv(z.string().url()),
+  ENGINE_DASHBOARD_KEY: optionalEnv(z.string().min(1)),
 
   // ── Research Twin candidate transport ─────────────────────────────────────
   // Reported unavailable/blocked until the external contract is approved.
-  RT_ENDPOINT_URL:            optionalEnv(z.string().url()),
-  RT_SERVICE_API_KEY:         optionalEnv(z.string().min(1)),
+  RT_ENDPOINT_URL: optionalEnv(z.string().url()),
+  RT_SERVICE_API_KEY: optionalEnv(z.string().min(1)),
   RT_CALLBACK_SIGNING_SECRET: optionalEnv(z.string().min(1)),
+
+  // ── CST Monitoring Slack App (A0CF23GMNHJ) ──────────────────────────────────
+  SLACK_BOT_TOKEN:                    optionalEnv(z.string().min(1)),
+  SLACK_MONITORING_CHANNEL_ID:        optionalEnv(z.string().min(1)),
+  SLACK_VFARM_MONITORING_CHANNEL_ID:  optionalEnv(z.string().min(1)),
+  SLACK_CS_CHANNEL_ID:                optionalEnv(z.string().min(1)),
+  SLACK_PIPELINE_ERRORS_CHANNEL_ID:   optionalEnv(z.string().min(1)),
+  SLACK_ALERTS_ENABLED:               optionalEnv(z.string()),
 });
 
 export type Env = z.infer<typeof envSchema>;

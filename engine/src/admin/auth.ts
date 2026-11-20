@@ -190,6 +190,12 @@ export async function requireAdminAuth(req: Request, res: Response, next: NextFu
     return next();
   }
 
+  // Allow programmatic API key authentication as administrative caller
+  const apiKey = req.headers['x-cst-api-key'] as string;
+  if (apiKey && process.env.CST_API_KEY && apiKey === process.env.CST_API_KEY) {
+    return next();
+  }
+
   const token = req.headers['x-admin-token'] as string;
   if (!token) {
     res.status(401).json({ error: 'UNAUTHORIZED', message: 'Admin authentication required. Please log in at /admin.' });

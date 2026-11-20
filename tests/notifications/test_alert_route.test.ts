@@ -5,7 +5,7 @@
  * each test alert goes through the real alert paths (ErrorRouter classes CST
  * and CS_HANDOFF, and SlackNotifier), and no webhook URL ever comes back.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
@@ -75,6 +75,28 @@ describe('Operator alert test route', () => {
 
     const bad = await request(app).post('/api/v1/alerts/test').set('x-cst-api-key', SECRET).send({ kinds: ['everything'] });
     expect(bad.status).toBe(400);
+  });
+
+  it('sends monitoring kind to MonitoringSlackService and routes to #bha-vfarm-monitoring-twin', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, channel: 'C0B8JTE51PG', ts: '1795000099.000100' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-test-token');
+
+    const res = await request(app).post('/api/v1/alerts/test').set('x-cst-api-key', SECRET).send({ kinds: ['monitoring'] });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.results[0].kind).toBe('monitoring');
+    expect(res.body.results[0].path).toBe('MonitoringSlackService');
+    expect(res.body.results[0].destination_channel).toBe('#bha-vfarm-monitoring-twin');
+    expect(res.body.results[0].status).toBe('sent');
+
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('writes one record of the run to the dashboard and says whether it landed', async () => {
