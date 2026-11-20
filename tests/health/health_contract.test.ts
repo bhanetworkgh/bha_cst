@@ -136,7 +136,7 @@ describe('Contract v1.1.1 — Farm health route resolution & access semantics', 
     const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
     const speaker = {
       tenant_id: 'tenant-1',
-      speaker_id: 'speaker-1',
+      person_id: 'speaker-1',
       channel: 'voice' as const,
       address: '+19715885823',
       is_known: true,
@@ -161,7 +161,7 @@ describe('Contract v1.1.1 — Farm health route resolution & access semantics', 
     const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
     const speaker = {
       tenant_id: 'tenant-1',
-      speaker_id: 'speaker-1',
+      person_id: 'speaker-1',
       channel: 'voice' as const,
       address: '+19715885823',
       is_known: true,
@@ -169,6 +169,164 @@ describe('Contract v1.1.1 — Farm health route resolution & access semantics', 
       farm_ids: ['farm-alpha'],
     };
     expect(() => assertSpeakerFarmAccess(speaker as any, '')).toThrow('farm_id is required');
+  });
+
+  describe('assertSpeakerFarmAccess — strict 10-point regression suite', () => {
+    it('1. explicitly granted farm succeeds', async () => {
+      const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const speaker = {
+        person_id: 'usr-1',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-alpha')).not.toThrow();
+    });
+
+    it('2. discovered but ungranted farm is rejected (dynamicAllowedFarms bypass removed)', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const speaker = {
+        person_id: 'usr-1',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      // Farm-beta is known to tenant adapter but not in speaker.farm_ids -> rejected
+      expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-beta')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-beta')).toThrow(/not authorized for farm farm-beta/);
+    });
+
+    it('3. missing farm grants are rejected', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const speaker = {
+        person_id: 'usr-2',
+        is_known: true,
+        role: 'operator',
+        farm_ids: [],
+      };
+      expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-alpha')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(speaker as any, 'farm-alpha')).toThrow(/granted farms: \[\]/);
+    });
+
+    it('4. empty farm ID is rejected', async () => {
+      const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const speaker = {
+        person_id: 'usr-1',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(speaker as any, '')).toThrow('farm_id is required');
+      expect(() => assertSpeakerFarmAccess(speaker as any, '   ')).toThrow('farm_id is required');
+    });
+
+    it('5. missing or whitespace person ID is rejected', async () => {
+      const { assertSpeakerFarmAccess } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const speakerNoPerson = {
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(speakerNoPerson as any, 'farm-alpha')).toThrow(/Missing acting-user ID/);
+
+      const speakerWhitespace = {
+        person_id: '   ',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(speakerWhitespace as any, 'farm-alpha')).toThrow(/Missing acting-user ID/);
+    });
+
+    it('6. conflicting identity fields cannot authorize access', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const conflictingSpeaker = {
+        person_id: 'usr-123',
+        speaker_id: 'usr-different',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(conflictingSpeaker as any, 'farm-alpha')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(conflictingSpeaker as any, 'farm-alpha')).toThrow(/Conflicting speaker identity/);
+    });
+
+    it('7. is_known: false cannot access a protected farm', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const unknownSpeaker = {
+        person_id: 'usr-unknown',
+        is_known: false,
+        role: 'operator',
+        farm_ids: ['farm-alpha'],
+      };
+      expect(() => assertSpeakerFarmAccess(unknownSpeaker as any, 'farm-alpha')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(unknownSpeaker as any, 'farm-alpha')).toThrow(/unauthenticated identity/);
+    });
+
+    it('8. cross-tenant access is rejected', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      const tenantASpeaker = {
+        person_id: 'usr-tenant-a',
+        tenant_id: 'tenant-a',
+        is_known: true,
+        role: 'operator',
+        farm_ids: ['farm-tenant-a'],
+      };
+      expect(() => assertSpeakerFarmAccess(tenantASpeaker as any, 'farm-tenant-b')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(tenantASpeaker as any, 'farm-tenant-b')).toThrow(/not authorized for farm farm-tenant-b/);
+    });
+
+    it('9. admin/superadmin role assignment requires is_known: true to bypass farm scope', async () => {
+      const { assertSpeakerFarmAccess, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/authorization.js');
+      
+      // Unauthenticated caller claiming admin is rejected
+      const unauthAdmin = {
+        person_id: 'usr-fake-admin',
+        is_known: false,
+        role: 'admin',
+        farm_ids: [],
+      };
+      expect(() => assertSpeakerFarmAccess(unauthAdmin as any, 'farm-any')).toThrow(VfarmAuthorizationError);
+      expect(() => assertSpeakerFarmAccess(unauthAdmin as any, 'farm-any')).toThrow(/unauthenticated identity/);
+
+      // Authenticated admin bypasses farm grant scope
+      const authAdmin = {
+        person_id: 'usr-real-admin',
+        is_known: true,
+        role: 'admin',
+        farm_ids: [],
+      };
+      expect(() => assertSpeakerFarmAccess(authAdmin as any, 'farm-unlisted')).not.toThrow();
+
+      // Authenticated superadmin bypasses farm grant scope
+      const authSuper = {
+        person_id: 'usr-real-super',
+        is_known: true,
+        role: 'superadmin',
+        farm_ids: [],
+      };
+      expect(() => assertSpeakerFarmAccess(authSuper as any, 'farm-unlisted')).not.toThrow();
+    });
+
+    it('10. an upstream authorization rejection is propagated without fallback', async () => {
+      const { VfarmTenantAdapter, VfarmAuthorizationError } = await import('../../engine/src/adapters/vfarm/index.js');
+      const adapter = new VfarmTenantAdapter('tenant-1', { baseUrl: 'https://vfarm.test' });
+      const speakerWithNoAccess = {
+        person_id: 'usr-unauthorized',
+        is_known: true,
+        role: 'operator' as const,
+        farm_ids: ['farm-other'],
+        customer_ref: 'cust-1',
+        tenant_id: 'tenant-1',
+        project_id: 'proj-1',
+        phone_e164: '+19715885823',
+        permissions: ['read:telemetry'],
+      };
+
+      // Direct adapter call to getFarmStatusForSpeaker for ungranted farm fails closed immediately
+      await expect(adapter.getFarmStatusForSpeaker({ farmId: 'farm-restricted', speaker: speakerWithNoAccess }))
+        .rejects.toThrow(VfarmAuthorizationError);
+    });
   });
 
   it('verifies v1.1.1 health status taxonomy: NORMAL, DEGRADED, OFFLINE, UNKNOWN', () => {

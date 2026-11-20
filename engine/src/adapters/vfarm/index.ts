@@ -501,7 +501,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
   public async listFarmDevices(params: { farmId: string; speaker?: SpeakerIdentity }): Promise<{ total: number; devices: any[] }> {
     if (params.speaker) {
-      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+      assertSpeakerFarmAccess(params.speaker, params.farmId);
     }
     if (!this.liveClient) {
       return { total: 0, devices: [] };
@@ -542,7 +542,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   } | null> {
     if (!params.farmId) return null;
     // Throws VfarmAuthorizationError when the speaker is not granted this farm.
-    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    assertSpeakerFarmAccess(params.speaker, params.farmId);
     if (!this.liveClient) return null;
 
     const [healthResult, devicesResult] = await Promise.allSettled([
@@ -611,7 +611,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     upstream_contract: 'fleet_counts' | 'legacy_counters' | 'unavailable';
   } | null> {
     if (!params.farmId) return null;
-    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    assertSpeakerFarmAccess(params.speaker, params.farmId);
     if (!this.liveClient) return null;
 
     try {
@@ -665,7 +665,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   } | null> {
     if (!params.farmId) return null;
     // Same fast refusal as getFarmStatusForSpeaker.
-    assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+    assertSpeakerFarmAccess(params.speaker, params.farmId);
     if (!this.liveClient) return null;
 
     try {
@@ -687,7 +687,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
 
   public async getLatestDeviceReading(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<any> {
     if (params.speaker) {
-      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+      assertSpeakerFarmAccess(params.speaker, params.farmId);
     }
     if (!this.liveClient) return null;
     try {
@@ -737,7 +737,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
   } | null> {
     if (!params.deviceId) return null;
     if (params.speaker) {
-      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+      assertSpeakerFarmAccess(params.speaker, params.farmId);
     }
     if (!this.liveClient) return null;
 
@@ -795,7 +795,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     correlationId?: string;
   }): Promise<any[]> {
     if (params.speaker) {
-      assertSpeakerFarmAccess(params.speaker, params.farmId, this.getDiscoveredFarmIds());
+      assertSpeakerFarmAccess(params.speaker, params.farmId);
     }
     if (!this.liveClient) {
       return [];
