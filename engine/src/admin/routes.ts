@@ -1333,9 +1333,14 @@ adminRouter.get('/vfarm/devices', async (req: Request, res: Response) => {
  */
 adminRouter.get('/vfarm/topology', async (req: Request, res: Response) => {
   try {
+    const adapter = CoreRegistry.getVfarmAdapter();
+    if (!adapter) {
+      res.status(503).json({ error: 'ADAPTER_UNAVAILABLE', message: 'vFarm adapter is not registered' });
+      return;
+    }
+    await adapter.ensureAdminToken();
     const client = getLiveClient(res);
     if (!client) return;
-    const adapter = CoreRegistry.getVfarmAdapter()!;
     const farmId = (req.query.farm_id as string) || adapter.getActiveFarmId();
     if (!farmId) {
       res.status(400).json({ error: 'BAD_REQUEST', message: 'farm_id is required' });
