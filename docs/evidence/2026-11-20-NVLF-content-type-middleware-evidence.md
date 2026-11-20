@@ -1,179 +1,234 @@
 # LOOP-1795035800169-NVLF — Pre-Route Content-Type Validation Middleware Evidence Report
 
-**Document Date:** 2026-11-20
-**Loop Identifier:** `LOOP-1795035800169-NVLF`
-**Parent Codex Entry:** `CODEX-20261118-ahad-cst-error-routing`
-**Decision Watch Reference:** `DW-1795036114694-RK8U`
-**Primary Slack Discussion:** [https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699](https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699)
-**Target Repository:** `bhanetworkgh/bha_cst`
-**Production Target:** `https://bha-cst-7u9e.onrender.com`
-**Render Service ID:** `srv-db8hepqvcj2c73adpus0` (`bha-cst`)
-**Live Production Deploy ID:** `dep-dbvles0jo6nc73a7p5ag` (Commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`, PR #62)
-**Implementation Status:** `COMPLETED`
-**Evidence Status:** `VERIFIED` (11/11 local tests passed; production HTTP verified; Render container logs verified; application-reported DB write path verified)
-**Owner Acceptance Status:** `READY_FOR_OWNER_ACCEPTANCE`
+**Document Date:** 2026-11-21  
+**Loop Identifier:** `LOOP-1795035800169-NVLF`  
+**Parent Codex Entry:** `CODEX-20261118-ahad-cst-error-routing`  
+**Decision Watch Reference:** `DW-1795036114694-RK8U`  
+**Primary Slack Discussion:** [https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699](https://bayshorizonnetwork.slack.com/archives/C0AD3PM603T/p1795035800416699)  
+**Target Repository:** `bhanetworkgh/bha_cst`  
+**Active Working Branch:** `feat/80hm-monitoring-channel-wiring`  
+**Production URL:** `https://bha-cst-7u9e.onrender.com`  
+**Render Service ID:** `srv-db8hepqvcj2c73adpus0` (`bha-cst`)  
+**Historical Deploy ID (PR #62 baseline):** `dep-dbvles0jo6nc73a7p5ag` (Commit `4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`)  
+**Current Live Production Deploy ID:** `dep-dc0ch3qvcj2c73dagsjg` (Commit `d7b1345faf9f17328fe10cff58ff10b5ee33604b`)  
+**Implementation Status:** `COMPLETED`  
+**Evidence Status:** `VERIFIED_LOCALLY` (22/22 unit tests passed; 92/92 integration tests passed; Playwright browser tests passed; typecheck & build clean)  
+**Acceptance Decision:** `READY_FOR_OWNER_REVIEW` (All CST-owned technical gaps resolved; pending owner sign-off)
 
 ---
 
-## 1. Executive Summary
+## 1. Executive Summary & Defect Remediation
 
-During the review of `CODEX-20261118-ahad-cst-error-routing` and the subsequent Decision Watch `DW-1795036114694-RK8U`, Jason instructed the team to close the open loop `LOOP-1795035800169-NVLF` by implementing explicit, pre-route Content-Type validation on JSON-expecting endpoints (`/api/v1/web` and webhooks).
+During the review of `CODEX-20261118-ahad-cst-error-routing` and Decision Watch `DW-1795036114694-RK8U`, Jason mandated the completion of `LOOP-1795035800169-NVLF` to enforce strict pre-route Content-Type validation across all CST ingress surfaces.
 
-Previously, requests with missing or unsupported media types (e.g., `text/plain` or missing headers) were skipped by Express's `express.json()` body-parser without error. This left `req.body` unpopulated (`undefined` or `{}`), silently causing downstream handlers to fail with generic authentication errors (`AUTH_REQUIRED`) or missing-field exceptions rather than alerting the client to the protocol violation.
+### 1.1 Original Implementation (PR #62 & #63)
+The initial implementation in PR #62 introduced `validateJsonContentType` mounted as a router-level middleware on `/api/v1/auth`, `/api/v1/admin`, `/api/v1/web`, and webhooks.
 
-This implementation provides:
-1. Pre-route Content-Type validation middleware ([engine/src/middleware/content_type_validator.ts](../../engine/src/middleware/content_type_validator.ts)) mounted before JSON route handlers in [engine/src/app.ts](../../engine/src/app.ts).
-2. Explicit rejection of missing or unsupported media types with **HTTP 400 Bad Request** and a standard machine-readable JSON envelope:
-   ```json
-   {
-     "error": "UNSUPPORTED_MEDIA_TYPE",
-     "message": "Content-Type must be application/json",
-     "correlation_id": "cst_..."
-   }
-   ```
-3. Custom JSON parse error handling (`handleJsonSyntaxError`) intercepting body-parser syntax errors and returning **HTTP 400 MALFORMED_JSON** with preserved correlation IDs.
-4. Security-ledger audit persistence via `Logger.audit` with structured operational telemetry.
-5. Strict protection of Twilio webhooks (`/webhooks`, `/webhooks/sms`, `/webhooks/voice`), which legitimately consume `application/x-www-form-urlencoded` and require uncorrupted `rawBody` buffers for HMAC signature verification.
-6. Automated verification across 11 unit tests in [tests/middleware/content_type_validation.test.ts](../../tests/middleware/content_type_validation.test.ts).
-7. Live production verification on deployed Render instance `dep-dbvles0jo6nc73a7p5ag` via curl and Render real-time log inspection.
+### 1.2 Identified Architectural Defects & Audit Findings
+A comprehensive architectural audit identified four critical gaps in the initial implementation:
+1. **Middleware Ordering Violation:** `express.urlencoded` and `express.json` were mounted globally at the application root *before* any route-level `validateJsonContentType` executed. Consequently, body parsing was attempted *before* media type validation.
+2. **Route Coverage Bypass:** Multiple mutative endpoints (`/api/v1/brain/*`, `/api/v1/voice/*`, `/audio/speak`, `/api/v1/alerts/test`, `/webhooks/voice/*`) lacked Content-Type validation, permitting unvalidated requests to reach handlers.
+3. **Missing Charset & Form Policy:** Non-UTF-8 character encodings (e.g. `iso-8859-1`, `utf-16`) and non-form payloads to Twilio webhooks were not explicitly rejected before parsing.
+4. **Lack of Route Non-Execution Proof:** Tests asserted HTTP 400 status codes but did not instrument downstream handlers with spies to prove business routes and database writes were never executed.
+
+### 1.3 Remediated Architecture
+1. **Global Pre-Route Validation Middleware:** Mounted `createPreRouteContentTypeValidator()` as the very first middleware immediately following proxy trust configuration, executing *before* any body parser or route handler.
+2. **Authoritative Route Policy Matrix (`CONTENT_TYPE_POLICY`):** Explicitly maps route spaces to expected media types (`json`, `form`, `voice_webhook`), enforcing strict UTF-8 charset requirements.
+3. **Payload Too Large Interception:** Added `handlePayloadTooLargeError` returning structured HTTP 413 `PAYLOAD_TOO_LARGE` envelopes.
+4. **Instrumented Proof of Non-Execution (Phase 4):** Added Vitest spies on `VoiceInterface.handleInboundCall`, `VoiceInterface.handleApiTurn`, `DbClient.saveInboundMessage`, `DbClient.saveTenant`, and `CallLogPoster.post` proving downstream business services are never invoked on invalid requests.
 
 ---
 
-## 2. Express Middleware Architecture & Ordering
+## 2. Express Middleware Architecture & Request Lifecycle
 
-In [engine/src/app.ts](../../engine/src/app.ts), the middleware pipeline is structured as follows:
+The application enforces the exact required lifecycle sequence:
+
+$$\text{Incoming Request} \longrightarrow \text{Content-Type Validation} \longrightarrow \text{Appropriate Body Parsing} \longrightarrow \text{Authentication / Signature} \longrightarrow \text{Route Handler} \longrightarrow \text{Error Handling}$$
 
 ```
 [Incoming HTTP Request]
         │
         ▼
-1. Trust Proxy Configuration (`app.set('trust proxy', true)`)
+1. Trust Proxy (`app.set('trust proxy', true)`)
         │
         ▼
-2. Body Parsing Layer:
-   ├── /webhooks/elevenlabs (express.json limit 5mb + rawBody capture)
-   ├── express.urlencoded (limit 100kb + rawBody capture for Twilio)
-   └── express.json (limit 100kb + rawBody capture)
+2. Pre-Route Content-Type Validation (`createPreRouteContentTypeValidator`)
+   ├── Evaluates HTTP Method (POST, PUT, PATCH enforced; GET/HEAD/OPTIONS bypass)
+   ├── Evaluates Allowlisted Empty-Body Routes (/api/v1/web/logout, /api/v1/auth/logout)
+   ├── Resolves Route Policy via CONTENT_TYPE_POLICY
+   ├── Validates Presence of Content-Type (rejects missing with HTTP 400)
+   ├── Validates Charset (rejects non-UTF-8 with HTTP 400)
+   ├── Validates Media Type (rejects text/plain, multipart, xml with HTTP 400)
+   └── Emits Structured Security Audit Ledger Record (`Logger.audit`)
         │
         ▼
-3. JSON Syntax Error Interceptor (`handleJsonSyntaxError`)
-   └── Catches body-parser SyntaxError → Returns HTTP 400 MALFORMED_JSON
+3. Body Parsing Layer (Only Reached if Content-Type is Valid)
+   ├── /webhooks/elevenlabs (express.json limit: 5mb + rawBody capture)
+   ├── express.urlencoded (limit: 100kb + rawBody capture for Twilio)
+   └── express.json (limit: 100kb + rawBody capture for API)
         │
         ▼
-4. Security Headers (nosniff, DENY, XSS-Protection)
+4. Body Parser Error Interceptors
+   ├── handleJsonSyntaxError (catches SyntaxError → returns HTTP 400 MALFORMED_JSON)
+   └── handlePayloadTooLargeError (catches 413 → returns HTTP 413 PAYLOAD_TOO_LARGE)
         │
         ▼
-5. Rate Limiter Middleware (/webhooks, 120 req/min)
+5. Security Headers (nosniff, DENY, XSS-Protection)
         │
         ▼
-6. Pre-Route Media Type Validation & Router Mounting:
-   ├── /webhooks (Twilio SMS & outbound: urlencoded allowed, signature verified)
-   ├── /webhooks/voice (Twilio Voice: urlencoded allowed, signature verified)
-   ├── /webhooks/research-twin (validateJsonContentType() → JSON strictly enforced)
-   ├── /webhooks/elevenlabs (validateJsonContentType() → JSON strictly enforced)
-   ├── /api/v1/auth (validateJsonContentType() → JSON strictly enforced)
-   ├── /api/v1/admin (validateJsonContentType() → JSON strictly enforced)
-   └── /api/v1/web (validateJsonContentType() → JSON strictly enforced, /logout exempted)
+6. Webhook Rate Limiter (/webhooks, 120 req/min per IP)
+        │
+        ▼
+7. Authentication & Signature Verification Gates
+   ├── verifyTwilioSignature (Twilio SMS & Voice HMAC SHA-1)
+   ├── requireAdminAuth (CST Admin Session / Token)
+   ├── requireProgrammaticApiKey (CST-API-Key HMAC)
+   └── verifyVoiceEventAuth (ElevenLabs / Voice Observability)
+        │
+        ▼
+8. Business Route Handlers
+        │
+        ▼
+9. Global Error Handler (4-parameter catch-all)
 ```
 
 ---
 
-## 3. Implementation Details
+## 3. Explicit Route-to-Content-Type Policy Matrix
 
-### 3.1 Content-Type Validator Middleware
-Located in [engine/src/middleware/content_type_validator.ts](../../engine/src/middleware/content_type_validator.ts):
-- Evaluates HTTP method: only mutative methods (`POST`, `PUT`, `PATCH`) are evaluated.
-- Evaluates body presence: `hasRequestBody(req)` inspects `content-length` and `transfer-encoding: chunked`.
-- Empty-body allowlist: `/api/v1/web/logout` is permitted without Content-Type when no body is transmitted.
-- Validation checks:
-  - If `Content-Type` is missing on a request carrying a body: rejected with HTTP 400 `UNSUPPORTED_MEDIA_TYPE`.
-  - If `Content-Type` is set to `text/plain`, `multipart/form-data`, or any non-JSON media type: rejected with HTTP 400 `UNSUPPORTED_MEDIA_TYPE`.
-  - Emits structured security audit entry with fields: `service: 'cst'`, `component: 'content_type_validator'`, `event_name: 'request_rejected'`, `http_status: 400`, `error_code: 'UNSUPPORTED_MEDIA_TYPE'`, `failure_stage: 'pre_route_media_validation'`, and `classification: 'client_protocol_error'`.
-  - Preserves and reflects `X-Correlation-ID` header.
-  - Zero sensitive payload logging: credentials, passwords, and tokens are omitted.
+Authoritatively defined in [engine/src/middleware/content_type_validator.ts](../../engine/src/middleware/content_type_validator.ts):
 
-### 3.2 Twilio Webhook Signature Safety
-Twilio webhooks call `/webhooks`, `/webhooks/sms`, and `/webhooks/voice`.
-- These endpoints receive `application/x-www-form-urlencoded` payloads signed with `X-Twilio-Signature`.
-- `validateJsonContentType` is **not mounted** on the root `/webhooks` router.
-- `express.urlencoded()` parses the form parameters into `req.body`, while the `verify` callback stores the exact string in `req.rawBody`.
-- `verifyTwilioSignature` validates the request using `twilio.validateRequest(authToken, twilioSignature, url, params)`.
-- Verified in tests and production: Twilio requests with `application/x-www-form-urlencoded` pass through without media-type rejection, and reach the Twilio signature verification gate where an unsigned request is rejected with HTTP 401.
-
----
-
-## 4. Automated Test Scenarios & Execution Proof
-
-Test file: [tests/middleware/content_type_validation.test.ts](../../tests/middleware/content_type_validation.test.ts)
-
-| Scenario | Request | Header | Expected Result | Actual Result | Implementation Status | Evidence Status |
+| Route Category | Target Paths | Accepted Media Type | Charset | Body Limit | Empty Body Policy | Rejection Behavior |
 |---|---|---|---|---|---|---|
-| Missing Content-Type | `POST /api/v1/web/session` | None / unset | HTTP 400 UNSUPPORTED_MEDIA_TYPE | HTTP 400, structured envelope | `COMPLETED` | `VERIFIED` |
-| Text/plain | `POST /api/v1/web/session` | `Content-Type: text/plain` | HTTP 400 UNSUPPORTED_MEDIA_TYPE | HTTP 400, correlation ID preserved | `COMPLETED` | `VERIFIED` |
-| Multipart form data | `POST /api/v1/web/session` | `Content-Type: multipart/form-data` | HTTP 400 UNSUPPORTED_MEDIA_TYPE | HTTP 400, rejected pre-route | `COMPLETED` | `VERIFIED` |
-| Webhook text/plain | `POST /webhooks/elevenlabs` | `Content-Type: text/plain` | HTTP 400 UNSUPPORTED_MEDIA_TYPE | HTTP 400, rejected pre-route | `COMPLETED` | `VERIFIED` |
-| Valid JSON | `POST /api/v1/web/session` | `Content-Type: application/json` | Passes to handler (HTTP 201) | HTTP 201 Created | `COMPLETED` | `VERIFIED` |
-| Malformed JSON body | `POST /api/v1/web/session` | `Content-Type: application/json` | HTTP 400 MALFORMED_JSON | HTTP 400 MALFORMED_JSON | `COMPLETED` | `VERIFIED` |
-| Twilio Form Post | `POST /webhooks` | `application/x-www-form-urlencoded` | Passes media check (not 400) | Not rejected with 400 | `COMPLETED` | `VERIFIED` |
-| Twilio Signature Gate | `POST /webhooks/voice/inbound` | Missing signature | HTTP 401 UNAUTHORIZED | HTTP 401 UNAUTHORIZED | `COMPLETED` | `VERIFIED` |
-| GET Request | `GET /api/v1/web/projects` | No Content-Type | Passes normally (HTTP 200) | HTTP 200 OK | `COMPLETED` | `VERIFIED` |
-| Allowlisted Logout | `POST /api/v1/web/logout` | No body, no Content-Type | Passes normally (HTTP 204) | HTTP 204 No Content | `COMPLETED` | `VERIFIED` |
-| Sensitive Data Redaction | `POST /api/v1/web/session` | `password=secret` in text body | Credentials omitted from logs/response | Zero credentials leaked | `COMPLETED` | `VERIFIED` |
+| **Core JSON API** | `/api/v1/web/*`<br>`/api/v1/admin/*`<br>`/api/v1/auth/*`<br>`/api/v1/brain/*`<br>`/api/v1/alerts/*` | `application/json`<br>`application/*+json` | `utf-8` | 100kb | Forbidden (except allowlisted logout) | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **Allowlisted Logout** | `/api/v1/web/logout`<br>`/api/v1/auth/logout`<br>`/logout` | `application/json` or None | N/A | 100kb | **Permitted** (204 No Content) | Pass-through when empty |
+| **Twilio Form Webhooks** | `/webhooks/twilio/sms`<br>`/webhooks/twilio/delivery-status`<br>`/twilio/*` | `application/x-www-form-urlencoded` | `utf-8` | 100kb | Forbidden | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **Voice Ingress Webhooks** | `/webhooks/voice/inbound`<br>`/webhooks/voice/status`<br>`/webhooks/voice/events` | `application/x-www-form-urlencoded`<br>OR `application/json` | `utf-8` | 100kb | Forbidden | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **ElevenLabs Webhook** | `/webhooks/elevenlabs/post-call` | `application/json` | `utf-8` | **5MB** | Forbidden | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **Research Twin Webhook** | `/webhooks/research-twin/callback` | `application/json` | `utf-8` | 100kb | Forbidden | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **Programmatic Voice API** | `/api/v1/voice/turn`<br>`/api/v1/voice/synthesize`<br>`/audio/speak` | `application/json` | `utf-8` | 100kb | Forbidden | **400 UNSUPPORTED_MEDIA_TYPE** |
+| **Multipart Requests** | Any JSON or Form endpoint | *(None permitted)* | N/A | N/A | N/A | **400 UNSUPPORTED_MEDIA_TYPE** (Rejected pre-route before streaming) |
 
-### Vitest Test Execution Output:
-```
- ✓ tests/middleware/content_type_validation.test.ts (11 tests) 28ms
-   ✓ LOOP-1795035800169-NVLF: Content-Type Validation, Observability & Error Handling (11)
-     ✓ rejects POST to JSON endpoint without Content-Type with HTTP 400 and structured envelope
-     ✓ rejects POST to JSON endpoint with text/plain with HTTP 400
-     ✓ rejects unsupported media type multipart/form-data on JSON endpoint with HTTP 400
-     ✓ rejects POST to webhook JSON endpoint with text/plain with HTTP 400
-     ✓ allows POST to JSON endpoint with application/json and valid body
-     ✓ catches malformed JSON on application/json requests and returns HTTP 400 MALFORMED_JSON
-     ✓ does NOT reject Twilio webhook POST with application/x-www-form-urlencoded
-     ✓ rejects Twilio webhook when signature is missing (proves signature gate intact)
-     ✓ does NOT reject GET requests to any endpoint without Content-Type
-     ✓ allows empty-body POST to allowlisted logout route without Content-Type
-     ✓ does not expose credentials or sensitive parameters in error responses or audit logs
+---
 
- Test Files  1 passed (1)
-      Tests  11 passed (11)
+## 4. Phase 4 Mandatory Proof: Route Non-Execution Verification
+
+To satisfy Criterion NVLF-06, automated test assertions instrument business services and database write methods with Vitest spies (`vi.spyOn`).
+
+| Test Scenario | Request Endpoint & Payload | Target Business Spy | Downstream Handler Invoked? | Database Write Occurred? | Result Status |
+|---|---|---|---|---|---|
+| **Invalid Content-Type on Twilio SMS** | `POST /webhooks/twilio/sms`<br>`Content-Type: text/plain` | `DbClient.saveInboundMessage` | **NO** (`expect(spy).not.toHaveBeenCalled()`) | **NO** (`DbClient.getInboundMessage(...) === undefined`) | `PASS` |
+| **Invalid Content-Type on Twilio Voice** | `POST /webhooks/twilio/voice/inbound`<br>`Content-Type: text/plain` | `VoiceInterface.handleInboundCall` | **NO** (`expect(spy).not.toHaveBeenCalled()`) | **NO** (Zero calls logged) | `PASS` |
+| **Invalid Content-Type on ElevenLabs** | `POST /webhooks/elevenlabs/post-call`<br>`Content-Type: text/plain` | `CallLogPoster.post` | **NO** (`expect(spy).not.toHaveBeenCalled()`) | **NO** (Zero call cards posted) | `PASS` |
+| **Malformed JSON on Admin Mutation** | `POST /api/v1/admin/tenants`<br>`Content-Type: application/json`<br>`{ broken_syntax }` | `DbClient.saveTenant` | **NO** (`expect(spy).not.toHaveBeenCalled()`) | **NO** (`allTenants.find('tenant-evil') === undefined`) | `PASS` |
+| **Missing Content-Type on Admin Mutation** | `POST /api/v1/admin/tenants`<br>`Content-Type: (unset)` | `DbClient.saveTenant` | **NO** (`expect(spy).not.toHaveBeenCalled()`) | **NO** (`allTenants.find('tenant-unauth') === undefined`) | `PASS` |
+
+---
+
+## 5. Automated Verification Results
+
+### 5.1 Verification Command Matrix
+
+| Verification Category | Command Executed | Passed | Failed | Skipped | Exit Code | Notes |
+|---|---|---:|---:|---:|---|---|
+| **Middleware Unit Tests** | `npx vitest run tests/middleware/content_type_validation.test.ts` | 22 | 0 | 0 | `0` | Comprehensive coverage of all 16 scenarios & Phase 4 spies |
+| **Integration Regression** | `npx vitest run tests/middleware/content_type_validation.test.ts tests/web/web_interface.test.ts tests/transport/inbound.test.ts tests/transport/delivery_status_webhook.test.ts tests/interfaces/elevenlabs_webhook.test.ts tests/admin/admin_api.test.ts` | 92 | 0 | 0 | `0` | Full multi-channel route compatibility confirmed |
+| **Playwright Browser Tests** | `npx playwright test tests/browser/web_auth_and_voice.spec.ts tests/browser/pending_feedback.spec.ts --project=chromium` | 11 | 0 | 0 | `0` | Full browser chat, login, and UI regression passed |
+| **TypeScript Compilation** | `npm run typecheck` (`tsc --noEmit -p engine/tsconfig.json`) | N/A | N/A | N/A | `0` | Zero type errors |
+| **Production Build** | `npm run build` (`tsc -b engine/tsconfig.json && node scripts/copy_web_assets.js`) | N/A | N/A | N/A | `0` | Build artifacts emitted cleanly to `dist/` |
+
+### 5.2 Full Vitest Test Breakdown (22/22 Passing)
+```text
+ ✓ tests/middleware/content_type_validation.test.ts (22 tests) 41ms
+   ✓ LOOP-1795035800169-NVLF: Content-Type Validation, Observability & Error Handling (22)
+     ✓ Core Media Type Rejection & Structured Envelopes (11)
+       ✓ rejects POST to JSON endpoint without Content-Type with HTTP 400 and structured envelope
+       ✓ rejects POST to JSON endpoint with text/plain with HTTP 400
+       ✓ rejects unsupported media type multipart/form-data on JSON endpoint with HTTP 400
+       ✓ rejects POST to webhook JSON endpoint with text/plain with HTTP 400
+       ✓ allows POST to JSON endpoint with application/json and valid body
+       ✓ catches malformed JSON on application/json requests and returns HTTP 400 MALFORMED_JSON
+       ✓ does NOT reject Twilio webhook POST with application/x-www-form-urlencoded
+       ✓ rejects Twilio webhook when signature is missing (proves signature gate intact)
+       ✓ does NOT reject GET requests to any endpoint without Content-Type
+       ✓ allows empty-body POST to allowlisted logout route without Content-Type
+       ✓ does not expose credentials or sensitive parameters in error responses or audit logs
+     ✓ Charset Validation (3)
+       ✓ accepts application/json with valid utf-8 charset
+       ✓ rejects application/json with unsupported charset iso-8859-1 with HTTP 400
+       ✓ rejects application/json with unsupported charset utf-16 with HTTP 400
+     ✓ Twilio Webhook Specific Form Enforcement (2)
+       ✓ rejects Twilio SMS webhook with application/json with HTTP 400
+       ✓ rejects Twilio delivery status webhook with text/plain with HTTP 400
+     ✓ Body Size Limits & Oversized Payloads (1)
+       ✓ rejects oversized JSON payload (>100kb) with HTTP 413 PAYLOAD_TOO_LARGE on standard API endpoints
+     ✓ Phase 4: Mandatory Proof — Invalid Requests Never Reach Business Routes (5)
+       ✓ proves invalid Content-Type stops execution BEFORE Twilio SMS handler or DB touch
+       ✓ proves invalid Content-Type stops execution BEFORE Twilio Voice handler execution
+       ✓ proves invalid Content-Type stops execution BEFORE ElevenLabs call log poster execution
+       ✓ proves malformed JSON stops execution BEFORE business route handler
+       ✓ proves missing Content-Type on admin mutation stops execution BEFORE authentication and business handler
 ```
 
 ---
 
-## 5. Live Production Verification & Telemetry Proof
+## 6. GitHub Actions CI Evidence Assessment
 
-Following the merge of PR #62 (`4f2f40906fc2b0e3a2da47ece07e2e16441a4fc2`), Render deployment `dep-dbvles0jo6nc73a7p5ag` went live on service `srv-db8hepqvcj2c73adpus0` at `2026-11-19T20:10:00.428419Z`.
+Inspection of `.github/workflows/ci.yml` confirms:
+- **Test Inclusions:** Runs `npm run typecheck`, `npm run build`, `npm test` (which executes Vitest across `tests/**/*.test.ts`, automatically including `tests/middleware/content_type_validation.test.ts`), and PostgreSQL integration suites.
+- **Historical Merges:** PR #62 and PR #63 passed GitHub Actions CI prior to being merged into `main`.
+- **Current Branch Status:** Because local commits have not been pushed to remote per execution restrictions, the formal CI status for the latest local changes is:
+  **`CI_VERIFICATION_PENDING`** (Local tests pass 100%; CI will execute automatically upon remote push).
 
-Live HTTP verification was executed directly against `https://bha-cst-7u9e.onrender.com`:
+---
 
-### 5.1 Production Request Verification Table
+## 7. Production Deployment Evidence Assessment
 
-| Test ID | Path & Method | Headers | Body | Status | Response Body | Implementation Status | Evidence Status |
-|---|---|---|---|---|---|---|---|
-| `prod_live_test_missing_ct_001` | `POST /api/v1/web/session` | None / unset | `{"email":"test@example.com"}` | **400 Bad Request** | `{"error":"UNSUPPORTED_MEDIA_TYPE","message":"Content-Type must be application/json","correlation_id":"prod_live_test_missing_ct_001"}` | `COMPLETED` | `VERIFIED` |
-| `prod_live_test_text_plain_002` | `POST /api/v1/web/session` | `Content-Type: text/plain` | `email=test@example.com` | **400 Bad Request** | `{"error":"UNSUPPORTED_MEDIA_TYPE","message":"Content-Type must be application/json","correlation_id":"prod_live_test_text_plain_002"}` | `COMPLETED` | `VERIFIED` |
-| `prod_live_test_malformed_json_003` | `POST /api/v1/web/session` | `Content-Type: application/json` | `{ invalid_json_syntax: true }` | **400 Bad Request** | `{"error":"MALFORMED_JSON","message":"Request body contains invalid JSON","correlation_id":"prod_live_test_malformed_json_003"}` | `COMPLETED` | `VERIFIED` |
-| `prod_live_test_logout_004` | `POST /api/v1/web/logout` | No Content-Type | *(empty)* | **204 No Content** | *(empty response)* | `COMPLETED` | `VERIFIED` |
-| *(Read-only)* | `GET /api/v1/web/projects` | None | *(none)* | **200 OK** | `[{"project_id":"proj-vfarm-main","name":"vFarm Austin HQ"}]` | `COMPLETED` | `VERIFIED` |
-| `prod_live_test_twilio_005` | `POST /webhooks/voice/inbound` | `Content-Type: application/x-www-form-urlencoded` | `CallSid=CA123&From=%2B15551234567` | **401 Unauthorized** | Twilio signature check error | `COMPLETED` | `VERIFIED` (Proves Twilio signature gate reached; not authenticated) |
+- **Current Live Production Deploy:** Render service `srv-db8hepqvcj2c73adpus0` is live on deploy `dep-dc0ch3qvcj2c73dagsjg` (commit `d7b1345faf9f17328fe10cff58ff10b5ee33604b`).
+- **Historical Production Verification:** Baseline PR #62 verification was executed live against `https://bha-cst-7u9e.onrender.com` on deploy `dep-dbvles0jo6nc73a7p5ag`:
+  - `POST /api/v1/web/session` with missing Content-Type returned HTTP 400 `UNSUPPORTED_MEDIA_TYPE`.
+  - `POST /api/v1/web/session` with `text/plain` returned HTTP 400 `UNSUPPORTED_MEDIA_TYPE`.
+  - `POST /api/v1/web/session` with malformed JSON returned HTTP 400 `MALFORMED_JSON`.
+  - Real-time container logs captured audit records with `event_name: 'request_rejected'`, `tripwire: true`, and `source_system: 'cst_gateway'`.
+- **Latest Implementation Production Status:**
+  Because deployment to Render was not performed in this session (per explicit restriction: *Do not deploy to Render*), the status of the newly expanded pre-route middleware is:
+  **`PRODUCTION_SHA_PENDING_DEPLOYMENT`** (Ready for deployment upon owner review).
 
-*Important Clarification on Scenario 6:* The HTTP 401 response demonstrates that the request bypassed the JSON media-type validator and successfully reached the Twilio webhook signature verification gate. It does not demonstrate a successful authenticated Twilio request.
+---
 
-### 5.2 Real Production Render Logs Captured via CLI
+## 8. Outstanding Dependencies & Gap Separation
 
-Inspection of live container logs (`render logs --resources srv-db8hepqvcj2c73adpus0 --limit 60`) confirms that incoming rejections were handled pre-route and emitted structured audit logs:
+1. **CST Implementation Gaps:** `0` (Fully completed). All pre-route middleware ordering, route policies, charset checks, body limits, and instrumented tests are implemented and passing.
+2. **CI Verification Gaps:** `CI_VERIFICATION_PENDING` (Pending Git push to trigger GitHub Actions).
+3. **Production Deployment Gaps:** `PRODUCTION_SHA_PENDING_DEPLOYMENT` (Pending Git merge and Render build).
+4. **Owner Acceptance:** `READY_FOR_OWNER_REVIEW` (Awaiting Jason's review and sign-off).
 
-```log
-Nov 19 20:12:22 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:22.951Z","type":"SECURITY_LEDGER","tenant_id":null,"actor":"anonymous","role":"unknown","entry_point":"api","tool_or_route":"/session","outcome":"refused","reason":"MISSING_CONTENT_TYPE","correlation_id":"prod_live_test_missing_ct_001","commercial_impact":"Request rejected due to missing Content-Type header on JSON endpoint","service":"cst","environment":"production","component":"content_type_validator","event_name":"request_rejected","event_type":"security_audit","route":"/session","method":"POST","http_status":400,"error_code":"UNSUPPORTED_MEDIA_TYPE","failure_stage":"pre_route_media_validation","classification":"client_protocol_error","source_system":"cst_gateway","content_type":null,"level":"WARN","tripwire":true}
-Nov 19 20:12:22 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:22.955Z","level":"INFO","message":"Security ledger event recorded: /session","service":"cst","environment":"production"}
-Nov 19 20:12:30 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:30.938Z","type":"SECURITY_LEDGER","tenant_id":null,"actor":"anonymous","role":"unknown","entry_point":"api","tool_or_route":"/session","outcome":"refused","reason":"UNSUPPORTED_CONTENT_TYPE","correlation_id":"prod_live_test_text_plain_002","commercial_impact":"Request rejected due to unsupported Content-Type \"text/plain\" on JSON endpoint","service":"cst","environment":"production","component":"content_type_validator","event_name":"request_rejected","event_type":"security_audit","route":"/session","method":"POST","http_status":400,"error_code":"UNSUPPORTED_MEDIA_TYPE","failure_stage":"pre_route_media_validation","classification":"client_protocol_error","source_system":"cst_gateway","content_type":"text/plain","level":"WARN","tripwire":true}
-Nov 19 20:12:30 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:30.942Z","level":"INFO","message":"Security ledger event recorded: /session","service":"cst","environment":"production"}
-Nov 19 20:12:36 bha-cst-7u9e {"timestamp":"2026-11-19T20:12:36.438Z","level":"WARN","message":"Malformed JSON payload rejected on /api/v1/web/session: Unexpected token 'i', \"{ invalid_\"... is not valid JSON","service":"cst","environment":"production","component":"content_type_validator","event_name":"malformed_json_rejected","event_type":"protocol_error","correlation_id":"prod_live_test_malformed_json_003","path":"/api/v1/web/session","method":"POST","http_status":400,"error_code":"MALFORMED_JSON","failure_stage":"body_parsing","classification":"client_syntax_error","source_system":"cst_gateway"}
-```
+---
 
-### 5.3 Database Write Path Verification & Limitations
+## 9. 15-Point Acceptance Criteria Table
 
-- **Application Log Write Path:** `VERIFIED`. The log line `{"message":"Security ledger event recorded: /session"}` is emitted by `DbClient.recordSecurityLedgerEvent(...)` upon execution of the SQL `INSERT INTO security_ledger ...` write path.
-- **Direct Database Inspection:** `NOT INDEPENDENTLY VERIFIED`. Direct read-only SQL querying of `security_ledger` rows in datastore `bha-cst-postgres` (`dpg-db8he2qvcj2c73ado3s0-a`) was not performed directly via psql due to private network isolation. The claim of database persistence is based strictly on application runtime logs reporting successful write execution.
+| ID | Acceptance Criterion | Status | Required Evidence & Exact Line References |
+|---|---|---|---|
+| **NVLF-01** | Content-Type policy exists | `PASS` | `CONTENT_TYPE_POLICY` defined in `engine/src/middleware/content_type_validator.ts:15-38`. |
+| **NVLF-02** | Validation executes before business routes | `PASS` | `app.use(createPreRouteContentTypeValidator())` mounted at `engine/src/app.ts:51` before body parsing and route mounting. |
+| **NVLF-03** | Missing Content-Type handled | `PASS` | Verified in `tests/middleware/content_type_validation.test.ts:15-38` (returns 400 `UNSUPPORTED_MEDIA_TYPE`). |
+| **NVLF-04** | Unsupported types rejected | `PASS` | `tests/middleware/content_type_validation.test.ts:40-71` verifies rejection of `text/plain` and `multipart/form-data`. |
+| **NVLF-05** | Malformed JSON handled | `PASS` | `handleJsonSyntaxError` in `engine/src/middleware/content_type_validator.ts:333-372` returns 400 `MALFORMED_JSON`. |
+| **NVLF-06** | Invalid requests never execute route handlers | `PASS` | Instrumented spies on `VoiceInterface`, `CallLogPoster`, and `DbClient` in `content_type_validation.test.ts:245-316` prove 0 downstream invocations. |
+| **NVLF-07** | No unintended business side effects | `PASS` | Verified: `DbClient.getInboundMessage(...) === undefined`, tenant list unmodified, 0 transcript/call card rows. |
+| **NVLF-08** | Twilio webhooks remain compatible | `PASS` | `tests/transport/inbound.test.ts` and `tests/transport/delivery_status_webhook.test.ts` pass cleanly (100%). |
+| **NVLF-09** | Authentication remains intact | `PASS` | `verifyTwilioSignature` and `requireAdminAuth` gates execute normally on valid media types. |
+| **NVLF-10** | Multipart and media routes remain compatible | `PASS` | Multipart requests to JSON/Form endpoints rejected pre-route without file leaks (`content_type_validation.test.ts:63-71`). |
+| **NVLF-11** | Error responses are consistent and safe | `PASS` | Stable `{ error, message, correlation_id }` schema with zero credentials or stack traces leaked (`content_type_validation.test.ts:142-158`). |
+| **NVLF-12** | Typecheck and build pass | `PASS` | `npm run typecheck` and `npm run build` completed with exit code 0. |
+| **NVLF-13** | Relevant CI workflow passes | `CI_VERIFICATION_PENDING` | Local test suite passes 100%; CI trigger pending commit & push. |
+| **NVLF-14** | Deployed SHA includes implementation | `PRODUCTION_SHA_PENDING_DEPLOYMENT` | PR #62 baseline deployed on Render; current branch enhancements staged locally pending deployment. |
+| **NVLF-15** | Owner acceptance | `READY_FOR_OWNER_REVIEW` | Submitted for Jason's formal review and closure. |
+
+---
+
+## 10. Audit Conclusion and Acceptance Decision
+
+### Decision: `READY_FOR_OWNER_REVIEW`
+
+All CST-owned technical requirements, middleware ordering adjustments, route policy definitions, regression test suites, and empirical non-execution proofs for **`LOOP-1795035800169-NVLF`** are 100% complete and verified locally. The acceptance document is up to date and ready for Jason's final review.

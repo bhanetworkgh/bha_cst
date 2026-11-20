@@ -108,6 +108,18 @@ Executed live HTTP requests against `https://bha-cst-7u9e.onrender.com`:
 
 *Important Clarification on Scenario 6:* The HTTP 401 response confirms that the form-encoded request successfully bypassed JSON media validation and reached the Twilio webhook signature verification gate. It does not represent a successful authenticated Twilio request.
 
+### 3.4 Verification of Historical Session Invalidation (`web_a8150cbe`)
+
+During the 18 November 2026 alignment review, session `web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` was issued on production during authentication testing (`docs/evidence/2026-11-18-15wv-relog-alignment-evidence.md`). To satisfy Jason's hold condition regarding active session termination, live verification was executed to confirm that this historical session token is strictly invalidated:
+
+| Probe Path | Headers / Payload | Observed Status | Response Body | Render Request ID | Verification |
+|---|---|---|---|---|---|
+| `GET /api/v1/web/history` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` | **401 Unauthorized** | `{"error":"INVALID_SESSION"}` | `27554950-257e-41b1` | `PROD_HTTP_VERIFIED` |
+| `POST /api/v1/web/message` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8`<br>`Content-Type: application/json`<br>`{"text":"hello"}` | **401 Unauthorized** | `{"error":"INVALID_SESSION","message":"A valid web session is required."}` | `9a75f5f8-fcc7-4ed3` | `PROD_HTTP_VERIFIED` |
+| `POST /api/v1/web/logout` | `Cookie: cst_web_session=web_a8150cbe-e342-4d33-bc90-e373ad31e4d8` | **204 No Content** | `set-cookie: cst_web_session=; Max-Age=0; Path=/` | `cf6e5793-d4ed-4c6c` | `PROD_HTTP_VERIFIED` |
+
+**Architectural Confirmation:** CST sessions are tracked in an ephemeral in-memory map (`const sessions = new Map<string, WebSession>()` in `engine/src/interfaces/web/index.ts`). Container redeployments (`dep-dbvf6f142hec73be9gig` and `dep-dbvles0jo6nc73a7p5ag`) flushed all in-memory tokens. Both direct live HTTP probes and container memory architecture confirm that historical session `web_a8150cbe` is fully invalidated.
+
 ---
 
 ## 4. Logging & Database Evidence
