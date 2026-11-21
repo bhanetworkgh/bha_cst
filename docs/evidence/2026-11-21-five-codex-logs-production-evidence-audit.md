@@ -395,14 +395,16 @@ The `/api/health` probe returns `status: "degraded"` by design, reflecting three
 
 ---
 
-## 9. Four North Star Loops Alignment
+## 9. Target Scope Confirmation — Restricted Five Loops
 
-| Loop ID | Title | CST-Owned Work Status | External Dependencies | Verified Progress in Repository | Next Action Required |
-|---|---|:---:|---|---|---|
-| **`LOOP-1794902688969-80HM`** | Monitoring Twin Confidence & Fallback Rules | **IMPLEMENTED** | Restored n8n workflow deployment; Priority taxonomy approval | `computeDependentDeviceStatus` implemented in `engine/src/connectors/vfarm.ts`; 19/19 tests pass in `sensor_status_semantics.test.ts`; Slack integration ready. | Destiny Arupi & Jeganathan to confirm n8n card transport configuration. |
-| **`LOOP-1793031575930-X4EI`** | KMG9 Authoritative BHARAG RAG Acceptance | **IMPLEMENTED** | Upstream BHARAG cluster re-indexing (`LOOP-1791991972916-G718`) | BHARAG client and boundary guards verified (16/16 tests pass); fail-closed search implemented. | Jason Bays to inspect and approve BHARAG re-indexing under G718. |
-| **`LOOP-1792681313173-0SNO`** | Form-to-Device Traceability & Farm Fallback | **IMPLEMENTED** | Upstream vFarm user-to-device join table (`LOOP-1792681313174-ZAKN`) | Form-to-device routing logic and aggregate farm fallback implemented in `engine/src/adapters/vfarm/`; unit verified. | Jeganathan to deploy ZAKN join schema in upstream vFarm. |
-| **`LOOP-1795035800169-NVLF`** | Pre-Route Content-Type Validation Middleware | **EVIDENCE_READY** | None (CST-contained) | Middleware registered pre-route; PRs #61, #62, #63, #68 merged; 8/8 Playwright tests pass live. | Jason Bays to review NVLF evidence package and execute formal closure. |
+Per restricted scope directives, this audit is strictly confined to the five evaluated Codex loops:
+- **K9VT** (`LOOP-1793917459843-K9VT`, Row 467)
+- **XKWD** (`LOOP-1793031575930-XKWD`, Row 471)
+- **9YQU** (`LOOP-1790682740121-9YQU`, Row 472)
+- **DMVQ** (`LOOP-1790032940977-DMVQ`, Row 482)
+- **X6DK** (`LOOP-1793031575929-X6DK`, Row 483)
+
+All external loops outside the five evaluated records are strictly excluded from this audit report.
 
 ---
 
@@ -424,8 +426,6 @@ The `/api/health` probe returns `status: "degraded"` by design, reflecting three
 |---|---|---|---|---|---|---|
 | **`DW-1789623401234-QJY3`** | 9YQU | Destiny Arupi (`U0AEW3TBYH1`) | Research Twin callback signing contract and investigation dispatch unapproved | Formal written sign-off on `RT_CALLBACK_SIGNING_SECRET` and callback JSON payload schema | Signed Decision Watch record | Destiny to review contract in `docs/evidence/` and approve |
 | **`ARCH-XKWD-DECISION`** | XKWD / Audit 5541 | Jason Bays | Architecture decision on transcript persistence table structure | Explicit decision: accept `messages` table with `messages_conversation_id_fkey` or require dedicated `transcripts` table | Written review ruling on Codex card | Jason to review empirical 0-orphan evidence and record decision |
-| **`LOOP-1791991972916-G718`** | X4EI | Jason Bays / External Team | BHARAG vector database cluster re-indexing incomplete upstream | Verification of re-indexed corpus and authoritative search boundary | BHARAG Gate 6 cluster verification report | External team to complete re-indexing; Jason to verify |
-| **`LOOP-1792681313174-ZAKN`** | 0SNO | Jeganathan | vFarm database join table mapping users to hardware devices is unmerged | vFarm schema migration deploying user-device join table | Upstream vFarm OpenAPI spec update & PR merge | Jeganathan to deploy ZAKN in vFarm |
 | **`SLACK-ADMIN-MANIFEST`** | K9VT | Workspace Admin (`admin@bhanetwork.org`) | Live Slack OAuth scopes cannot be exported without workspace admin permissions | Export of live manifest YAML for App `A0CF23GMNHJ` | Manifest YAML file matching repository spec | Admin to provide manifest export |
 
 ---
@@ -438,13 +438,9 @@ To maintain absolute accounting and operational honesty:
    - XKWD: `DbClient.resolveSystemIdForTenant()` active; 0 orphan records verified live.
    - 9YQU: Sensor-only filtering active; fail-closed telemetry mapping operational; 89 test cases pass.
    - X6DK: PR #23 deployed; `/health` vs `/api/health` semantic split operational.
-   - NVLF: Pre-route content-type validation middleware deployed; 8/8 Playwright tests pass live.
 3. **Historical Relogged Work:** DMVQ is explicitly classified as `HISTORICAL_RELOG_ONLY` (completed Oct 2026; no new engine movement in November).
 4. **External Approvals Pending:**
    - 9YQU remains blocked on Destiny Arupi's sign-off (`DW-1789623401234-QJY3`).
-   - X4EI remains blocked on upstream G718 BHARAG re-indexing.
-   - 0SNO remains blocked on upstream ZAKN vFarm join schema.
-   - 80HM remains blocked on n8n card transport configuration.
 5. **Architectural Decisions Pending:** XKWD transcript model acceptance rests with Jason Bays.
 
 ---
@@ -501,18 +497,7 @@ Following the update of the five-Codex audit, this section documents the post-au
 
 ---
 
-#### 14.2.3 Four North Star Loops — Actual Closure Condition Audit
-
-| Loop ID | Title | CST-Owned Implementation | Relevant Test Output | Production Deployment & Behavior | External Dependencies | Remaining Owner Action | Genuinely Closable Now? |
-|---|---|---|---|---|---|---|:---:|
-| **`80HM`** | Monitoring Twin Confidence & Fallback Rules | `computeDependentDeviceStatus` in `vfarm.ts`; Slack integration in `monitoring_slack_service.ts`. | 19/19 tests pass in `sensor_status_semantics.test.ts`. | Live deploy `dep-dc0d7jp5efls739sstj0`. Slack test alerts delivered to `#bha-vfarm-monitoring-twin`. | n8n card transport configuration; priority taxonomy approval. | Destiny Arupi & Jeganathan to confirm n8n card transport and approve priority taxonomy. | **NO** (Pending external confirmation) |
-| **`X4EI`** | KMG9 Authoritative BHARAG RAG Acceptance | BHARAG client and boundary routing in `connectors/bharag_rag.ts`. | 16/16 tests pass in `bharag_rag_live_contract.test.ts`. | Live deploy `dep-dc0d7jp5efls739sstj0`. Fail-closed search verified. | Upstream BHARAG cluster re-indexing (`LOOP-1791991972916-G718`). | Jason Bays (authorized reviewer) to inspect re-indexed corpus and verify Gate 6 compliance. | **NO** (Blocked on G718) |
-| **`0SNO`** | Form-to-Device Traceability & Farm Fallback | OpenAPI `FarmCabinet` contracts; `resolveSensorPlacement`; farm-level aggregate fallback. | 108/108 tests pass across 9 test suites. | Live deploy `dep-dc0d7jp5efls739sstj0`. Fail-closed refusal on unlinked units. | Upstream vFarm join schema (`LOOP-1792681313174-ZAKN`). | Jeganathan to merge and deploy ZAKN join schema in vFarm. | **NO** (Blocked on ZAKN) |
-| **`NVLF`** | Pre-Route Content-Type Validation Middleware | `createPreRouteContentTypeValidator()` mounted before body parsers in `app.ts`. | 22/22 unit tests pass; 92/92 integration tests pass; 8/8 Playwright tests pass. | Live deploy `dep-dc0d7jp5efls739sstj0` (PR #68). Verified via live curl probes. | None (CST-contained). | Jason Bays to review evidence and record formal technical acceptance. | **YES** (Ready for Jason review) |
-
----
-
-#### 14.2.4 9YQU — Research Twin External Approval Scope Disaggregation
+#### 14.2.3 9YQU — Research Twin External Approval Scope Disaggregation
 - **Decision Watch `DW-1794242269028-F1RH`:** Specifically covers **CST Monitoring alert routing (SI5J)** to `#bha-pipeline-errors` and Slack message permalink collection. It does NOT satisfy Research Twin requirements.
 - **Research Twin Contract Approval (`DW-1789623401234-QJY3` / Req D):** Must be separately evaluated and signed off by Destiny Arupi (`U0AEW3TBYH1`). Her sign-off must explicitly cover:
   1. *Investigation Dispatch:* `cst.research_twin.investigation` outbound JSON schema sent to `RT_ENDPOINT_URL`.
@@ -525,13 +510,13 @@ Following the update of the five-Codex audit, this section documents the post-au
 
 ---
 
-#### 14.2.5 K9VT — Authorization Preservation Limitation
+#### 14.2.4 K9VT — Authorization Preservation Limitation
 - Verified Identity: App ID `A0CF23GMNHJ`, Bot User `U0CF23JSUG4`, display name `BHA CST Monitoring`.
 - **Limitation Preserved:** Without an official before/after export of the Slack App Manifest YAML from the workspace administrator (`admin@bhanetwork.org`), CST engineering cannot cryptographically prove that OAuth scopes (`chat:write`, `channels:read`, etc.) were preserved unchanged during the display-name update. This claim is explicitly marked **`[NOT VERIFIED - REQUIRES WORKSPACE ADMIN]`**.
 
 ---
 
-#### 14.2.6 XKWD — Architecture Decision Gate Preservation
+#### 14.2.5 XKWD — Architecture Decision Gate Preservation
 - **Database Reality:** No `transcripts` table exists in PostgreSQL.
 - **Integrity Proof:** The `messages` table enforces `messages_conversation_id_fkey` with `ON DELETE NO ACTION`. Live database queries confirm **0 orphan messages** across all 66 production rows.
 - **Test Reproducibility:** `npm test -- tests/db/conversation_fk_integrity.test.ts` consistently exits with code `0` (9 passed, 0 failed).
@@ -548,10 +533,6 @@ Following the update of the five-Codex audit, this section documents the post-au
 | **XKWD Transcripts Table** | Transcripts table foreign key verified | No table named `transcripts` exists. Turn transcripts are persisted in `messages` (0 orphans live). | **`VERIFIED ARCHITECTURE (NO SEPARATE TABLE)`** | Jason Bays to decide if `messages` model is acceptable. |
 | **9YQU Research Twin** | Research Twin approved under `F1RH` | `F1RH` covers SI5J alert routing only. Research Twin requires separate 6-point sign-off from Destiny Arupi. | **`EXTERNAL APPROVAL REQUIRED`** | Destiny Arupi to formally approve Research Twin contract. |
 | **K9VT Scopes** | Scopes preserved across rename | App ID & Bot User ID verified. Manifest before/after diff not stored in repo. | **`APP ID VERIFIED / SCOPES UNVERIFIED`** | Workspace admin to provide manifest export. |
-| **80HM Closure** | 80HM ready for closure | Code and Slack alerts implemented; n8n card transport & taxonomy unconfirmed. | **`OPEN — PENDING EXTERNAL`** | Destiny & Jegan to confirm transport configuration. |
-| **X4EI Closure** | X4EI ready for closure | CST fail-closed search implemented; upstream BHARAG cluster unindexed. | **`OPEN — BLOCKED UPSTREAM`** | BHARAG team to complete G718 re-indexing. |
-| **0SNO Closure** | 0SNO ready for closure | Form-to-device and farm fallback implemented; upstream ZAKN join table unmerged. | **`OPEN — BLOCKED UPSTREAM`** | Jeganathan to deploy ZAKN join schema. |
-| **NVLF Closure** | NVLF ready for closure | Pre-route middleware mounted globally; 22 unit, 92 integration, 8 Playwright pass. | **`EVIDENCE READY / PENDING OWNER`** | Jason Bays to review evidence and accept. |
 
 ---
 
@@ -564,8 +545,6 @@ Following the update of the five-Codex audit, this section documents the post-au
 1. **Why Full Closure / Full Payment is NOT Recommended (`PARTIALLY_ACCEPTABLE`):**
    - **9YQU** cannot be closed because Destiny Arupi has not approved the Research Twin contract.
    - **XKWD** cannot be closed because Jason Bays has not ruled on whether a separate `transcripts` table is required.
-   - **X4EI** and **0SNO** remain blocked on upstream dependencies (G718 re-indexing and ZAKN join schema).
-   - **80HM** remains blocked on external n8n card transport confirmation.
    - **DMVQ** produces zero new engine movement (historical relog only).
 2. **Why the Evidence Package is `READY_FOR_JASON_REVIEW`:**
    - Every claim in the CST audit has been tested, triaged, and given an explicit evidentiary label.
