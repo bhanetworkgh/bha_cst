@@ -23,7 +23,7 @@ All evidence was obtained through read-only inspection of the repository, produc
 | :--- | :---: | :--- | :--- | :---: | :--- | :--- |
 | **K9VT** | 467 | `LOOP-1793917459843-K9VT` | Slack App Rename & Identity | **`READY_TO_RESPOND`** | `[INDEPENDENTLY VERIFIED]` Slack App ID `A0CF23GMNHJ` and Bot User `U0CF23JSUG4` confirmed as `BHA CST Monitoring`. `[HISTORICAL EVIDENCE]` Jason Bays decoupled alert routing to SI5J. | Permission preservation across renames is qualified: full manifest export requires Slack workspace admin confirmation. |
 | **XKWD** | 471 | `LOOP-1793031575930-XKWD` (Audit 5541) | Transcript Referential Integrity | **`READY_WITH_LIMITATIONS`** | `[INDEPENDENTLY VERIFIED]` No `transcripts` table exists; turn transcripts are stored in `messages`. 0 orphan messages in production DB; FK `messages_conversation_id_fkey` enforced. 9/9 tests pass. | Requires Jason Bays's explicit architectural decision confirming `messages` as the approved transcript model (or requesting a dedicated table). |
-| **9YQU** | 472 | `LOOP-1790682740121-9YQU` | vFarm Authenticated E2E | **`EXTERNAL_APPROVAL_REQUIRED`** | `[INDEPENDENTLY VERIFIED]` Strict sensor filtering implemented; 89 test cases pass; Twilio Call SID `CA26d9ef83` stored in production DB `voice_deliveries`. | External sign-off from Destiny Arupi (`U0AEW3TBYH1`) on Research Twin callback contract (`DW-1794242269028-F1RH`). |
+| **9YQU** | 472 | `LOOP-1790682740121-9YQU` | vFarm Authenticated E2E | **`EXTERNAL_APPROVAL_REQUIRED`** | `[INDEPENDENTLY VERIFIED]` Strict sensor filtering implemented; 89 test cases pass; Twilio Call SID `CA26d9ef83` stored in production DB `voice_deliveries`. | External sign-off from Destiny Arupi (`U0AEW3TBYH1`) on Research Twin callback contract (`DW-1789623401234-QJY3`). |
 | **DMVQ** | 482 | `LOOP-1790032940977-DMVQ` | Circular Module Init Dependency | **`HISTORICAL_RELOG_ONLY`** | `[HISTORICAL EVIDENCE]` Circular dependency resolved in Oct 2026 via composition root and dynamic imports. Base commit passes 1,520 tests. | No new code movement in November. Test population figures (557/185/26) are superseded historical artifacts. |
 | **X6DK** | 483 | `LOOP-1793031575929-X6DK` | Post-Deploy `/health` Recheck | **`READY_TO_RESPOND`** | `[INDEPENDENTLY VERIFIED]` PR #23 deployed under `dep-dbkh3p6417fc73bffihg`. Timezone chronology resolved (merge 22:42:42Z, deploy 22:43:32Z). Liveness vs readiness split verified live. | Truthful reporting of `/api/health` degraded state (vFarm timestamp omission and unverified Research Twin contract). |
 
@@ -238,7 +238,7 @@ CST's Monitoring Twin implements fail-closed monitoring over upstream IoT teleme
 4. **External Blocker Details:**
    - **Configuration:** `RT_ENDPOINT_URL`, `RT_SERVICE_API_KEY`, and `RT_CALLBACK_SIGNING_SECRET` are present in Render.
    - **Implementation:** Bridge, client, webhook router, schemas, and lifecycle handlers are fully written in `engine/src/research_twin/`.
-   - **Blocker:** Destiny Arupi (`U0AEW3TBYH1`) has not signed off on the Research Twin callback signing contract (`DW-1794242269028-F1RH`). CST intentionally marks `RT_CONTRACT_VERIFIED !== 'true'`, returning `state: "blocked"`, `operational: false` on `/api/health`.
+   - **Blocker:** Destiny Arupi (`U0AEW3TBYH1`) has not signed off on the Research Twin callback signing contract (`DW-1789623401234-QJY3`). CST intentionally marks `RT_CONTRACT_VERIFIED !== 'true'`, returning `state: "blocked"`, `operational: false` on `/api/health`.
    - **Status:** **`EXTERNAL_APPROVAL_REQUIRED`**. `[EXTERNAL APPROVAL REQUIRED]`
 
 ### 5.3 vFarm Person-to-Unit Dependency Disaggregation (`LOOP-1790985133889-8D7U`)
@@ -359,7 +359,7 @@ The `/api/health` probe returns `status: "degraded"` by design, reflecting three
 - **Test Results:** 89 passing tests across 5 test suites (14/14 E2E, 26/26 security proxy, 20/20 contract, 17/17 live adapter, 12/12 service key).
 - **Production Evidence:** Twilio Call SID `CA26d9ef83116a44bb2871d7f22757c0b8` stored in production DB `voice_deliveries`. ElevenLabs conversation `conv_1901m73dat6cfr9vbme0z54sr64` verified.
 - **Limitations:** Research Twin is blocked (`state: "blocked"`) until Destiny Arupi approves callback signing secret.
-- **Decision Owner:** Destiny Arupi (`DW-1794242269028-F1RH`).
+- **Decision Owner:** Destiny Arupi (`DW-1789623401234-QJY3`).
 - **Mission Fit:** CST conversational frontline for IoT telemetry with fail-closed safeguards.
 - **Commercial Opportunity:** Autonomous frontline support for commercial vertical farm managers without sensor hallucination.
 - **Honest Status:** **`EXTERNAL_APPROVAL_REQUIRED`**
@@ -422,7 +422,7 @@ The `/api/health` probe returns `status: "degraded"` by design, reflecting three
 
 | Blocker Reference | Affected Record / Loop | Responsible Owner | Exact Blocker Description | Required Input or Decision | Required Evidence | Next Action |
 |---|---|---|---|---|---|---|
-| **`DW-1794242269028-F1RH`** | 9YQU / `80HM` | Destiny Arupi (`U0AEW3TBYH1`) | Research Twin callback signing contract and investigation dispatch unapproved | Formal written sign-off on `RT_CALLBACK_SIGNING_SECRET` and callback JSON payload schema | Signed Decision Watch record | Destiny to review contract in `docs/evidence/` and approve |
+| **`DW-1789623401234-QJY3`** | 9YQU | Destiny Arupi (`U0AEW3TBYH1`) | Research Twin callback signing contract and investigation dispatch unapproved | Formal written sign-off on `RT_CALLBACK_SIGNING_SECRET` and callback JSON payload schema | Signed Decision Watch record | Destiny to review contract in `docs/evidence/` and approve |
 | **`ARCH-XKWD-DECISION`** | XKWD / Audit 5541 | Jason Bays | Architecture decision on transcript persistence table structure | Explicit decision: accept `messages` table with `messages_conversation_id_fkey` or require dedicated `transcripts` table | Written review ruling on Codex card | Jason to review empirical 0-orphan evidence and record decision |
 | **`LOOP-1791991972916-G718`** | X4EI | Jason Bays / External Team | BHARAG vector database cluster re-indexing incomplete upstream | Verification of re-indexed corpus and authoritative search boundary | BHARAG Gate 6 cluster verification report | External team to complete re-indexing; Jason to verify |
 | **`LOOP-1792681313174-ZAKN`** | 0SNO | Jeganathan | vFarm database join table mapping users to hardware devices is unmerged | vFarm schema migration deploying user-device join table | Upstream vFarm OpenAPI spec update & PR merge | Jeganathan to deploy ZAKN in vFarm |
@@ -441,7 +441,7 @@ To maintain absolute accounting and operational honesty:
    - NVLF: Pre-route content-type validation middleware deployed; 8/8 Playwright tests pass live.
 3. **Historical Relogged Work:** DMVQ is explicitly classified as `HISTORICAL_RELOG_ONLY` (completed Oct 2026; no new engine movement in November).
 4. **External Approvals Pending:**
-   - 9YQU remains blocked on Destiny Arupi's sign-off (`DW-1794242269028-F1RH`).
+   - 9YQU remains blocked on Destiny Arupi's sign-off (`DW-1789623401234-QJY3`).
    - X4EI remains blocked on upstream G718 BHARAG re-indexing.
    - 0SNO remains blocked on upstream ZAKN vFarm join schema.
    - 80HM remains blocked on n8n card transport configuration.
@@ -497,7 +497,7 @@ Following the update of the five-Codex audit, this section documents the post-au
 2. **SHA Verification Limitation:**
    - Render CLI (`render deploys list srv-db8hepqvcj2c73adpus0`) returns only the 20 most recent deployments (ranging from 18 to 20 November 2026).
    - Render provides no unauthenticated historical query tool to inspect deployment metadata for November 2.
-   - **Explicit Limitation Statement:** While the UTC timestamps are consistent with an automated deployment triggered 50 seconds after the PR #23 merge commit, **the exact commit SHA deployed by `dep-dbkh3p6417fc73bffihg` remains `[NOT VERIFIED]` against live Render API metadata**. Timestamp proximity alone is not accepted as cryptographic proof of commit identity.
+   - **Explicit Limitation Statement:** While the UTC timestamps are consistent with an automated deployment triggered 50 seconds after the PR #23 merge commit, **the exact commit SHA deployed by `dep-dbkh3p6417fc73bffihg` remains `DEPLOYED_SHA_NOT_VERIFIED` against live Render API metadata**. Timestamp proximity alone is not accepted as cryptographic proof of commit identity.
 
 ---
 
@@ -544,7 +544,7 @@ Following the update of the five-Codex audit, this section documents the post-au
 | Item / Claim | Original Stated Claim | Independent Verification Evidence | Verification Result | Remaining Action Required |
 |---|---|---|:---:|---|
 | **DMVQ 10 Failures** | 10 regressions in current worktree | 4 in telemetry mapping resolved (spy args); 6 in durable customer mapping caused by unmocked `users/resolve` under `VFARM_LIVE_TEST=true`. | **`VERIFIED (STALE MOCKS)`** | Maintain `HISTORICAL_RELOG_ONLY`. No engine defect. |
-| **X6DK Deploy SHA** | `dep-dbkh3p6417fc73bffihg` deployed `441d2b3f` | Merge occurred 22:42:42Z UTC; deploy at 22:43:32Z UTC. Historical deploy beyond 20-deploy CLI cache. | **`TIMESTAMPS CONSISTENT / SHA UNVERIFIED`** | Jason Bays to review historical commit reference. |
+| **X6DK Deploy SHA** | `dep-dbkh3p6417fc73bffihg` deployed `441d2b3f` | Merge occurred 22:42:42Z UTC; deploy at 22:43:32Z UTC. Historical deploy beyond 20-deploy CLI cache. | **`TIMESTAMPS CONSISTENT / DEPLOYED_SHA_NOT_VERIFIED`** | Jason Bays to review historical commit reference. |
 | **XKWD Transcripts Table** | Transcripts table foreign key verified | No table named `transcripts` exists. Turn transcripts are persisted in `messages` (0 orphans live). | **`VERIFIED ARCHITECTURE (NO SEPARATE TABLE)`** | Jason Bays to decide if `messages` model is acceptable. |
 | **9YQU Research Twin** | Research Twin approved under `F1RH` | `F1RH` covers SI5J alert routing only. Research Twin requires separate 6-point sign-off from Destiny Arupi. | **`EXTERNAL APPROVAL REQUIRED`** | Destiny Arupi to formally approve Research Twin contract. |
 | **K9VT Scopes** | Scopes preserved across rename | App ID & Bot User ID verified. Manifest before/after diff not stored in repo. | **`APP ID VERIFIED / SCOPES UNVERIFIED`** | Workspace admin to provide manifest export. |

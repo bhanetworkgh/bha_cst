@@ -28,6 +28,7 @@ import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { DbClient } from '../../engine/src/db/client.js';
 import { VfarmTenantAdapter } from '../../engine/src/adapters/vfarm/index.js';
 import { VfarmHttpClient } from '../../engine/src/adapters/vfarm/http_client.js';
+import { VfarmLiveClient } from '../../engine/src/adapters/vfarm/live_client.js';
 import { createApp } from '../../engine/src/app.js';
 import { AlertAuditLog } from '../../engine/src/audit/alert_audit.js';
 import { VoiceLaneService } from '../../engine/src/transport/voice/voice_lane.js';
@@ -139,6 +140,9 @@ describe('Durable per-customer identity mapping', () => {
     );
     vi.spyOn(VfarmHttpClient.prototype, 'getUserFarmGrants').mockImplementation(
       async (userId: string) => grantsByUser[userId] ?? []
+    );
+    vi.spyOn(VfarmLiveClient.prototype, 'resolveUserByPhone').mockImplementation(
+      async () => null
     );
   });
 
