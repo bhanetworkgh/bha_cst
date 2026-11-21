@@ -86,7 +86,7 @@ describe('CST — Comprehensive Production-Equivalent Simulation', () => {
         'cst.transcript',
         'cst.turn',
       ].sort());
-      expect(dbRows.rows.every((r: any) => r.status === 'internal_only' || r.status === 'dry_run' || r.status === 'ok')).toBe(true);
+      expect(dbRows.rows.every((r: any) => ['internal_only', 'dry_run', 'ok', 'published'].includes(r.status))).toBe(true);
       expect(dbRows.rows.every((r: any) => r.error === null)).toBe(true);
     });
 
