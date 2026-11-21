@@ -5,6 +5,7 @@ import { ElevenLabsWebhookService as Service } from '../../engine/src/interfaces
 import { DbClient } from '../../engine/src/db/client.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
 import { CutOverManager } from '../../engine/src/observability/cut_over.js';
+import { ResearchTwinBridge } from '../../engine/src/research_twin/bridge.js';
 
 const io = vi.hoisted(() => ({post:vi.fn(), publish:vi.fn(), alert:vi.fn()}));
 vi.mock('../../engine/src/notifications/call_log.js', () => ({
@@ -25,7 +26,9 @@ describe('IWKX required lifecycle persistence', () => {
     transcript:[{role:'user' as const,message:'Local test'}],
   };
   beforeEach(() => {
-    Service.reset(); FailureDetector.reset(); DbClient.clearInMemory(); CutOverManager.reset();
+    Service.reset(); FailureDetector.reset(); DbClient.clearInMemory(); CutOverManager.reset(); ResearchTwinBridge.reset();
+    vi.stubEnv('RT_CONTRACT_VERIFIED', 'false');
+    vi.stubEnv('RT_INTEGRATION_ENABLED', 'false');
     CutOverManager.configure({start_timestamp:'2026-11-03T00:00:00Z'});
     vi.clearAllMocks();
     io.post.mockResolvedValue({posted:true}); io.publish.mockResolvedValue({success:true});

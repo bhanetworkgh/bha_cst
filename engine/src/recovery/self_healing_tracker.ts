@@ -208,6 +208,27 @@ export function recordFailure(input: {
       },
     });
 
+    void import('../research_twin/bridge.js')
+      .then(({ ResearchTwinBridge }) => {
+        ResearchTwinBridge.reportFailureAsync(
+          'self_healing_exhaustion',
+          `Category ${input.category} failed ${failureCount} times in ${SELF_HEALING_WINDOW_MS / 60000}m for tenant ${input.tenantId} project ${input.projectId}`,
+          {
+            tenant_id: input.tenantId,
+            project_id: input.projectId,
+            correlation_id: input.correlationRef,
+            severity: 'critical',
+            details: {
+              failure_category: input.category,
+              failure_count: failureCount,
+              threshold: SELF_HEALING_THRESHOLD,
+              window_ms: SELF_HEALING_WINDOW_MS,
+            },
+          },
+        );
+      })
+      .catch(() => {});
+
     MonitoringSlackService.sendIncidentNotification({
       title: `Repeat Failure Threshold Crossed (${input.category})`,
       severity: 'CRITICAL',
