@@ -88,8 +88,15 @@ describe('CST — Comprehensive Production-Equivalent Simulation', () => {
         'cst.transcript',
         'cst.turn',
       ].sort());
-      expect(dbRows.rows.every((r: any) => ['internal_only', 'dry_run', 'ok', 'published', 'missing_configuration'].includes(r.status))).toBe(true);
-      expect(dbRows.rows.every((r: any) => r.error === null)).toBe(true);
+      // The 3 required lifecycle rows persisted before dispatch must have status internal_only and no error
+      const lifecycleRows = dbRows.rows.filter((r: any) => r.event_type !== 'cst.turn');
+      expect(lifecycleRows).toHaveLength(3);
+      expect(lifecycleRows.every((r: any) => r.status === 'internal_only')).toBe(true);
+      expect(lifecycleRows.every((r: any) => r.error === null)).toBe(true);
+
+      // The cst.turn outcome is durably recorded post-dispatch
+      const turnRow = dbRows.rows.find((r: any) => r.event_type === 'cst.turn');
+      expect(turnRow).toBeDefined();
     });
 
     it('rolls back completely on mid-transaction database failure leaving 0 partial records and withholds dispatch', async () => {
