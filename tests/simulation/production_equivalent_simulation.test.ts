@@ -10,7 +10,7 @@ import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
 import { CutOverManager } from '../../engine/src/observability/cut_over.js';
 import { CstTurnEventV1Schema } from '../../engine/src/contracts/events.js';
-import { serializeForDashboard } from '../../engine/src/publishers/dashboard.js';
+import { serializeForDashboard, CstDashboardPublisher, setActiveDashboardPublisher } from '../../engine/src/publishers/dashboard.js';
 
 // Top-level module mocks for external dispatch boundaries
 vi.mock('../../engine/src/notifications/call_log.js', () => ({
@@ -34,6 +34,7 @@ describe('CST — Comprehensive Production-Equivalent Simulation', () => {
     FailureDetector.reset();
     ErrorRouter.reset();
     ErrorRouter.setMockHandler(null);
+    setActiveDashboardPublisher(new CstDashboardPublisher({ dryRun: true }));
     CutOverManager.reset();
     CutOverManager.configure({ start_timestamp: '2026-11-03T00:00:00.000Z' });
     vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-mock-simulation-token');
@@ -47,6 +48,7 @@ describe('CST — Comprehensive Production-Equivalent Simulation', () => {
   });
 
   afterEach(async () => {
+    setActiveDashboardPublisher(null);
     DbClient.setPool(null);
     await pool.end();
     vi.restoreAllMocks();
@@ -86,7 +88,7 @@ describe('CST — Comprehensive Production-Equivalent Simulation', () => {
         'cst.transcript',
         'cst.turn',
       ].sort());
-      expect(dbRows.rows.every((r: any) => ['internal_only', 'dry_run', 'ok', 'published'].includes(r.status))).toBe(true);
+      expect(dbRows.rows.every((r: any) => ['internal_only', 'dry_run', 'ok', 'published', 'missing_configuration'].includes(r.status))).toBe(true);
       expect(dbRows.rows.every((r: any) => r.error === null)).toBe(true);
     });
 
