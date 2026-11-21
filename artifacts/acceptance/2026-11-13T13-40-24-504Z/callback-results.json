@@ -1,0 +1,17 @@
+{
+  "verified_at": "2026-11-13T13:40:28.626Z",
+  "sms": {
+    "provider_sid": "SM351e015208037f527b63f43158ffc762",
+    "status": "sent",
+    "price": "N/A",
+    "error_code": null,
+    "error_message": null
+  },
+  "voice": {
+    "call_sid": null,
+    "status": "not_tested",
+    "duration_seconds": null,
+    "price": "N/A",
+    "answered": false
+  }
+}

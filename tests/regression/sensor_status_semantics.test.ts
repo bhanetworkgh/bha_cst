@@ -14,6 +14,11 @@
  * uno_board_01, esp32_node_01, esp32_node_02.
  */
 import { describe, it, expect } from 'vitest';
+import {
+  computeDependentDeviceStatus,
+  type SensorState,
+  type DependentDeviceStatus,
+} from '../../engine/src/connectors/vfarm.js';
 
 // ── Inline mapping function (mirrors engine/src/connectors/vfarm.ts) ────────
 function parseNumericField(value: unknown): number | undefined {
@@ -52,16 +57,6 @@ function mapLatestReadingToTelemetry(
   if (reading.temperature_status === 'warning' || reading.humidity_status === 'warning') return 'warning';
   if (temp != null && (temp < 10 || temp > 35)) return 'warning';
   return 'normal';
-}
-
-// ── Dependency gate (mirrors the requirement: dependent device MUST NOT be
-// NORMAL when a required sensor is offline/missing/stale/timed-out) ──────────
-type SensorState = 'online' | 'offline' | 'missing' | 'stale' | 'timed_out';
-function computeDependentDeviceStatus(
-  sensorStates: SensorState[],
-): 'NORMAL' | 'DEGRADED' {
-  const allOnline = sensorStates.every((s) => s === 'online');
-  return allOnline ? 'NORMAL' : 'DEGRADED';
 }
 
 describe('mapLatestReadingToTelemetry — missing values cannot default to normal', () => {
@@ -195,6 +190,20 @@ describe('Dependent device status gate — regression test', () => {
       error_message: 'sensor read timed out',
     });
     expect(status).toBe('fault');
+  });
+
+  it('fails safe to DEGRADED on empty or invalid sensor state arrays', () => {
+    expect(computeDependentDeviceStatus([])).toBe('DEGRADED');
+    expect(computeDependentDeviceStatus(undefined)).toBe('DEGRADED');
+    expect(computeDependentDeviceStatus(null)).toBe('DEGRADED');
+    expect(computeDependentDeviceStatus([null, 'online'])).toBe('DEGRADED');
+    expect(computeDependentDeviceStatus([undefined, 'online'])).toBe('DEGRADED');
+    expect(computeDependentDeviceStatus(['invalid_state', 'online'])).toBe('DEGRADED');
+  });
+
+  it('evaluates degraded sensor state as DEGRADED', () => {
+    const sensorStates: SensorState[] = ['online', 'degraded', 'online'];
+    expect(computeDependentDeviceStatus(sensorStates)).toBe('DEGRADED');
   });
 });
 

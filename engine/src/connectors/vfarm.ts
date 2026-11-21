@@ -83,6 +83,26 @@ export async function notifyDeviceHealthStatus(params: {
 }): Promise<SlackDeliveryResult | undefined> {
   try {
     if (params.status === 'DEGRADED') {
+      void import('../research_twin/bridge.js')
+        .then(({ ResearchTwinBridge }) => {
+          ResearchTwinBridge.reportFailureAsync(
+            'device_degraded',
+            `Dependent device ${params.deviceId} evaluated to DEGRADED`,
+            {
+              tenant_id: params.tenantId || undefined,
+              project_id: params.projectId || undefined,
+              correlation_id: params.correlationId,
+              severity: 'high',
+              details: {
+                farm_id: params.farmId,
+                device_id: params.deviceId,
+                sensor_states: params.sensorStates,
+              },
+            },
+          );
+        })
+        .catch(() => {});
+
       return await MonitoringSlackService.sendMonitoringAlert({
         type: 'device_degraded',
         severity: 'HIGH',
@@ -120,6 +140,26 @@ export async function notifySensorHealthStatus(params: {
 }): Promise<SlackDeliveryResult | undefined> {
   try {
     if (params.isStale) {
+      void import('../research_twin/bridge.js')
+        .then(({ ResearchTwinBridge }) => {
+          ResearchTwinBridge.reportFailureAsync(
+            'sensor_telemetry_stale',
+            `Sensor ${params.sensorId} readings are stale (>24h)`,
+            {
+              tenant_id: params.tenantId || undefined,
+              project_id: params.projectId || undefined,
+              correlation_id: params.correlationId,
+              severity: 'medium',
+              details: {
+                farm_id: params.farmId,
+                sensor_id: params.sensorId,
+                last_reading_at: params.lastReadingAt,
+              },
+            },
+          );
+        })
+        .catch(() => {});
+
       return await MonitoringSlackService.sendMonitoringAlert({
         type: 'sensor_stale',
         severity: 'WARN',
@@ -136,6 +176,26 @@ export async function notifySensorHealthStatus(params: {
       });
     }
     if (params.status === 'fault' || params.status === 'offline') {
+      void import('../research_twin/bridge.js')
+        .then(({ ResearchTwinBridge }) => {
+          ResearchTwinBridge.reportFailureAsync(
+            'device_connectivity_loss',
+            `Sensor ${params.sensorId} is in ${params.status} state`,
+            {
+              tenant_id: params.tenantId || undefined,
+              project_id: params.projectId || undefined,
+              correlation_id: params.correlationId,
+              severity: 'high',
+              details: {
+                farm_id: params.farmId,
+                sensor_id: params.sensorId,
+                status: params.status,
+              },
+            },
+          );
+        })
+        .catch(() => {});
+
       return await MonitoringSlackService.sendMonitoringAlert({
         type: 'sensor_offline',
         severity: 'HIGH',

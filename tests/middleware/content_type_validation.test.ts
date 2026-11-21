@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createApp } from '../../engine/src/app.js';
 import { Logger } from '../../engine/src/config/logger.js';
 import { DbClient } from '../../engine/src/db/client.js';
+import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { VoiceInterface } from '../../engine/src/interfaces/voice/index.js';
 import { CallLogPoster } from '../../engine/src/notifications/call_log.js';
 
@@ -11,6 +12,7 @@ describe('LOOP-1795035800169-NVLF: Content-Type Validation, Observability & Erro
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    CoreRegistry.resetToDefault();
     DbClient.clearAll();
     app = createApp();
   });

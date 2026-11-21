@@ -118,6 +118,9 @@ services:
       - key: VFARM_API_FARM_KEY
         sync: false
 
+      - key: VFARM_SERVICE_KEY
+        sync: false
+
       - key: VFARM_API_KEY
         sync: false
 

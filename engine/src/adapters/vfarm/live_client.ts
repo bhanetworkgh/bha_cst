@@ -38,6 +38,9 @@ import {
   placeCountListResponseSchema,
   alertHistoryListResponseSchema,
   imageAnalysisSchema,
+  farmCabinetSchema,
+  farmCabinetListSchema,
+  type FarmCabinet,
   type OrgMemberResponse,
   type GrantedFarmRow,
   type InventoryResponse,
@@ -123,6 +126,8 @@ export interface VfarmLiveClientConfig {
   baseUrl: string;
   /** Value for the X-Farm-Key header. Optional when initializing for auth/discovery before key issuance. */
   apiKey?: string;
+  /** Centralized service key sent as X-Service-Key and fallback X-Farm-Key */
+  serviceKey?: string;
   /**
    * Bearer JWT used for endpoints that reject X-Farm-Key auth (e.g. the
    * organization-members endpoint). Optional; settable later via setApiToken.
@@ -132,6 +137,16 @@ export interface VfarmLiveClientConfig {
   timeoutMs?: number;
   /** Overrideable fetch function for testing */
   fetchFn?: FetchFn;
+}
+
+export class VfarmAuthError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'VfarmAuthError';
+  }
 }
 
 export class VfarmHttpError extends Error {
@@ -238,20 +253,51 @@ export function resolveSensorPlacement(
 export class VfarmLiveClient {
   private readonly baseUrl: string;
   private apiKey: string;
+  private serviceKey: string;
   private apiToken: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: FetchFn;
 
   constructor(config: VfarmLiveClientConfig) {
-    if (config.apiKey !== undefined && !config.apiKey.trim()) {
-      throw new Error('Configuration error: VFARM_FARM_KEY is required for VfarmLiveClient');
+    const rawKey = config.serviceKey || config.apiKey;
+    if (rawKey !== undefined && !rawKey.trim()) {
+      throw new Error('Configuration error: VFARM_SERVICE_KEY or VFARM_FARM_KEY is required for VfarmLiveClient');
     }
     // Strip trailing slash for consistent URL construction
     this.baseUrl = config.baseUrl ? config.baseUrl.replace(/\/$/, '') : VFARM_DEFAULT_BASE_URL;
+    this.serviceKey = (config.serviceKey || '').trim();
     this.apiKey = (config.apiKey || '').trim();
     this.apiToken = (config.apiToken || '').trim();
     this.timeoutMs = config.timeoutMs ?? VFARM_DEFAULT_TIMEOUT_MS;
     this.fetchFn = config.fetchFn ?? fetch;
+  }
+
+  public setApiKey(apiKey: string): void {
+    this.apiKey = (apiKey || '').trim();
+  }
+
+  public getApiKey(): string {
+    return this.apiKey;
+  }
+
+  public hasApiKey(): boolean {
+    return Boolean(this.apiKey);
+  }
+
+  public setServiceKey(serviceKey: string): void {
+    this.serviceKey = (serviceKey || '').trim();
+  }
+
+  public getServiceKey(): string {
+    return this.serviceKey;
+  }
+
+  public hasServiceKey(): boolean {
+    return Boolean(this.serviceKey);
+  }
+
+  public getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   /**
@@ -282,22 +328,6 @@ export class VfarmLiveClient {
       headers['X-Farm-Key'] = this.apiKey;
     }
     return headers;
-  }
-
-  public setApiKey(apiKey: string): void {
-    this.apiKey = (apiKey || '').trim();
-  }
-
-  public getApiKey(): string {
-    return this.apiKey;
-  }
-
-  public hasApiKey(): boolean {
-    return Boolean(this.apiKey);
-  }
-
-  public getBaseUrl(): string {
-    return this.baseUrl;
   }
 
   // ── Dynamic Auth, Discovery & Key Issuance ────────────────────────────────
@@ -420,24 +450,18 @@ export class VfarmLiveClient {
     parseSchema: { parse: (data: unknown) => T },
     extraHeaders?: Record<string, string>,
     timeoutMs?: number,
+    onBehalfOf?: string,
   ): Promise<T> {
-    if (!this.apiKey && !(extraHeaders && extraHeaders['Authorization'])) {
-      throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
+    if (!this.apiKey && !this.serviceKey && !(extraHeaders && extraHeaders['Authorization'])) {
+      throw new Error('Configuration error: VFARM_SERVICE_KEY or X-Farm-Key is required for farm-scoped requests');
     }
     const url = `${this.baseUrl}${path}`;
-    // Note: Authorization header carrying apiKey is intentionally not logged
-    //
-    // The bearer token is sent alongside X-Farm-Key (never instead of it), and
-    // only when the caller did not already supply an explicit Authorization
-    // header. Without this, every `request()`-based call — getFarm, getFarmHealth,
-    // listAllDevices, listFarmZones, getFarmLayout, the readings/alerts helpers —
-    // was limited to the single farm the API key is bound to; the live service
-    // answers 403 "API key not valid for this farm" for any other, even though
-    // the same request succeeds with a bearer JWT. This mirrors authHeaders(),
-    // which already sends both, and an explicit caller token still wins.
+    const effectiveFarmKey = this.apiKey || this.serviceKey;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
-      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.serviceKey ? { 'X-Service-Key': this.serviceKey } : {}),
+      ...(effectiveFarmKey ? { 'X-Farm-Key': effectiveFarmKey } : {}),
+      ...(onBehalfOf && onBehalfOf.trim() ? { 'X-On-Behalf-Of': onBehalfOf.trim() } : {}),
       ...(this.apiToken && !extraHeaders?.['Authorization']
         ? { 'Authorization': `Bearer ${this.apiToken}` }
         : {}),
@@ -465,6 +489,9 @@ export class VfarmLiveClient {
     if (!res.ok) {
       const msg = `vFarm HTTP ${res.status} from ${path}`;
       Logger.warn(msg);
+      if (res.status === 401 || res.status === 403) {
+        throw new VfarmAuthError(res.status, msg);
+      }
       throw new VfarmHttpError(res.status, msg);
     }
 
@@ -538,16 +565,20 @@ export class VfarmLiveClient {
     path: string,
     method: 'POST' | 'DELETE' | 'PATCH' | 'PUT',
     body: unknown,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    onBehalfOf?: string,
   ): Promise<T> {
-    if (!this.apiKey && !(extraHeaders && extraHeaders['Authorization'])) {
-      throw new Error('Configuration error: X-Farm-Key is required for farm-scoped requests');
+    if (!this.apiKey && !this.serviceKey && !(extraHeaders && extraHeaders['Authorization'])) {
+      throw new Error('Configuration error: VFARM_SERVICE_KEY or X-Farm-Key is required for farm-scoped requests');
     }
     const url = `${this.baseUrl}${path}`;
+    const effectiveFarmKey = this.apiKey || this.serviceKey;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
-      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.serviceKey ? { 'X-Service-Key': this.serviceKey } : {}),
+      ...(effectiveFarmKey ? { 'X-Farm-Key': effectiveFarmKey } : {}),
+      ...(onBehalfOf && onBehalfOf.trim() ? { 'X-On-Behalf-Of': onBehalfOf.trim() } : {}),
       ...(this.apiToken && !extraHeaders?.['Authorization']
         ? { 'Authorization': `Bearer ${this.apiToken}` }
         : {}),
@@ -579,6 +610,9 @@ export class VfarmLiveClient {
     if (!res.ok) {
       const msg = `vFarm HTTP ${res.status} from ${method} ${path}`;
       Logger.warn(msg);
+      if (res.status === 401 || res.status === 403) {
+        throw new VfarmAuthError(res.status, msg);
+      }
       throw new VfarmHttpError(res.status, msg);
     }
 
@@ -603,10 +637,12 @@ export class VfarmLiveClient {
    */
   async getOrgMembers(orgId: string, token?: string): Promise<OrgMemberResponse[]> {
     const path = `/api/v1/organizations/${encodeURIComponent(orgId)}/users`;
-    const schema = { parse: (d: unknown) => {
-      if (!Array.isArray(d)) throw new Error('Expected array from org members endpoint');
-      return d.map((item) => OrgMemberResponseSchema.parse(item));
-    }};
+    const schema = {
+      parse: (d: unknown) => {
+        if (!Array.isArray(d)) throw new Error('Expected array from org members endpoint');
+        return d.map((item) => OrgMemberResponseSchema.parse(item));
+      }
+    };
     return this.request(path, schema, this.authHeaders(token));
   }
 
@@ -660,21 +696,47 @@ export class VfarmLiveClient {
     }
   }
 
+  // ── Cabinets (Farm Units) ────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/farms/{farm_id}/cabinets
+   * Lists all cabinets deployed on a farm with their placement and design.
+   */
+  async listFarmCabinets(farmId: string, onBehalfOf?: string): Promise<FarmCabinet[]> {
+    const path = `/api/v1/farms/${encodeURIComponent(farmId)}/cabinets`;
+    return this.request(path, farmCabinetListSchema, undefined, undefined, onBehalfOf);
+  }
+
+  /**
+   * GET /api/v1/cabinets/{serial}
+   * Retrieves a single cabinet by serial number.
+   */
+  async getCabinet(serial: string, onBehalfOf?: string): Promise<FarmCabinet> {
+    const path = `/api/v1/cabinets/${encodeURIComponent(serial)}`;
+    return this.request(path, farmCabinetSchema, undefined, undefined, onBehalfOf);
+  }
+
   // ── Farms & telemetry (live IoT read API) ─────────────────────────────────
 
-  async getFarm(farmId: string): Promise<FarmResponse> {
+  async getFarm(farmId: string, onBehalfOf?: string): Promise<FarmResponse> {
     const path = `/api/v1/farms/${encodeURIComponent(farmId)}`;
-    return this.request(path, FarmResponseSchema);
+    return this.request(path, FarmResponseSchema, undefined, undefined, onBehalfOf);
   }
 
-  async getFarmHealth(farmId: string, timeoutMs?: number): Promise<FarmHealthResponse> {
+  async getFarmHealth(
+    farmId: string,
+    timeoutMsOrOnBehalfOf?: number | string,
+    onBehalfOf?: string,
+  ): Promise<FarmHealthResponse> {
+    const timeoutMs = typeof timeoutMsOrOnBehalfOf === 'number' ? timeoutMsOrOnBehalfOf : undefined;
+    const effectiveOnBehalfOf = typeof timeoutMsOrOnBehalfOf === 'string' ? timeoutMsOrOnBehalfOf : onBehalfOf;
     const path = `/api/v1/farms/${encodeURIComponent(farmId)}/health`;
-    return this.request(path, FarmHealthResponseSchema, undefined, timeoutMs);
+    return this.request(path, FarmHealthResponseSchema, undefined, timeoutMs, effectiveOnBehalfOf);
   }
 
-  async listDevices(farmId: string): Promise<DeviceListResponse> {
+  async listDevices(farmId: string, onBehalfOf?: string): Promise<DeviceListResponse> {
     const path = `/api/v1/devices?farm_id=${encodeURIComponent(farmId)}`;
-    return this.request(path, DeviceListResponseSchema);
+    return this.request(path, DeviceListResponseSchema, undefined, undefined, onBehalfOf);
   }
 
   /**
@@ -690,8 +752,8 @@ export class VfarmLiveClient {
    *
    * Returns null when the sensor has no readings (empty readings array).
    */
-  async getLatestReading(sensorId: string): Promise<LatestReadingResponse | null> {
-    const response = await this.getReadings(sensorId, 1);
+  async getLatestReading(sensorId: string, onBehalfOf?: string): Promise<LatestReadingResponse | null> {
+    const response = await this.getReadings(sensorId, 1, onBehalfOf);
     const readings = response.readings ?? response.items ?? [];
     if (!readings || readings.length === 0) {
       return null;
@@ -705,18 +767,18 @@ export class VfarmLiveClient {
     } as LatestReadingResponse;
   }
 
-  async getSensorPlacement(farmId: string, sensorId: string): Promise<SensorPlacement | null> {
-    const deviceList = await this.listAllDevices(farmId);
+  async getSensorPlacement(farmId: string, sensorId: string, onBehalfOf?: string): Promise<SensorPlacement | null> {
+    const deviceList = await this.listAllDevices(farmId, undefined, undefined, onBehalfOf);
     const devices = deviceList.devices ?? [];
     const sensor = devices.find((device) => device.id === sensorId);
     if (!sensor || sensor.device_type !== 'sensor') return null;
     return resolveSensorPlacement(sensor, devices);
   }
 
-  async getReadings(sensorId: string, limit = 100): Promise<ReadingsListResponse> {
+  async getReadings(sensorId: string, limit = 100, onBehalfOf?: string): Promise<ReadingsListResponse> {
     const path =
       `/api/v1/readings?sensor_id=${encodeURIComponent(sensorId)}&limit=${encodeURIComponent(String(limit))}`;
-    return this.request(path, ReadingsListResponseSchema);
+    return this.request(path, ReadingsListResponseSchema, undefined, undefined, onBehalfOf);
   }
 
   async getReadingStats(sensorId: string, window = '24h'): Promise<StatsResponse> {
@@ -845,52 +907,72 @@ export class VfarmLiveClient {
    * GET /api/v1/devices?farm_id={farm_id}&limit=500
    * All devices for a farm — full DeviceListResponse.
    */
-  async listAllDevices(farmId: string, limit = 500, timeoutMs?: number): Promise<DeviceListResponse> {
+  async listAllDevices(
+    farmId: string,
+    limitOrOnBehalfOf?: number | string,
+    timeoutMs?: number,
+    onBehalfOf?: string,
+  ): Promise<DeviceListResponse> {
+    const limit = typeof limitOrOnBehalfOf === 'number' ? limitOrOnBehalfOf : 500;
+    const effectiveOnBehalfOf = typeof limitOrOnBehalfOf === 'string' ? limitOrOnBehalfOf : onBehalfOf;
     return this.request(
       `/api/v1/devices?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
       DeviceListResponseSchema,
       undefined,
       timeoutMs,
+      effectiveOnBehalfOf,
     );
   }
 
   /**
    * GET /api/v1/devices/offline?farm_id={farm_id}
    */
-  async listOfflineDevices(farmId: string): Promise<DeviceListResponse> {
+  async listOfflineDevices(farmId: string, onBehalfOf?: string): Promise<DeviceListResponse> {
     return this.request(
       `/api/v1/devices/offline?farm_id=${encodeURIComponent(farmId)}`,
       DeviceListResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
   /**
    * GET /api/v1/devices/unhealthy?farm_id={farm_id}
    */
-  async listUnhealthyDevices(farmId: string): Promise<DeviceListResponse> {
+  async listUnhealthyDevices(farmId: string, onBehalfOf?: string): Promise<DeviceListResponse> {
     return this.request(
       `/api/v1/devices/unhealthy?farm_id=${encodeURIComponent(farmId)}`,
       DeviceListResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
   /**
    * GET /api/v1/devices/{device_id}
    */
-  async getDevice(deviceId: string): Promise<DeviceResponse> {
+  async getDevice(deviceId: string, onBehalfOf?: string): Promise<DeviceResponse> {
     return this.request(
       `/api/v1/devices/${encodeURIComponent(deviceId)}`,
       deviceResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
   /**
    * GET /api/v1/devices/{device_id}/rollup
    */
-  async getDeviceRollup(deviceId: string): Promise<DeviceRollupResponse> {
+  async getDeviceRollup(deviceId: string, onBehalfOf?: string): Promise<DeviceRollupResponse> {
     return this.request(
       `/api/v1/devices/${encodeURIComponent(deviceId)}/rollup`,
       deviceRollupResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
@@ -929,11 +1011,12 @@ export class VfarmLiveClient {
     limit = 100,
     timeoutMs?: number,
     concurrency = 12,
-    correlationId?: string
+    correlationId?: string,
+    onBehalfOf?: string,
   ): Promise<LatestReadingResponse[]> {
     const perDeviceTimeout = timeoutMs ?? this.timeoutMs;
     // 1. List devices for the farm
-    const deviceList = await this.listAllDevices(farmId, limit);
+    const deviceList = await this.listAllDevices(farmId, limit, undefined, onBehalfOf);
     const devices = (deviceList as any)?.devices ?? [];
     if (!Array.isArray(devices) || devices.length === 0) {
       return [];
@@ -967,11 +1050,12 @@ export class VfarmLiveClient {
             const client = new VfarmLiveClient({
               baseUrl: this.baseUrl,
               apiKey: this.apiKey,
+              serviceKey: this.serviceKey,
               apiToken: this.apiToken,
               timeoutMs: perDeviceTimeout,
               fetchFn: this.fetchFn,
             });
-            const reading = await client.getLatestReading(sensorId);
+            const reading = await client.getLatestReading(sensorId, onBehalfOf);
             if (reading && typeof reading === 'object') {
               const enriched = reading as LatestReadingResponse & {
                 placement?: SensorPlacement;
@@ -1048,10 +1132,13 @@ export class VfarmLiveClient {
    * Note: The vFarm OpenAPI contract specifies that query parameter `rung`
    * is REQUIRED (values: farm | zone | location | sublocation). Omitting it returns HTTP 422.
    */
-  async getAlertCounts(farmId: string, rung = 'farm'): Promise<PlaceCountListResponse> {
+  async getAlertCounts(farmId: string, rung = 'farm', onBehalfOf?: string): Promise<PlaceCountListResponse> {
     return this.request(
       `/api/v1/alerts/threshold/counts?rung=${encodeURIComponent(rung)}&farm_id=${encodeURIComponent(farmId)}`,
       placeCountListResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
@@ -1059,10 +1146,13 @@ export class VfarmLiveClient {
    * GET /api/v1/alerts/threshold/open?farm_id={farm_id}
    * OpenAlertListResponse { alerts[], total }.
    */
-  async listOpenAlerts(farmId: string, limit = 100): Promise<OpenAlertListResponse> {
+  async listOpenAlerts(farmId: string, limit = 100, onBehalfOf?: string): Promise<OpenAlertListResponse> {
     return this.request(
       `/api/v1/alerts/threshold/open?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
       openAlertListResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
@@ -1070,10 +1160,13 @@ export class VfarmLiveClient {
    * GET /api/v1/alerts/history?farm_id={farm_id}
    * AlertHistoryListResponse { alerts[], total }.
    */
-  async listAlertHistory(farmId: string, limit = 50): Promise<AlertHistoryListResponse> {
+  async listAlertHistory(farmId: string, limit = 50, onBehalfOf?: string): Promise<AlertHistoryListResponse> {
     return this.request(
       `/api/v1/alerts/history?farm_id=${encodeURIComponent(farmId)}&limit=${limit}`,
       alertHistoryListResponseSchema,
+      undefined,
+      undefined,
+      onBehalfOf,
     );
   }
 
@@ -1090,34 +1183,68 @@ export class VfarmLiveClient {
     );
   }
 
+  // ── User Identity & Service Key Resolution ─────────────────────────────
+
+  /**
+   * Resolves a user's authoritative identity and farm assignments by phone number
+   * using the vFarm service key endpoint GET /api/v1/users/resolve?phone={phone}.
+   */
+  async resolveUserByPhone(
+    phone: string,
+    onBehalfOf?: string,
+    timeoutMs?: number,
+  ): Promise<{
+    user_id: string;
+    role?: string;
+    farm_ids?: string[];
+    org_id?: string;
+  } | null> {
+    const clean = (phone || '').trim();
+    if (!clean) return null;
+    const path = `/api/v1/users/resolve?phone=${encodeURIComponent(clean)}`;
+    try {
+      const res = await this.requestPassthrough(path, timeoutMs, onBehalfOf);
+      if (!res || typeof res !== 'object') return null;
+      return {
+        user_id: ((res as any).user_id || (res as any).id || '') as string,
+        role: (res as any).role as string | undefined,
+        farm_ids: Array.isArray((res as any).farm_ids) ? (res as any).farm_ids : undefined,
+        org_id: ((res as any).org_id || (res as any).organization_id) as string | undefined,
+      };
+    } catch (err: any) {
+      if (err?.status === 404 || /User not found/i.test(err?.message || '')) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   // ── Internal helpers ────────────────────────────────────────────────────
 
   /**
    * Like request() but skips Zod parsing — used for inline-schema ({}) endpoints
    * where the response shape is not enumerated in the OpenAPI spec.
    *
-   * Sends the same two credentials as request(). It previously sent only
-   * X-Farm-Key, so getDashboardSummary() and getSystemStats() — the only two
-   * callers — had no bearer fallback and would fail 403 "API key not valid for
-   * this farm" against any farm the key is not bound to, even though the same
-   * request succeeds with a bearer JWT. They also do not require a farm key:
-   * neither endpoint is farm-scoped, so demanding one rejected a bearer-only
-   * configuration outright.
+   * Sends credentials including X-Service-Key, X-Farm-Key, and Bearer token.
    */
   private async requestPassthrough(
     path: string,
     timeoutMs?: number,
+    onBehalfOf?: string,
   ): Promise<Record<string, unknown>> {
-    if (!this.apiKey && !this.apiToken) {
+    if (!this.apiKey && !this.serviceKey && !this.apiToken) {
       throw new Error(
-        'Configuration error: X-Farm-Key or a bearer token is required for vFarm requests',
+        'Configuration error: VFARM_SERVICE_KEY, X-Farm-Key or a bearer token is required for vFarm requests',
       );
     }
     const budget = timeoutMs ?? this.timeoutMs;
     const url = `${this.baseUrl}${path}`;
+    const effectiveFarmKey = this.apiKey || this.serviceKey;
     const headers: Record<string, string> = {
       'Accept': 'application/json',
-      ...(this.apiKey ? { 'X-Farm-Key': this.apiKey } : {}),
+      ...(this.serviceKey ? { 'X-Service-Key': this.serviceKey } : {}),
+      ...(effectiveFarmKey ? { 'X-Farm-Key': effectiveFarmKey } : {}),
+      ...(onBehalfOf && onBehalfOf.trim() ? { 'X-On-Behalf-Of': onBehalfOf.trim() } : {}),
       ...(this.apiToken ? { 'Authorization': `Bearer ${this.apiToken}` } : {}),
     };
     let res: Response;
@@ -1139,6 +1266,9 @@ export class VfarmLiveClient {
     if (!res.ok) {
       const msg = `vFarm HTTP ${res.status} from ${path}`;
       Logger.warn(msg);
+      if (res.status === 401 || res.status === 403) {
+        throw new VfarmAuthError(res.status, msg);
+      }
       throw new VfarmHttpError(res.status, msg);
     }
     try {

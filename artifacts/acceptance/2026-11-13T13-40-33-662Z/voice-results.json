@@ -1,0 +1,20 @@
+{
+  "run_id": "CST-LIVE-VOICE-1794577236758-881c2eff",
+  "utc_request_timestamp": "2026-11-13T13:40:36.758Z",
+  "destination_masked": "+9230***3844",
+  "sender_number": "+19715885823",
+  "cst_voice_delivery_id": "vd_CST-LIVE-VOICE-1794577236758-881c2eff",
+  "twilio_call_sid": "CREATION_FAILED",
+  "call_creation_response": "failed",
+  "call_status_callbacks": [],
+  "answered_status": false,
+  "call_duration_seconds": null,
+  "playback_announcement_text": "This is an authorized Customer Service Twin production acceptance test. The CST voice service is being tested. You may hang up now.",
+  "hangup_status": "failed",
+  "tenant_id": "00000000-0000-0000-0000-000000000001",
+  "project_id": "proj-vfarm-main",
+  "correlation_id": "corr_CST-LIVE-VOICE-1794577236758-881c2eff",
+  "error_code": "21215",
+  "sanitized_error_message": "Account not authorized to call +923082113844. Perhaps you need to enable some international permissions: https://www.twilio.com/console/voice/calls/geo-permissions/low-risk",
+  "verdict": "FAIL"
+}

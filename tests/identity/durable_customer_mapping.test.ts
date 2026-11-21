@@ -28,6 +28,7 @@ import { CoreRegistry } from '../../engine/src/core/registry.js';
 import { DbClient } from '../../engine/src/db/client.js';
 import { VfarmTenantAdapter } from '../../engine/src/adapters/vfarm/index.js';
 import { VfarmHttpClient } from '../../engine/src/adapters/vfarm/http_client.js';
+import { VfarmLiveClient } from '../../engine/src/adapters/vfarm/live_client.js';
 import { createApp } from '../../engine/src/app.js';
 import { AlertAuditLog } from '../../engine/src/audit/alert_audit.js';
 import { VoiceLaneService } from '../../engine/src/transport/voice/voice_lane.js';
@@ -78,6 +79,7 @@ let grantsByUser: Record<string, any[]> = {};
 describe('Durable per-customer identity mapping', () => {
   const originalNodeEnv = process.env.NODE_ENV;
   const originalLiveTest = process.env.VFARM_LIVE_TEST;
+  const originalServiceKey = process.env.VFARM_SERVICE_KEY;
 
   let originalSynthesizer: any;
 
@@ -85,6 +87,7 @@ describe('Durable per-customer identity mapping', () => {
     // The synthesizer is STATIC state on VoiceLaneService; restore it so this
     // file does not change the synthesiser for later files in the same worker.
     originalSynthesizer = VoiceLaneService.getSynthesizer();
+    delete process.env.VFARM_SERVICE_KEY;
     DbClient.clearAll();
     DbClient.resetDurableStores();
     CoreRegistry.clear();
@@ -140,12 +143,17 @@ describe('Durable per-customer identity mapping', () => {
     vi.spyOn(VfarmHttpClient.prototype, 'getUserFarmGrants').mockImplementation(
       async (userId: string) => grantsByUser[userId] ?? []
     );
+    vi.spyOn(VfarmLiveClient.prototype, 'resolveUserByPhone').mockImplementation(
+      async () => null
+    );
   });
 
   afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
     if (originalLiveTest === undefined) delete process.env.VFARM_LIVE_TEST;
     else process.env.VFARM_LIVE_TEST = originalLiveTest;
+    if (originalServiceKey === undefined) delete process.env.VFARM_SERVICE_KEY;
+    else process.env.VFARM_SERVICE_KEY = originalServiceKey;
     VoiceLaneService.setSynthesizer(originalSynthesizer);
     vi.restoreAllMocks();
   });

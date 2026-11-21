@@ -434,7 +434,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
       );
 
       // listLatestReadings IS now called — per-unit values are fetched
-      expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String));
+      expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String), 'u1');
     });
 
     // ══════════════════════════════════════════════════════════════════
@@ -487,7 +487,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         );
 
         // listLatestReadings WAS called for the farm
-        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String));
+        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_austin_main', 100, undefined, undefined, expect.any(String), 'u1');
         // Per-unit readings are included in the response
         expect(res.text).toContain('Per-unit readings:');
         expect(res.text).toContain('Unit unit_bay_04');
@@ -525,7 +525,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
           makeIdentity({ farm_ids: ['farm_empty'] }),
         );
 
-        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_empty', 100, undefined, undefined, expect.any(String));
+        expect(listLatestReadingsSpy).toHaveBeenCalledWith('farm_empty', 100, undefined, undefined, expect.any(String), 'u1');
         expect(res.text).toContain('No per-unit readings are available at this time.');
       });
 
@@ -644,7 +644,7 @@ describe('vFarm telemetry mapping — real upstream shape', () => {
         );
 
         // Unit-specific path is used (getLatestReading called, not listLatestReadings)
-        expect(getLatestReadingSpy).toHaveBeenCalledWith('unit_bound_01');
+        expect(getLatestReadingSpy).toHaveBeenCalledWith('unit_bound_01', 'u1');
         expect(listLatestReadingsSpy).not.toHaveBeenCalled();
         expect(res.text).toContain('vFarm Unit unit_bound_01');
         expect(res.text).toContain('Temperature: 24.5°C');

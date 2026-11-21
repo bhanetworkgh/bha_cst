@@ -57,6 +57,28 @@ export function normalizeFarmGrants(raw: unknown): FarmGrant[] {
   throw new Error('farm-grants response matched neither array nor { grants } shape');
 }
 
+// ── GET /api/v1/farms/{farm_id}/cabinets & GET /api/v1/cabinets/{serial} ──────
+export const farmCabinetSchema = z.object({
+  cabinet_id: z.string().nullable().optional(),
+  serial_number: z.string().min(1),
+  farm_id: z.string().min(1),
+  name: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  zone_name: z.string().nullable().optional(),
+  location_name: z.string().nullable().optional(),
+  config_hash: z.string().nullable().optional(),
+  design_name: z.string().nullable().optional(),
+  tray_count: z.number().int().nullable().optional(),
+  rack_count: z.number().int().nullable().optional(),
+  length_mm: z.number().int().nullable().optional(),
+  width_mm: z.number().int().nullable().optional(),
+  height_mm: z.number().int().nullable().optional(),
+  added_at: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+}).passthrough();
+export type FarmCabinet = z.infer<typeof farmCabinetSchema>;
+export const farmCabinetListSchema = z.array(farmCabinetSchema);
+
 // ── GET /api/v1/inventory/{serial_number} ───────────────────────────────────
 export const inventoryItemSchema = z.object({
   serial_number: z.string().min(1),
@@ -502,4 +524,6 @@ export const StatsResponseSchema = statsResponseSchema;
 export const LoginResponseSchema = loginResponseSchema;
 export const TokenCreatedResponseSchema = tokenCreatedResponseSchema;
 export const TokenResponseSchema = tokenResponseSchema;
+export const FarmCabinetSchema = farmCabinetSchema;
+export const FarmCabinetListSchema = farmCabinetListSchema;
 

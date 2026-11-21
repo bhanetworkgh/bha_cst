@@ -378,3 +378,57 @@ describe('vFarm timeout contracts — readings stats timeout override', () => {
     );
   });
 });
+
+describe('LOOP-1792681313173-0SNO — Farm Cabinets and Unit Traceability Contract', () => {
+  it('listFarmCabinets() queries /api/v1/farms/{farm_id}/cabinets and validates schema', async () => {
+    const liveCabinets = [
+      {
+        cabinet_id: 'cab_001',
+        serial_number: 'SN-CAB-2026-001',
+        farm_id: 'farm_austin_main',
+        name: 'Cabinet Alpha',
+        zone_name: 'Zone A',
+        location_name: 'Rack 1',
+        tray_count: 8,
+        rack_count: 2,
+      },
+    ];
+    const fetchFn = vi.fn(async () => jsonResponse(200, liveCabinets));
+    const client = new VfarmLiveClient({
+      baseUrl: 'https://mock.vfarm.test',
+      apiKey: 'farm-key',
+      fetchFn: fetchFn as any,
+    });
+
+    const res = await client.listFarmCabinets('farm_austin_main', 'usr_001');
+    expect(res).toHaveLength(1);
+    expect(res[0].serial_number).toBe('SN-CAB-2026-001');
+    expect(res[0].name).toBe('Cabinet Alpha');
+    expect(res[0].tray_count).toBe(8);
+  });
+
+  it('getCabinet() queries /api/v1/cabinets/{serial} and validates schema', async () => {
+    const liveCabinet = {
+      cabinet_id: 'cab_002',
+      serial_number: 'SN-CAB-2026-002',
+      farm_id: 'farm_austin_main',
+      name: 'Cabinet Beta',
+      zone_name: 'Zone B',
+      location_name: 'Rack 2',
+      tray_count: 12,
+      rack_count: 3,
+    };
+    const fetchFn = vi.fn(async () => jsonResponse(200, liveCabinet));
+    const client = new VfarmLiveClient({
+      baseUrl: 'https://mock.vfarm.test',
+      apiKey: 'farm-key',
+      fetchFn: fetchFn as any,
+    });
+
+    const res = await client.getCabinet('SN-CAB-2026-002', 'usr_001');
+    expect(res.serial_number).toBe('SN-CAB-2026-002');
+    expect(res.name).toBe('Cabinet Beta');
+    expect(res.tray_count).toBe(12);
+  });
+});
+

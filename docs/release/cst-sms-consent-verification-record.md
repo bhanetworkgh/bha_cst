@@ -135,7 +135,3 @@ The entire consent suite was executed locally and completed with 100% pass rate 
 
 ---
 
-## 6. Next Steps for Complete Acceptance
-
-1. **Staging / Production DB Check**: Run the read-only queries in `docs/release/cst-ho-fe-schema-verification-guide.md` to confirm migrations 017 and 018 triggers are active in PostgreSQL.
-2. **Authorized Live Smoke Test**: Conduct one live test with an approved internal cell number to demonstrate real Twilio STOP receipt and automatic suppression.

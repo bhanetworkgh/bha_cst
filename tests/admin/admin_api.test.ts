@@ -280,5 +280,55 @@ describe('CST Core Admin APIs & Multi-Channel Interfaces', () => {
     expect(Array.isArray(res.body.security_events)).toBe(true);
     expect(Array.isArray(res.body.alert_audits)).toBe(true);
   });
+
+  it('GET /api/v1/admin/security-ledger returns security ledger details with pagination and filtering', async () => {
+    // Record sample security events to verify endpoint extraction
+    await DbClient.recordSecurityLedgerEvent({
+      timestamp: new Date().toISOString(),
+      tenant_id: 'tenant-test-01',
+      actor: 'tester',
+      role: 'admin',
+      entry_point: 'api',
+      tool_or_route: '/test/route',
+      outcome: 'ok',
+      reason: 'test event',
+      correlation_id: 'corr_test_001',
+    });
+
+    await DbClient.recordSecurityLedgerEvent({
+      timestamp: new Date().toISOString(),
+      tenant_id: 'tenant-test-01',
+      actor: 'anonymous',
+      role: 'unknown',
+      entry_point: 'api',
+      tool_or_route: '/session',
+      outcome: 'refused',
+      reason: 'MISSING_CONTENT_TYPE',
+      correlation_id: 'corr_test_002',
+    });
+
+    const res = await request(app).get('/api/v1/admin/security-ledger');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.body.total).toBeGreaterThanOrEqual(2);
+    expect(Array.isArray(res.body.events)).toBe(true);
+
+    // Verify filter by correlation_id
+    const filteredRes = await request(app)
+      .get('/api/v1/admin/security-ledger')
+      .query({ correlation_id: 'corr_test_002' });
+    expect(filteredRes.status).toBe(200);
+    expect(filteredRes.body.total).toBe(1);
+    expect(filteredRes.body.events[0].correlation_id).toBe('corr_test_002');
+    expect(filteredRes.body.events[0].outcome).toBe('refused');
+    expect(filteredRes.body.events[0].reason).toBe('MISSING_CONTENT_TYPE');
+
+    // Verify filter by outcome
+    const refusedRes = await request(app)
+      .get('/api/v1/admin/security-ledger')
+      .query({ outcome: 'refused' });
+    expect(refusedRes.status).toBe(200);
+    expect(refusedRes.body.events.every((e: any) => e.outcome === 'refused')).toBe(true);
+  });
 });
 

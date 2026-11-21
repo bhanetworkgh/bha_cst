@@ -9,6 +9,7 @@ import { ErrorRouter } from '../../engine/src/notifications/error_router.js';
 import { CstDashboardPublisher, setActiveDashboardPublisher } from '../../engine/src/publishers/dashboard.js';
 import { CutOverManager } from '../../engine/src/observability/cut_over.js';
 import { FailureDetector } from '../../engine/src/observability/failure_detector.js';
+import { ResearchTwinBridge } from '../../engine/src/research_twin/bridge.js';
 import { createRelayTrace, withRelayTrace, traceRelay } from '../../engine/src/observability/relay_trace.js';
 import { collectSlackReceipt, readDispatchEvidence } from '../../scripts/pbt5_slack_receipt.mjs';
 
@@ -48,6 +49,9 @@ describe('PBT5 passive relay evidence (all I/O mocked)', () => {
     vi.stubEnv('ELEVENLABS_WEBHOOK_SECRET', 'test-secret');
     vi.stubEnv('SLACK_BOT_TOKEN', '');
     vi.stubEnv('SLACK_CS_WEBHOOK_URL', 'https://slack.invalid/webhook');
+    vi.stubEnv('RT_CONTRACT_VERIFIED', 'false');
+    vi.stubEnv('RT_INTEGRATION_ENABLED', 'false');
+    ResearchTwinBridge.reset();
     log = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});

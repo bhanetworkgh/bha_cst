@@ -18,6 +18,7 @@ import {
   type FarmHealthResponse,
   type FarmResponse,
   type OrgResponse,
+  type FarmCabinet,
 } from './schemas.js';
 import { normalizeFarmHealth, type FarmHealthStatus, type FarmHealthStaleness } from './health.js';
 
@@ -30,6 +31,7 @@ export interface VfarmAdapterConfig {
    * with no live upstream calls — this is the pre-existing dev/test behavior. */
   baseUrl?: string;
   apiKey?: string;
+  serviceKey?: string;
   apiToken?: string;
   timeoutMs?: number;
   fetchFn?: typeof fetch;
@@ -170,6 +172,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return new VfarmHttpClient({
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
+      serviceKey: config.serviceKey,
       apiToken: this.adminJwt || config.apiToken,
       timeoutMs: config.timeoutMs,
       fetchFn: config.fetchFn,
@@ -181,6 +184,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     return new VfarmLiveClient({
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
+      serviceKey: config.serviceKey,
       // The org-members endpoint rejects X-Farm-Key auth, so the admin JWT has
       // to reach the live client too — not just the http client.
       apiToken: this.adminJwt || undefined,
@@ -506,7 +510,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (!this.liveClient) {
       return { total: 0, devices: [] };
     }
-    const res = await this.liveClient.listAllDevices(params.farmId);
+    const onBehalfOf = params.speaker?.person_id;
+    const res = await this.liveClient.listAllDevices(params.farmId, onBehalfOf);
     return {
       total: res.total ?? res.devices?.length ?? 0,
       devices: res.devices ?? [],
@@ -545,9 +550,10 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     assertSpeakerFarmAccess(params.speaker, params.farmId);
     if (!this.liveClient) return null;
 
+    const onBehalfOf = params.speaker?.person_id;
     const [healthResult, devicesResult] = await Promise.allSettled([
-      this.liveClient.getFarmHealth(params.farmId),
-      this.liveClient.listAllDevices(params.farmId),
+      this.liveClient.getFarmHealth(params.farmId, onBehalfOf),
+      this.liveClient.listAllDevices(params.farmId, onBehalfOf),
     ]);
     const health = healthResult.status === 'fulfilled' ? healthResult.value : null;
     const devices = devicesResult.status === 'fulfilled' ? devicesResult.value : null;
@@ -615,7 +621,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (!this.liveClient) return null;
 
     try {
-      const devices = await this.liveClient.listAllDevices(params.farmId);
+      const onBehalfOf = params.speaker?.person_id;
+      const devices = await this.liveClient.listAllDevices(params.farmId, onBehalfOf);
       const dev = (devices ?? {}) as Record<string, any>;
       const counts = dev.fleet_counts;
       if (counts && typeof counts === 'object') {
@@ -669,7 +676,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (!this.liveClient) return null;
 
     try {
-      const res = await this.liveClient.listOpenAlerts(params.farmId, params.limit ?? 10);
+      const onBehalfOf = params.speaker?.person_id;
+      const res = await this.liveClient.listOpenAlerts(params.farmId, params.limit ?? 10, onBehalfOf);
       const alerts = (res.alerts ?? []).map((a: any) => ({
         id: a.id,
         device_id: a.device_id ?? '',
@@ -685,13 +693,43 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     }
   }
 
+  /**
+   * List all cabinets (units) deployed on a farm, gated by speaker authorization.
+   */
+  public async listFarmCabinets(params: { farmId: string; speaker: SpeakerIdentity }): Promise<FarmCabinet[]> {
+    if (!params.farmId) return [];
+    assertSpeakerFarmAccess(params.speaker, params.farmId);
+    if (!this.liveClient) return [];
+    const onBehalfOf = params.speaker?.person_id;
+    return this.liveClient.listFarmCabinets(params.farmId, onBehalfOf);
+  }
+
+  /**
+   * Retrieve a single cabinet by serial, gated by speaker authorization on the cabinet's farm.
+   */
+  public async getCabinet(params: { serial: string; speaker: SpeakerIdentity }): Promise<FarmCabinet | null> {
+    if (!params.serial) return null;
+    if (!this.liveClient) return null;
+    const onBehalfOf = params.speaker?.person_id;
+    try {
+      const cabinet = await this.liveClient.getCabinet(params.serial, onBehalfOf);
+      if (!cabinet || !cabinet.farm_id) return null;
+      assertSpeakerFarmAccess(params.speaker, cabinet.farm_id);
+      return cabinet;
+    } catch (err: any) {
+      if (err?.status === 404) return null;
+      throw err;
+    }
+  }
+
   public async getLatestDeviceReading(params: { farmId: string; deviceId: string; speaker?: SpeakerIdentity }): Promise<any> {
     if (params.speaker) {
       assertSpeakerFarmAccess(params.speaker, params.farmId);
     }
     if (!this.liveClient) return null;
     try {
-      return await this.liveClient.getLatestReading(params.deviceId);
+      const onBehalfOf = params.speaker?.person_id;
+      return await this.liveClient.getLatestReading(params.deviceId, onBehalfOf);
     } catch (err: any) {
       // 404 = no readings for this device. That is a real, honest result,
       // not an upstream failure. Surface it as null so the connector can
@@ -742,7 +780,8 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     if (!this.liveClient) return null;
 
     try {
-      const dev = await this.liveClient.getDevice(params.deviceId);
+      const onBehalfOf = params.speaker?.person_id;
+      const dev = await this.liveClient.getDevice(params.deviceId, onBehalfOf);
       const d = (dev ?? {}) as Record<string, any>;
       const fleetStatus = d.fleet_status;
       if (fleetStatus !== undefined) {
@@ -803,12 +842,14 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     try {
       const correlationId = params.correlationId || `vfarm-readings-${params.farmId}-${Date.now()}`;
       const startTime = Date.now();
+      const onBehalfOf = params.speaker?.person_id;
       const readings = await this.liveClient.listLatestReadings(
         params.farmId,
         100,
         params.timeoutMs,
         params.concurrency,
-        correlationId
+        correlationId,
+        onBehalfOf
       );
       const duration = Date.now() - startTime;
       Logger.info(`vFarm listLatestReadings completed`, {
@@ -1341,6 +1382,75 @@ export class VfarmTenantAdapter implements ITenantAdapter {
     const pMap = this.speakersMap.get(params.projectId);
     const speaker = pMap?.get(cleanPhone);
 
+    // If a vFarm service key is configured, query the authoritative identity resolution endpoint
+    let resolvedByServiceKey: { user_id: string; role?: string; farm_ids?: string[]; org_id?: string } | null = null;
+    let serviceKeyAttempted = false;
+
+    if (this.liveClient?.hasServiceKey()) {
+      serviceKeyAttempted = true;
+      try {
+        resolvedByServiceKey = await this.liveClient.resolveUserByPhone(cleanPhone);
+      } catch (err: any) {
+        if (err?.status === 401 || err?.status === 403 || err?.name === 'VfarmAuthError') {
+          Logger.warn(`vFarm resolveSpeaker: service key auth error (${err?.status || 401}); failing closed`);
+          return this.unknownIdentity(
+            { tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone },
+            'opaque_revoked',
+          );
+        }
+        if (err?.name === 'VfarmNetworkError' && /timed out/i.test(err?.message || '')) {
+          Logger.warn(`vFarm resolveSpeaker: service key request timed out`);
+          throw err;
+        }
+        Logger.warn(`vFarm resolveSpeaker: resolveUserByPhone failed: ${err?.message}`);
+      }
+    }
+
+    if (resolvedByServiceKey && resolvedByServiceKey.user_id) {
+      let role: UserRole = speaker?.role || 'manager';
+      if (resolvedByServiceKey.role) {
+        const mappedRole = mapVfarmOrgRoleToCstRole(resolvedByServiceKey.role);
+        if (mappedRole) role = mappedRole;
+      }
+      let farmIds: string[] = [];
+      if (Array.isArray(resolvedByServiceKey.farm_ids)) {
+        farmIds = resolvedByServiceKey.farm_ids;
+      } else if (this.httpClient) {
+        try {
+          const grants = await this.httpClient.getUserFarmGrants(resolvedByServiceKey.user_id, resolvedByServiceKey.user_id);
+          farmIds = grants.map((g) => g.farm_id).filter(Boolean);
+        } catch (err: any) {
+          Logger.warn(`vFarm resolveSpeaker: farm-grants check unavailable for ${resolvedByServiceKey.user_id}; failing closed with zero farm scope: ${err?.message}`);
+          farmIds = [];
+        }
+      }
+
+      const { getPermissionsForRole } = await import('../../identity/resolver.js');
+      const permissions = getPermissionsForRole(role);
+      const effectivePersonId = resolvedByServiceKey.user_id;
+      const customerRef = `cust_${effectivePersonId}`;
+
+      return {
+        person_id: effectivePersonId,
+        customer_ref: customerRef,
+        tenant_id: params.tenantId,
+        project_id: params.projectId,
+        phone_e164: cleanPhone,
+        is_known: true,
+        role,
+        permissions,
+        farm_ids: farmIds,
+        unit_context: {
+          ...(farmIds[0] ? { farm_id: farmIds[0] } : {}),
+          role,
+        },
+      };
+    }
+
+    if (serviceKeyAttempted && resolvedByServiceKey === null && !speaker) {
+      return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_unresolved');
+    }
+
     if (!speaker) {
       return this.unknownIdentity({ tenantId: params.tenantId, projectId: params.projectId, phone: cleanPhone }, 'opaque_unresolved');
     }
@@ -1453,7 +1563,7 @@ export class VfarmTenantAdapter implements ITenantAdapter {
         if (mappedRole) role = mappedRole;
 
         try {
-          const grants = await this.httpClient.getUserFarmGrants(effectivePersonId);
+          const grants = await this.httpClient.getUserFarmGrants(effectivePersonId, effectivePersonId);
           // Authoritative grant list wins outright, including when empty.
           farmIds = grants.map((g) => g.farm_id).filter(Boolean);
         } catch (err: any) {
