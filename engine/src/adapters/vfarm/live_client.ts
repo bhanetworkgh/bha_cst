@@ -38,6 +38,9 @@ import {
   placeCountListResponseSchema,
   alertHistoryListResponseSchema,
   imageAnalysisSchema,
+  farmCabinetSchema,
+  farmCabinetListSchema,
+  type FarmCabinet,
   type OrgMemberResponse,
   type GrantedFarmRow,
   type InventoryResponse,
@@ -603,10 +606,12 @@ export class VfarmLiveClient {
    */
   async getOrgMembers(orgId: string, token?: string): Promise<OrgMemberResponse[]> {
     const path = `/api/v1/organizations/${encodeURIComponent(orgId)}/users`;
-    const schema = { parse: (d: unknown) => {
-      if (!Array.isArray(d)) throw new Error('Expected array from org members endpoint');
-      return d.map((item) => OrgMemberResponseSchema.parse(item));
-    }};
+    const schema = {
+      parse: (d: unknown) => {
+        if (!Array.isArray(d)) throw new Error('Expected array from org members endpoint');
+        return d.map((item) => OrgMemberResponseSchema.parse(item));
+      }
+    };
     return this.request(path, schema, this.authHeaders(token));
   }
 
@@ -658,6 +663,26 @@ export class VfarmLiveClient {
       );
       return null;
     }
+  }
+
+  // ── Cabinets (Farm Units) ────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/farms/{farm_id}/cabinets
+   * Lists all cabinets deployed on a farm with their placement and design.
+   */
+  async listFarmCabinets(farmId: string, onBehalfOf?: string): Promise<FarmCabinet[]> {
+    const path = `/api/v1/farms/${encodeURIComponent(farmId)}/cabinets`;
+    return this.request(path, farmCabinetListSchema, undefined, undefined, onBehalfOf);
+  }
+
+  /**
+   * GET /api/v1/cabinets/{serial}
+   * Retrieves a single cabinet by serial number.
+   */
+  async getCabinet(serial: string, onBehalfOf?: string): Promise<FarmCabinet> {
+    const path = `/api/v1/cabinets/${encodeURIComponent(serial)}`;
+    return this.request(path, farmCabinetSchema, undefined, undefined, onBehalfOf);
   }
 
   // ── Farms & telemetry (live IoT read API) ─────────────────────────────────

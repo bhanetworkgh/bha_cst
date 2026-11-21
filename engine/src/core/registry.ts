@@ -40,9 +40,12 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
     const env = getEnv();
     const baseUrl = env.VFARM_API_BASE_URL || process.env.VFARM_BASE_URL;
     if (!baseUrl) return {};
+    const serviceKey = (env as any).VFARM_SERVICE_KEY || process.env.VFARM_SERVICE_KEY || undefined;
+    const apiKey = serviceKey || env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY;
     return {
       baseUrl,
-      apiKey: (env as any).VFARM_SERVICE_KEY || process.env.VFARM_SERVICE_KEY || env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      serviceKey,
+      apiKey,
       apiToken: env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
       timeoutMs: env.VFARM_API_TIMEOUT_MS || (process.env.VFARM_TIMEOUT_MS ? Number(process.env.VFARM_TIMEOUT_MS) : undefined),
       tenantOrgId: process.env.VFARM_TENANT_ORG_ID,
@@ -52,9 +55,12 @@ function buildVfarmAdapterConfigFromEnv(): VfarmAdapterConfig {
     // fall back to process.env
     const baseUrl = process.env.VFARM_API_BASE_URL || process.env.VFARM_BASE_URL;
     if (!baseUrl) return {};
+    const serviceKey = process.env.VFARM_SERVICE_KEY || undefined;
+    const apiKey = serviceKey || process.env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY;
     return {
       baseUrl,
-      apiKey: process.env.VFARM_SERVICE_KEY || process.env.VFARM_API_FARM_KEY || process.env.VFARM_FARM_KEY || process.env.VFARM_API_KEY,
+      serviceKey,
+      apiKey,
       apiToken: process.env.VFARM_API_JWT || process.env.VFARM_JWT || process.env.VFARM_API_TOKEN,
       timeoutMs: process.env.VFARM_API_TIMEOUT_MS
         ? Number(process.env.VFARM_API_TIMEOUT_MS)

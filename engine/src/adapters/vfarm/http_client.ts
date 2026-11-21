@@ -49,6 +49,8 @@ export interface VfarmHttpClientOptions {
   baseUrl: string;
   /** Sent as `X-Farm-Key`. */
   apiKey?: string;
+  /** Sent as `X-Service-Key` and `X-Farm-Key` (service key contract). */
+  serviceKey?: string;
   /** Sent as `Authorization: Bearer <token>` when the selected endpoint requires bearer/JWT auth. */
   apiToken?: string;
   timeoutMs?: number;
@@ -65,6 +67,7 @@ const DEFAULT_TIMEOUT_MS = VFARM_DEFAULT_TIMEOUT_MS;
 export class VfarmHttpClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
+  private serviceKey?: string;
   private apiToken?: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
@@ -72,6 +75,7 @@ export class VfarmHttpClient {
   constructor(options: VfarmHttpClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
+    this.serviceKey = options.serviceKey;
     this.apiToken = options.apiToken;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn || fetch;
@@ -81,10 +85,29 @@ export class VfarmHttpClient {
     this.apiToken = apiToken;
   }
 
-  private buildHeaders(): Record<string, string> {
+  public setServiceKey(serviceKey: string): void {
+    this.serviceKey = serviceKey;
+  }
+
+  public hasServiceKey(): boolean {
+    return Boolean(this.serviceKey);
+  }
+
+  private buildHeaders(onBehalfOf?: string): Record<string, string> {
     const headers: Record<string, string> = { accept: 'application/json' };
-    if (this.apiKey) headers['X-Farm-Key'] = this.apiKey;
-    if (this.apiToken) headers['Authorization'] = `Bearer ${this.apiToken}`;
+    const effectiveKey = this.serviceKey || this.apiKey;
+    if (this.serviceKey) {
+      headers['X-Service-Key'] = this.serviceKey;
+    }
+    if (effectiveKey) {
+      headers['X-Farm-Key'] = effectiveKey;
+    }
+    if (this.apiToken) {
+      headers['Authorization'] = `Bearer ${this.apiToken}`;
+    }
+    if (onBehalfOf) {
+      headers['X-On-Behalf-Of'] = onBehalfOf;
+    }
     return headers;
   }
 
@@ -92,7 +115,7 @@ export class VfarmHttpClient {
    * Perform a GET request against the vFarm API with a bounded timeout.
    * Never includes header values in thrown error messages or logs.
    */
-  private async get(path: string): Promise<unknown> {
+  private async get(path: string, onBehalfOf?: string): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -101,7 +124,7 @@ export class VfarmHttpClient {
     try {
       response = await this.fetchFn(url, {
         method: 'GET',
-        headers: this.buildHeaders(),
+        headers: this.buildHeaders(onBehalfOf),
         signal: controller.signal,
       });
     } catch (err: any) {
@@ -140,8 +163,8 @@ export class VfarmHttpClient {
     }
   }
 
-  async listOrganizationMembers(orgId: string): Promise<OrgMember[]> {
-    const raw = await this.get(`/api/v1/organizations/${encodeURIComponent(orgId)}/users`);
+  async listOrganizationMembers(orgId: string, onBehalfOf?: string): Promise<OrgMember[]> {
+    const raw = await this.get(`/api/v1/organizations/${encodeURIComponent(orgId)}/users`, onBehalfOf);
     const parsed = orgMemberListSchema.safeParse(raw);
     if (!parsed.success) {
       Logger.warn(`vFarm schema validation failed: organizations/${orgId}/users`);
@@ -155,8 +178,8 @@ export class VfarmHttpClient {
    * enumerated in the verified handoff. Only `user_id`/`role` are relied on;
    * anything else is passed through unvalidated.
    */
-  async listFarmUsers(farmId: string): Promise<FarmUser[]> {
-    const raw = await this.get(`/api/v1/farms/${encodeURIComponent(farmId)}/users`);
+  async listFarmUsers(farmId: string, onBehalfOf?: string): Promise<FarmUser[]> {
+    const raw = await this.get(`/api/v1/farms/${encodeURIComponent(farmId)}/users`, onBehalfOf);
     const parsed = farmUserListSchema.safeParse(raw);
     if (!parsed.success) {
       Logger.warn(`vFarm schema validation failed: farms/${farmId}/users`);
@@ -169,8 +192,8 @@ export class VfarmHttpClient {
    * Best-effort: same caveat as listFarmUsers — shape not fully verified.
    * Only `farm_id` is relied upon by callers.
    */
-  async getUserFarmGrants(userId: string): Promise<FarmGrant[]> {
-    const raw = await this.get(`/api/v1/users/${encodeURIComponent(userId)}/farm-grants`);
+  async getUserFarmGrants(userId: string, onBehalfOf?: string): Promise<FarmGrant[]> {
+    const raw = await this.get(`/api/v1/users/${encodeURIComponent(userId)}/farm-grants`, onBehalfOf);
     try {
       return normalizeFarmGrants(raw);
     } catch {
@@ -179,8 +202,8 @@ export class VfarmHttpClient {
     }
   }
 
-  async getInventoryItem(serialNumber: string): Promise<InventoryItem> {
-    const raw = await this.get(`/api/v1/inventory/${encodeURIComponent(serialNumber)}`);
+  async getInventoryItem(serialNumber: string, onBehalfOf?: string): Promise<InventoryItem> {
+    const raw = await this.get(`/api/v1/inventory/${encodeURIComponent(serialNumber)}`, onBehalfOf);
     const parsed = inventoryItemSchema.safeParse(raw);
     if (!parsed.success) {
       Logger.warn(`vFarm schema validation failed: inventory/${serialNumber}`);
@@ -189,8 +212,8 @@ export class VfarmHttpClient {
     return parsed.data;
   }
 
-  async getUnitConfig(serialNumber: string): Promise<UnitConfigResponse> {
-    const raw = await this.get(`/api/v1/inventory/${encodeURIComponent(serialNumber)}/config`);
+  async getUnitConfig(serialNumber: string, onBehalfOf?: string): Promise<UnitConfigResponse> {
+    const raw = await this.get(`/api/v1/inventory/${encodeURIComponent(serialNumber)}/config`, onBehalfOf);
     const parsed = unitConfigResponseSchema.safeParse(raw);
     if (!parsed.success) {
       Logger.warn(`vFarm schema validation failed: inventory/${serialNumber}/config`);
@@ -199,11 +222,11 @@ export class VfarmHttpClient {
     return parsed.data;
   }
 
-  async getConfig(configHash: string): Promise<ConfigResponse> {
+  async getConfig(configHash: string, onBehalfOf?: string): Promise<ConfigResponse> {
     if (!CONFIG_HASH_RE.test(configHash)) {
       throw new VfarmApiError('invalid_response', 'config_hash failed local format validation');
     }
-    const raw = await this.get(`/api/v1/configs/${encodeURIComponent(configHash)}`);
+    const raw = await this.get(`/api/v1/configs/${encodeURIComponent(configHash)}`, onBehalfOf);
     const parsed = configResponseSchema.safeParse(raw);
     if (!parsed.success) {
       Logger.warn(`vFarm schema validation failed: configs/${configHash}`);

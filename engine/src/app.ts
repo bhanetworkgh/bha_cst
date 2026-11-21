@@ -31,14 +31,35 @@ import {
   normalizeFarmHealth,
   type NormalizedFarmHealth,
 } from './adapters/vfarm/health.js';
+import {
+  createPreRouteContentTypeValidator,
+  validateJsonContentType,
+  validateFormContentType,
+  handleJsonSyntaxError,
+  handlePayloadTooLargeError,
+  CONTENT_TYPE_POLICY,
+} from './middleware/content_type_validator.js';
 
 export { mapFarmHealthStatus } from './adapters/vfarm/health.js';
+export {
+  createPreRouteContentTypeValidator,
+  validateJsonContentType,
+  validateFormContentType,
+  handleJsonSyntaxError,
+  handlePayloadTooLargeError,
+  CONTENT_TYPE_POLICY,
+} from './middleware/content_type_validator.js';
 
 export function createApp(): Express {
   const app = express();
 
   // Enable trust proxy for reverse proxies / AWS ALBs / Render SSL termination
   app.set('trust proxy', true);
+
+  // ── Pre-Route Content-Type Validation ───────────────────────────────────────
+  // Executes BEFORE body parsing and route handling (LOOP-1795035800169-NVLF).
+  // Strictly enforces media types per route before any body buffer is consumed.
+  app.use(createPreRouteContentTypeValidator());
 
   // ── Body Parsing ────────────────────────────────────────────────────────────
   // Twilio sends application/x-www-form-urlencoded webhooks or JSON CloudEvents.
@@ -66,6 +87,8 @@ export function createApp(): Express {
       req.rawBody = buf.toString('utf8');
     },
   }));
+  app.use(handleJsonSyntaxError);
+  app.use(handlePayloadTooLargeError);
 
   // ── Security Headers ────────────────────────────────────────────────────────
   app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -121,13 +144,14 @@ export function createApp(): Express {
   // ── Routes ──────────────────────────────────────────────────────────────────
   app.use('/webhooks', smsInterfaceRouter);
   app.use('/webhooks', outboundRouter);
-  app.use('/webhooks/research-twin', researchTwinWebhookRouter);
-  app.use('/webhooks/elevenlabs', elevenlabsWebhookRouter);
+  app.use('/webhooks/research-twin', validateJsonContentType(), researchTwinWebhookRouter);
+  app.use('/webhooks/elevenlabs', validateJsonContentType(), elevenlabsWebhookRouter);
   app.use('/webhooks/voice', voiceObservabilityRouter);
-  app.use('/api/v1/auth', authRouter);
-  app.use('/api/v1/admin', requireAdminAuth, adminRouter);
+  app.use('/api/v1/auth', validateJsonContentType(), authRouter);
+  app.use('/api/v1/admin', validateJsonContentType(), requireAdminAuth, adminRouter);
   app.use(voiceRouter);
   app.use(voiceInterfaceRouter);
+  app.use('/api/v1/web', validateJsonContentType({ allowEmptyBodyRoutes: ['/logout', '/api/v1/web/logout'] }));
   app.use(webInterfaceRouter);
   app.use(brainInterfaceRouter);
   // Operator alert test, locked behind CST_API_KEY; posts labelled test alerts only.
@@ -424,7 +448,42 @@ export function createApp(): Express {
   // ── Global Error Handler ────────────────────────────────────────────────────
   // Must have 4 parameters for Express to treat it as an error handler.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+    const anyErr = err as any;
+    if (
+      err instanceof SyntaxError &&
+      ('status' in err || 'statusCode' in err) &&
+      (anyErr.status === 400 || anyErr.statusCode === 400) &&
+      'body' in err
+    ) {
+      const correlationId =
+        (req.headers['x-correlation-id'] as string) ||
+        (req.headers['x-request-id'] as string) ||
+        `malformed_${Date.now()}`;
+      res.setHeader('X-Correlation-ID', correlationId);
+      res.status(400).json({
+        error: 'MALFORMED_JSON',
+        message: 'Request body contains invalid JSON',
+        correlation_id: correlationId,
+      });
+      return;
+    }
+    if (
+      anyErr &&
+      (anyErr.type === 'entity.too.large' || anyErr.status === 413 || anyErr.statusCode === 413)
+    ) {
+      const correlationId =
+        (req.headers['x-correlation-id'] as string) ||
+        (req.headers['x-request-id'] as string) ||
+        `oversized_${Date.now()}`;
+      res.setHeader('X-Correlation-ID', correlationId);
+      res.status(413).json({
+        error: 'PAYLOAD_TOO_LARGE',
+        message: 'Request entity exceeds maximum allowable size limit',
+        correlation_id: correlationId,
+      });
+      return;
+    }
     Logger.error(`Unhandled Express error: ${err.message}`);
     res.status(500).json({ error: 'INTERNAL_SERVER_ERROR' });
   });
